@@ -1,0 +1,20 @@
+{
+  "nodes": [
+    {
+      "name": "Thermostat",
+      "entityType": "system",
+      "observations": [
+        "classic balancing system"
+      ],
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "id": "b5c2f475-ee91-49da-b67e-43cc23de0f2c",
+      "created_at": "2026-07-10T14:21:46.991Z",
+      "updated_at": "2026-07-10T14:21:46.991Z"
+    }
+  ],
+  "edges": [],
+  "metadata": {}
+}

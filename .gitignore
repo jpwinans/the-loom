@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Tooling caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment / secrets
+.env
+.loom/
+
+# OS
+.DS_Store
+
+# Note: uv.lock IS committed (reproducible builds) — do not ignore it.
+data/
+lancedb/
+
+# Local Claude Code state
+.claude/worktrees/
+.claude/settings.local.json
+
+# Local, machine-specific agent guidance (never committed)
+CLAUDE.local.md
+docs/agents/
+
+# Untracked working directories — kept out so a stray `git add -A` cannot
+# commit them. vestige/ in particular holds local session transcripts.
+node_modules/
+vestige/
+loom-viz/
+wip-TL-332/

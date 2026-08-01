@@ -1,0 +1,454 @@
+/* Systems view: a causal-loop diagram over the validated graph canvas. The weave
+ * is the hero; chrome (polarity legend, layout control, loop rail) stays quiet.
+ * Polarity and loop classification are the only new colour channels — both ride
+ * the diverging --polarity/--loop poles and both pair colour with a glyph. */
+
+.systems {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.systems:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Sigma mounts its canvases here; the validated --color-canvas shows through. */
+.systems__canvas {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---- Polarity glyph overlay (one +/− badge per edge, JS-positioned) -------- */
+.systems__glyphs {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.systems__glyph {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid currentColor;
+  border-radius: var(--radius-pill);
+  background: var(--color-elevated);
+  font-size: 12px;
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  box-shadow: 0 1px 2px rgba(18, 20, 28, 0.18);
+  will-change: transform, opacity;
+}
+
+/* ---- Leverage markers (one numbered pill per leverage-point target) --------- */
+/* The layer passes clicks/drags through to the canvas; only the small badges
+ * capture the pointer, so their native title (the Meadows lever) shows on hover. */
+.systems__leverages {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.systems__leverage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1.5px solid var(--type-leverage_point);
+  border-radius: var(--radius-pill);
+  background: var(--color-elevated);
+  color: var(--type-leverage_point);
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(18, 20, 28, 0.22);
+  pointer-events: auto;
+  cursor: help;
+  will-change: transform, opacity;
+}
+
+/* ---- Polarity legend (top-left; the free corner in this view) -------------- */
+.systems__legend {
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 7px 14px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 1px 3px rgba(18, 20, 28, 0.12);
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+}
+
+.systems__legenditem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.systems__legendglyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1.5px solid currentColor;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+}
+
+.systems__legendglyph--pos {
+  color: var(--polarity-positive);
+}
+
+.systems__legendglyph--neg {
+  color: var(--polarity-negative);
+}
+
+/* The leverage swatch mirrors the on-canvas badge: an elevated pill outlined and
+ * inked in the leverage-point token, so the legend and the marker read as one. */
+.systems__legendlev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 3px;
+  border: 1.5px solid var(--type-leverage_point);
+  border-radius: var(--radius-pill);
+  background: var(--color-elevated);
+  color: var(--type-leverage_point);
+  font-size: 10px;
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+}
+
+/* ---- Empty state ----------------------------------------------------------- */
+.systems__empty {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-6);
+  pointer-events: none;
+}
+
+.systems__emptytitle {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-2);
+}
+
+.systems__emptybody {
+  margin: 0;
+  max-width: 30rem;
+  font-size: var(--text-sm);
+  color: var(--color-text-3);
+  line-height: var(--leading-normal);
+}
+
+/* ---- Floating control cluster (bottom-left) ------------------------------- */
+.systems__controls {
+  position: absolute;
+  left: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  max-width: calc(100% - 2 * var(--space-4));
+}
+
+.systems__ctrl {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-elevated);
+  box-shadow: 0 1px 3px rgba(18, 20, 28, 0.12);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.systems__ctrl:not(:disabled):hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+  box-shadow: 0 2px 6px rgba(18, 20, 28, 0.18);
+}
+
+/* The flow toggle reads "on" through an accent frame; disabled means no loop is
+ * isolated yet, so there is nothing for the pulse to travel. */
+.systems__ctrl[aria-pressed="true"] {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+.systems__ctrl:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: none;
+}
+
+.systems__pulse {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: var(--color-text-3);
+  box-shadow: 0 0 0 1px var(--color-border-strong) inset;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.systems__pulse--live {
+  background: var(--color-accent);
+  animation: systems-pulse 1.4s var(--ease) infinite;
+}
+
+@keyframes systems-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-accent-soft);
+  }
+  70% {
+    box-shadow: 0 0 0 6px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* ---- Loop rail (right; borrows the Explorer detail panel's card language) --- */
+.loops {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  width: 19rem;
+  max-width: calc(100% - 2 * var(--space-4));
+  padding: var(--space-4);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 32px rgba(18, 20, 28, 0.2);
+}
+
+.loops__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.loops__title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+
+.loops__count {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-3);
+}
+
+.loops__empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-3);
+  line-height: var(--leading-normal);
+}
+
+.loops__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+
+.loops__row {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.loops__row:hover {
+  background: var(--color-surface-2);
+}
+
+.loops__row--active {
+  background: var(--color-surface-2);
+  border-color: var(--color-accent);
+}
+
+.loops__badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: #ffffff;
+}
+
+.loops__badge--r {
+  background: var(--loop-reinforcing);
+}
+
+.loops__badge--b {
+  background: var(--loop-balancing);
+}
+
+.loops__badge--sm {
+  width: 16px;
+  height: 16px;
+  font-size: var(--text-2xs);
+}
+
+.loops__text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.loops__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
+.loops__meta {
+  font-size: var(--text-2xs);
+  color: var(--color-text-3);
+}
+
+.loops__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+
+.loops__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.loops__legenditem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--text-2xs);
+  color: var(--color-text-3);
+}
+
+.loops__clear {
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.loops__clear:hover:not(:disabled) {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.loops__clear:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ---- Narrow viewports: the rail drops to a bottom sheet -------------------- */
+@media (max-width: 720px) {
+  .loops {
+    top: auto;
+    left: var(--space-3);
+    right: var(--space-3);
+    bottom: var(--space-3);
+    width: auto;
+    max-height: 46%;
+  }
+
+  .systems__legend {
+    top: var(--space-3);
+    left: var(--space-3);
+  }
+}

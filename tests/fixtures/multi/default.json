@@ -1,0 +1,46 @@
+{
+  "nodes": [
+    {
+      "name": "Feedback Loops",
+      "entityType": "concept",
+      "observations": [
+        "central concept in default"
+      ],
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "id": "1478c861-f2db-4b36-aca0-b16274d6bf24",
+      "created_at": "2026-07-10T14:21:46.011Z",
+      "updated_at": "2026-07-10T14:21:46.011Z"
+    },
+    {
+      "name": "Stocks and Flows",
+      "entityType": "concept",
+      "observations": [
+        "accumulations and rates"
+      ],
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "id": "59d4b52c-77f9-4fe7-ab9d-8a5b498e109e",
+      "created_at": "2026-07-10T14:21:46.171Z",
+      "updated_at": "2026-07-10T14:21:46.171Z"
+    }
+  ],
+  "edges": [
+    {
+      "from": "1478c861-f2db-4b36-aca0-b16274d6bf24",
+      "to": "59d4b52c-77f9-4fe7-ab9d-8a5b498e109e",
+      "relationType": "related_to",
+      "polarity": null,
+      "strength": "moderate",
+      "evidence": null,
+      "id": "b0b5cb75-3bc0-4acb-8fc4-f9a3a754425e",
+      "created_at": "2026-07-10T14:21:46.338Z",
+      "updated_at": "2026-07-10T14:21:46.338Z"
+    }
+  ],
+  "metadata": {}
+}

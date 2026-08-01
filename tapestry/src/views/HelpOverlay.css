@@ -1,0 +1,169 @@
+/* Help overlay: a centred modal shortcut sheet over a dimmed backdrop. The
+ * keycaps are the one distinctive element; everything else reuses the app's
+ * surfaces, ink, and spacing so the dialog reads as part of the same system in
+ * both themes. */
+
+.help {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  background: rgba(14, 15, 19, 0.5);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+
+.help__dialog {
+  width: 100%;
+  max-width: 34rem;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: var(--space-5);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(10, 11, 15, 0.35);
+}
+
+.help__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.help__eyebrow {
+  margin: 0 0 2px;
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.help__title {
+  margin: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text);
+}
+
+.help__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  color: var(--color-text-3);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.help__close:hover {
+  color: var(--color-text);
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+}
+
+/* Two columns where the width allows, collapsing to one on a narrow viewport. */
+.help__groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--space-4) var(--space-5);
+}
+
+.help__group {
+  min-width: 0;
+}
+
+.help__scope {
+  margin: 0 0 var(--space-2);
+  padding-bottom: 5px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+.help__list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.help__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.help__action {
+  font-size: var(--text-sm);
+  color: var(--color-text-2);
+}
+
+.help__keys {
+  margin: 0;
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: none;
+}
+
+/* The signature keycap: mono glyph, a hair of bottom-edge depth. */
+.help__key {
+  display: inline-block;
+  min-width: 1.35rem;
+  padding: 1px 6px;
+  border: 1px solid var(--color-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  line-height: 1.5;
+  text-align: center;
+  color: var(--color-text);
+}
+
+.help__foot {
+  margin: var(--space-5) 0 0;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  color: var(--color-text-3);
+}
+
+.help__foot .help__key {
+  min-width: auto;
+}
+
+.help__foot strong {
+  font-weight: var(--weight-medium);
+  color: var(--color-text-2);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .help {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

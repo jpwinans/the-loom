@@ -1,0 +1,375 @@
+/* Semantic Map: an embedding scatter over the validated graph canvas. The point
+ * field is the hero; the cluster hull is the one new visual channel — a soft
+ * neutral region outline (never an entity-type hue), always carrying its label.
+ * The lasso stroke and brush chip ride the accent iris, the app's chrome colour,
+ * because a brush is transient chrome rather than an entity encoding. */
+
+.semantic {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.semantic:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Sigma mounts its canvases here; the validated --color-canvas shows through. */
+.semantic__canvas {
+  position: absolute;
+  inset: 0;
+}
+
+/* ---- Cluster-hull overlay (SVG, JS-positioned per render) ------------------ */
+/* Pointer events pass straight through to the canvas underneath. */
+.semantic__hulls {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.semantic__hull {
+  fill: var(--hull-fill);
+  stroke: var(--hull-stroke);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+}
+
+.semantic__hulllabel {
+  fill: var(--hull-stroke);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-wide);
+  text-transform: capitalize;
+  /* A canvas-coloured halo keeps the label legible over points and fills. */
+  paint-order: stroke;
+  stroke: var(--color-canvas);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+/* ---- Lasso capture overlay (pointer-events toggled by the tool) ------------ */
+/* Off: transparent to the pointer so Sigma pans/zooms normally. On: it captures
+ * the drag and draws the loop; the map never freezes because the layer only
+ * intercepts while the tool is armed. */
+.semantic__lasso {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.semantic__lasso--on {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+.semantic__lassosvg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.semantic__lassopath {
+  fill: var(--color-accent-soft);
+  stroke: var(--brush);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+/* ---- Legend (top-left; the free corner in this view) ---------------------- */
+.semantic__legend {
+  position: absolute;
+  top: var(--space-4);
+  left: var(--space-4);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px 14px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 1px 3px rgba(18, 20, 28, 0.12);
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+}
+
+.semantic__legendmethod {
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
+.semantic__legenddot {
+  color: var(--color-text-3);
+}
+
+.semantic__legendcount {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-3);
+}
+
+.semantic__legenditem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: var(--space-2);
+  margin-left: var(--space-1);
+  border-left: 1px solid var(--color-border);
+  color: var(--color-text-3);
+}
+
+.semantic__legendhull {
+  width: 14px;
+  height: 11px;
+  border: 1.5px solid var(--hull-stroke);
+  border-radius: 3px;
+  background: var(--hull-fill);
+}
+
+/* ---- Brush chip (top-centre; the lasso's on-map surface) ------------------- */
+.semantic__brush {
+  position: absolute;
+  top: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 6px 6px var(--space-3);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 1px 3px rgba(18, 20, 28, 0.14);
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+}
+
+.semantic__brushdot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: var(--radius-pill);
+  background: var(--brush);
+}
+
+.semantic__brushcount {
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+.semantic__brushlink {
+  padding: 3px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.semantic__brushlink:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+.semantic__brushclear {
+  padding: 3px 8px;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.semantic__brushclear:hover {
+  background: var(--color-accent-soft);
+}
+
+/* ---- Floating control cluster (bottom-left) ------------------------------- */
+.semantic__controls {
+  position: absolute;
+  left: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  max-width: calc(100% - 2 * var(--space-4));
+}
+
+.semantic__ctrl {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-elevated);
+  box-shadow: 0 1px 3px rgba(18, 20, 28, 0.12);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.semantic__ctrl:not(:disabled):hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+  box-shadow: 0 2px 6px rgba(18, 20, 28, 0.18);
+}
+
+/* "On" reads through an accent frame, matching the Systems flow toggle. */
+.semantic__ctrl[aria-pressed="true"] {
+  color: var(--color-text);
+  border-color: var(--color-accent);
+}
+
+.semantic__ctrl:disabled {
+  opacity: 0.5;
+  cursor: default;
+  box-shadow: none;
+}
+
+/* ---- Cluster brush picker (keyboard alternative to the lasso) -------------- */
+/* A disclosure: the "Brush cluster" button toggles a list that pops UP from the
+ * bottom-left control cluster so it never clips against the viewport floor. */
+.semantic__brushpicker {
+  position: relative;
+  display: inline-flex;
+}
+
+.semantic__clusterlist {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + var(--space-2));
+  z-index: 4;
+  width: max-content;
+  min-width: 12rem;
+  max-width: 16rem;
+  max-height: 40vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 6px 20px rgba(18, 20, 28, 0.18);
+}
+
+.semantic__clusterhint {
+  margin: 0 0 4px;
+  padding: 0 6px;
+  font-size: var(--text-2xs);
+  color: var(--color-text-3);
+}
+
+.semantic__clusteritem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.semantic__clusteritem:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.semantic__clusterlabel {
+  font-weight: var(--weight-medium);
+  text-transform: capitalize;
+}
+
+.semantic__clustersize {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-3);
+}
+
+/* ---- Empty state ---------------------------------------------------------- */
+.semantic__empty {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: var(--space-6);
+  pointer-events: none;
+}
+
+.semantic__emptytitle {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-2);
+}
+
+.semantic__emptybody {
+  margin: 0;
+  max-width: 30rem;
+  font-size: var(--text-sm);
+  color: var(--color-text-3);
+  line-height: var(--leading-normal);
+}
+
+/* ---- Narrow viewports ----------------------------------------------------- */
+@media (max-width: 720px) {
+  .semantic__legend {
+    top: var(--space-3);
+    left: var(--space-3);
+  }
+
+  .semantic__controls {
+    left: var(--space-3);
+    bottom: var(--space-3);
+  }
+
+  .semantic__brush {
+    top: auto;
+    bottom: calc(var(--space-3) + 52px);
+    left: var(--space-3);
+    right: var(--space-3);
+    transform: none;
+    justify-content: flex-start;
+  }
+}

@@ -1,0 +1,277 @@
+/*
+ * Tapestry design tokens — the single source of visual truth.
+ *
+ * Two complete themes. `:root` is light; `[data-theme="dark"]` overrides for dark.
+ * `applyTheme()` (design/theme.ts) resolves "auto" via prefers-color-scheme and
+ * stamps the concrete theme onto <html data-theme>.
+ *
+ * The 19 `--type-*` custom properties are one categorical slot per EntityType in
+ * theloom/model.py. The set is validated by the dataviz palette validator IN ENUM
+ * ORDER in BOTH themes (band + chroma floor + adjacent CVD ΔE >= 12; worst
+ * adjacent CVD is ΔE 24 light / 23 dark). Because 19 categoricals cannot separate
+ * ALL pairs under color-vision deficiency, entity identity is never colour-alone:
+ * nodes carry labels + type-shape, the legend names every colour, and hover
+ * reveals the type. Colours follow the entity, never a rank — never repaint on
+ * filter. Palette hues are grouped by meaning (epistemic=blue, reference=teal,
+ * synthesis=violet/gold/magenta, systems=green/cyan/amber, process=orange,
+ * conflict/logic=red, meta=purple); same-family neighbours separate on lightness.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ---- Typography (self-contained system stacks; no webfonts) ---------------- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+
+  --text-2xs: 0.6875rem;  /* 11 */
+  --text-xs: 0.75rem;     /* 12 */
+  --text-sm: 0.8125rem;   /* 13 */
+  --text-md: 0.875rem;    /* 14 */
+  --text-base: 0.9375rem; /* 15 */
+  --text-lg: 1.0625rem;   /* 17 */
+  --text-xl: 1.375rem;    /* 22 */
+  --text-2xl: 1.75rem;    /* 28 */
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --tracking-tight: -0.012em;
+  --tracking-wide: 0.02em;
+  --tracking-caps: 0.14em;
+
+  /* ---- Spacing, radius, motion ---------------------------------------------- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  --dur-fast: 90ms;
+  --dur-med: 160ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* ---- Surfaces & ink (light) ----------------------------------------------- */
+  --color-plane: #e7e9ee;        /* app background / behind panels */
+  --color-surface: #f6f7f9;      /* header, cards, panels */
+  --color-surface-2: #eceef3;    /* insets, wells, hover fills */
+  --color-canvas: #f7f6f3;       /* graph / plot drawing surface (validated) */
+  --color-elevated: #ffffff;     /* popovers, menus */
+
+  --color-border: rgba(18, 20, 28, 0.1);
+  --color-border-strong: rgba(18, 20, 28, 0.17);
+
+  --color-text: #16181f;         /* primary ink */
+  --color-text-2: #4b4f5b;       /* secondary ink */
+  --color-text-3: #636772;       /* muted / captions / axis — WCAG-AA (>=4.5:1) on every surface it lands on */
+
+  /* Brand: the "warp-thread" iris — used only on chrome, never on graph marks. */
+  --color-accent: #4a44c4;
+  --color-accent-hover: #3d37ac;
+  --color-accent-soft: rgba(74, 68, 196, 0.12);
+  --color-on-accent: #ffffff;
+  --color-focus: #4a44c4;
+
+  /* Status (dataviz fixed palette; never themed, never reused as a series). */
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+
+  /* ---- Entity-type categorical palette (light) — one slot per EntityType ----- */
+  --type-concept: #2f95e9;
+  --type-claim: #096b97;
+  --type-source: #1eb4b0;
+  --type-question: #978df9;
+  --type-evidence: #018463;
+  --type-pattern: #8a3e96;
+  --type-insight: #ad8d11;
+  --type-tension: #c85047;
+  --type-convergence: #e879b9;
+  --type-system: #088735;
+  --type-variable: #7ba82f;
+  --type-loop: #14bac5;
+  --type-leverage_point: #dd9314;
+  --type-event: #a14206;
+  --type-procedure: #eb882e;
+  --type-hypothesis: #577ddf;
+  --type-inference_rule: #b03851;
+  --type-inference_trace: #a9371d;
+  --type-research_session: #7547ab;
+
+  /* ---- Relation-family edge tints (light) — three families, not per-type ----- */
+  /* structural=neutral (recessive), epistemic=blue-slate, causal=amber accent.  */
+  /* Blue↔amber is the CVD-safe pair; the neutral is low-chroma. Never the accent */
+  /* iris (reserved for chrome), never a status colour, never an entity-type hue. */
+  --edge-structural: #9096a3;
+  --edge-epistemic: #3f6fb0;
+  --edge-causal: #c67a1e;
+
+  /* ---- Systems view: polarity + loop channel (light) ------------------------ */
+  /* A diverging pair reading which side of zero a causal influence sits on:     */
+  /* positive (amplifying) = blue pole, negative (inhibiting) = red pole. Loop    */
+  /* classification reuses the same poles keyed on net polarity (reinforcing =    */
+  /* net +, balancing = net −). Validated on --color-canvas in both themes        */
+  /* (chroma floor + lightness band + CVD ΔE 70 + ≥3:1). Never colour-alone: a    */
+  /* +/− glyph rides every edge and an R/B badge every loop row. Distinct from    */
+  /* the edge-family, status, and accent hues.                                    */
+  --polarity-positive: #2a6fd0;
+  --polarity-negative: #d83b48;
+  --loop-reinforcing: #2a6fd0;
+  --loop-balancing: #d83b48;
+
+  /* ---- Semantic Map: cluster hull + lasso brush channel (light) ------------- */
+  /* A cluster hull is a *region* outline, not a category — a low-chroma neutral  */
+  /* slate distinct from all 19 entity-type hues and the status/polarity/edge     */
+  /* channels, validated ≥3:1 on --color-canvas (4.4:1 light / 7:1 dark). It is   */
+  /* never colour-alone: every hull carries its cluster label, and the points     */
+  /* inside keep their entity-type fill. The lasso stroke and brush chip reuse the */
+  /* accent iris — the chrome channel — because a brush is transient chrome, not   */
+  /* an entity encoding. */
+  --hull-stroke: #6c7385;
+  --hull-fill: rgba(108, 115, 133, 0.1);
+  --brush: var(--color-accent);
+
+  /* ---- Live-mode status channel (light) — header chrome only, never a mark --- */
+  /* A "connection green" for the serve-mode indicator. It rides on the header    */
+  /* surface (not the graph canvas) and is ALWAYS paired with the "Live" label,   */
+  /* so it is never colour-alone and never reads as an entity-type/status/polarity */
+  /* data encoding. Dot ≥3:1 and label ≥4.5:1 on --color-surface in both themes.  */
+  --live-dot: #15a34a;
+  --live-fg: #0a7a3f;
+  --live-soft: rgba(21, 163, 74, 0.1);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* ---- Surfaces & ink (dark) ------------------------------------------------ */
+  --color-plane: #0e0f13;
+  --color-surface: #191b21;
+  --color-surface-2: #23262e;
+  --color-canvas: #15161a;       /* validated dark chart surface */
+  --color-elevated: #23262e;
+
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-border-strong: rgba(255, 255, 255, 0.18);
+
+  --color-text: #f2f3f6;
+  --color-text-2: #b6bbc6;
+  --color-text-3: #888e9b;       /* muted / captions / axis — WCAG-AA (>=4.5:1) on every dark surface it lands on */
+
+  --color-accent: #8e8bf0;
+  --color-accent-hover: #a4a2f5;
+  --color-accent-soft: rgba(142, 139, 240, 0.16);
+  --color-on-accent: #0e0f13;
+  --color-focus: #8e8bf0;
+
+  /* Status steps clear 3:1 on the dark surface (dataviz). */
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+
+  /* ---- Entity-type categorical palette (dark) ------------------------------- */
+  --type-concept: #1b88db;
+  --type-claim: #096b97;
+  --type-source: #04a29e;
+  --type-question: #877ce6;
+  --type-evidence: #0c7f61;
+  --type-pattern: #8a3e96;
+  --type-insight: #9f8001;
+  --type-tension: #c04941;
+  --type-convergence: #d366a6;
+  --type-system: #0c8334;
+  --type-variable: #6d991a;
+  --type-loop: #11a6af;
+  --type-leverage_point: #c68206;
+  --type-event: #a14206;
+  --type-procedure: #d6760c;
+  --type-hypothesis: #4f74d5;
+  --type-inference_rule: #ae3650;
+  --type-inference_trace: #a9371d;
+  --type-research_session: #7547ab;
+
+  /* ---- Relation-family edge tints (dark) — brightened for the dark canvas ---- */
+  --edge-structural: #6b7280;
+  --edge-epistemic: #6690d6;
+  --edge-causal: #d9922f;
+
+  /* ---- Systems view: polarity + loop channel (dark) — stepped for the band --- */
+  --polarity-positive: #3f86e6;
+  --polarity-negative: #e8544e;
+  --loop-reinforcing: #3f86e6;
+  --loop-balancing: #e8544e;
+
+  /* ---- Semantic Map: cluster hull + lasso brush channel (dark) -------------- */
+  --hull-stroke: #9aa2b3;
+  --hull-fill: rgba(154, 162, 179, 0.12);
+  --brush: var(--color-accent);
+
+  /* ---- Live-mode status channel (dark) — brightened for the dark surface ----- */
+  --live-dot: #34d399;
+  --live-fg: #4ade80;
+  --live-soft: rgba(52, 211, 153, 0.14);
+}
+
+/* ---- Base reset & element defaults ------------------------------------------ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  color: var(--color-text);
+  background: var(--color-plane);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+/* A single, consistent keyboard focus ring on every interactive element. The
+ * ring follows each control's own shape (no border-radius override), so the
+ * header's pill tabs and segmented theme control keep their curve under focus
+ * instead of squaring off. `--color-focus` clears WCAG-AA contrast on every
+ * surface it lands on, in both themes. */
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

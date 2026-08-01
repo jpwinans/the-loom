@@ -1,0 +1,35 @@
+{
+  "sessionId": "",
+  "contextDocPath": "",
+  "topic": "",
+  "graphName": "",
+  "phase": "comprehension",
+  "understanding": {
+    "claims": [],
+    "evidence": [],
+    "conclusions": [],
+    "openQuestions": [],
+    "tensions": []
+  },
+  "graphExploration": {
+    "existingKnowledge": [],
+    "gaps": [],
+    "amendments": []
+  },
+  "researchQuestions": [],
+  "totalQuestions": 0,
+  "currentQuestionIndex": 0,
+  "completedQuestions": 0,
+  "failedQuestions": 0,
+  "deepResearchSessions": [],
+  "expeditionReport": null,
+  "reportPath": "",
+  "sessionFolder": "",
+  "errors": [],
+  "phaseSummary": "",
+  "metadata": {
+    "createdAt": "",
+    "updatedAt": "",
+    "completedAt": ""
+  }
+}

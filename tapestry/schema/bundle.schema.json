@@ -1,0 +1,362 @@
+{
+  "$defs": {
+    "AnalyticsSection": {
+      "additionalProperties": false,
+      "properties": {
+        "centrality": {
+          "additionalProperties": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object"
+          },
+          "title": "Centrality",
+          "type": "object"
+        },
+        "components": {
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Components",
+          "type": "array"
+        },
+        "loops": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Loops",
+          "type": "array"
+        },
+        "leveragePoints": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Leveragepoints",
+          "type": "array"
+        },
+        "bridges": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Bridges",
+          "type": "array"
+        }
+      },
+      "required": [
+        "centrality",
+        "components",
+        "loops",
+        "leveragePoints",
+        "bridges"
+      ],
+      "title": "AnalyticsSection",
+      "type": "object"
+    },
+    "SemanticCluster": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "entityIds": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Entityids",
+          "type": "array"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "entityIds",
+        "size"
+      ],
+      "title": "SemanticCluster",
+      "type": "object"
+    },
+    "SemanticSection": {
+      "additionalProperties": false,
+      "properties": {
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "projection": {
+          "additionalProperties": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "title": "Projection",
+          "type": "object"
+        },
+        "clusters": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/SemanticCluster"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clusters"
+        }
+      },
+      "required": [
+        "method",
+        "projection"
+      ],
+      "title": "SemanticSection",
+      "type": "object"
+    },
+    "TapestryMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "graph": {
+          "title": "Graph",
+          "type": "string"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "scope": {
+          "title": "Scope",
+          "type": "string"
+        },
+        "generatedAt": {
+          "title": "Generatedat",
+          "type": "string"
+        },
+        "entityCount": {
+          "title": "Entitycount",
+          "type": "integer"
+        },
+        "relationCount": {
+          "title": "Relationcount",
+          "type": "integer"
+        },
+        "sections": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sections",
+          "type": "array"
+        },
+        "theme": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Theme"
+        },
+        "asOf": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Asof"
+        },
+        "truncated": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Truncated"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "graph",
+        "scope",
+        "generatedAt",
+        "entityCount",
+        "relationCount",
+        "sections"
+      ],
+      "title": "TapestryMeta",
+      "type": "object"
+    },
+    "TemporalEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "at": {
+          "title": "At",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "at",
+        "type",
+        "payload"
+      ],
+      "title": "TemporalEvent",
+      "type": "object"
+    },
+    "TemporalSection": {
+      "additionalProperties": false,
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/$defs/TemporalEvent"
+          },
+          "title": "Events",
+          "type": "array"
+        }
+      },
+      "required": [
+        "events"
+      ],
+      "title": "TemporalSection",
+      "type": "object"
+    },
+    "Truncated": {
+      "additionalProperties": false,
+      "description": "Present on `TapestryMeta` only when `ExportBundleInput.maxEntities`\nactually capped the scope \u2014 a degree-ranked truncation to the top-N\nentities (see `theloom.viz.bundle._truncate_by_degree`). `total` is the\npre-cap entity count, `kept` the post-cap count (== `maxEntities`), `by`\nthe ranking basis (currently always `\"degree\"`).",
+      "properties": {
+        "total": {
+          "title": "Total",
+          "type": "integer"
+        },
+        "kept": {
+          "title": "Kept",
+          "type": "integer"
+        },
+        "by": {
+          "title": "By",
+          "type": "string"
+        }
+      },
+      "required": [
+        "total",
+        "kept",
+        "by"
+      ],
+      "title": "Truncated",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "title": "Schemaversion",
+      "type": "integer"
+    },
+    "meta": {
+      "$ref": "#/$defs/TapestryMeta"
+    },
+    "entities": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Entities",
+      "type": "array"
+    },
+    "relations": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Relations",
+      "type": "array"
+    },
+    "analytics": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AnalyticsSection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "temporal": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TemporalSection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "semantic": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/SemanticSection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "meta",
+    "entities",
+    "relations"
+  ],
+  "title": "TapestryBundle",
+  "type": "object"
+}

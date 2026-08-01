@@ -1,0 +1,101 @@
+# CI — lint + typecheck + tests on every push, against the FalkorDB service below.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.1"
+      - name: Sync dependencies
+        run: uv sync --frozen --extra viz-serve
+      - name: Lint
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Typecheck
+        run: uv run mypy --strict theloom
+      - name: Tests
+        run: uv run pytest -q
+
+  tapestry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: tapestry/package-lock.json }
+      - run: npm ci
+        working-directory: tapestry
+      - run: npm test
+        working-directory: tapestry
+      - run: npm run build
+        working-directory: tapestry
+      - name: Committed template must match the source build
+        run: git diff --exit-code theloom/viz/static/tapestry.html
+      - run: npx playwright install --with-deps chromium
+        working-directory: tapestry
+      - run: npm run e2e
+        working-directory: tapestry
+
+  tapestry-live:
+    runs-on: ubuntu-latest
+    services:
+      falkordb:
+        image: falkordb/falkordb:latest
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.1"
+      - run: uv sync --frozen --extra viz-serve
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: tapestry/package-lock.json }
+      - run: npm ci
+        working-directory: tapestry
+      - run: npx playwright install --with-deps chromium
+        working-directory: tapestry
+      - name: Seed the live demo graphs
+        run: uv run python scripts/seed_live_dev.py
+      - name: Start the live server
+        run: |
+          nohup uv run loom serve '{"graph":"tapestry-dev","host":"127.0.0.1","port":8100}' \
+            > /tmp/loom-serve.log 2>&1 &
+          echo $! > /tmp/loom-serve.pid
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8100/api/graphs && break || sleep 1;
+          done
+      - name: Live e2e
+        run: npm run e2e:live
+        working-directory: tapestry
+        env:
+          LIVE_PORT: "8100"
+      # Without this the server outlives the job, and setup-uv's post-job
+      # `uv cache prune --ci` fails against the venv it is still holding.
+      - name: Stop the live server
+        if: always()
+        run: |
+          kill "$(cat /tmp/loom-serve.pid)" 2>/dev/null || true
+          cat /tmp/loom-serve.log || true

@@ -1,0 +1,30 @@
+{
+  "bridges": [
+    {
+      "id": "81921f1b-ca00-41a0-b7ef-8dedfd5b9f70",
+      "from": "1478c861-f2db-4b36-aca0-b16274d6bf24",
+      "to": "eb11e368-757d-4f45-b65f-9b033c1b01d7",
+      "relationType": "supports",
+      "polarity": null,
+      "strength": "moderate",
+      "evidence": null,
+      "created_at": "2026-07-10T12:00:00.000Z",
+      "updated_at": "2026-07-10T12:00:00.000Z",
+      "from_graph": "default",
+      "to_graph": "research"
+    },
+    {
+      "id": "2ad002b7-32ba-4811-969f-54c491a6cecf",
+      "from": "eb11e368-757d-4f45-b65f-9b033c1b01d7",
+      "to": "b5c2f475-ee91-49da-b67e-43cc23de0f2c",
+      "relationType": "related_to",
+      "polarity": null,
+      "strength": "weak",
+      "evidence": null,
+      "created_at": "2026-07-10T12:00:00.000Z",
+      "updated_at": "2026-07-10T12:00:00.000Z",
+      "from_graph": "research",
+      "to_graph": "systems"
+    }
+  ]
+}

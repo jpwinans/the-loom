@@ -1,0 +1,20 @@
+# FalkorDB — the single store (graph + vectors + full-text). See STACK.md.
+services:
+  falkordb:
+    image: falkordb/falkordb:latest
+    container_name: theloom-falkordb
+    ports:
+      - "6379:6379"   # Redis/Bolt protocol (client connects here)
+      - "3000:3000"   # FalkorDB Browser UI
+    volumes:
+      - falkordb-data:/data
+    command: ["--save", "60", "1"]   # periodic snapshot persistence
+    environment:
+      # Uncap result sets: the default (10000) silently truncates reads.
+      # Loom's store pages its own reads either way; this protects raw
+      # queries (Browser UI, redis-cli) against the same silent truncation.
+      FALKORDB_ARGS: "RESULTSET_SIZE -1"
+    restart: unless-stopped
+
+volumes:
+  falkordb-data:

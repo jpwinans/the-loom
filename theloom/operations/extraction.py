@@ -1,0 +1,252 @@
+"""Extraction operations.
+
+Deterministic: extract-codebase (tree-sitter, deterministic against a fixed
+repo), extraction-status, extraction-rollback (event-log-backed run store, so
+these survive across CLI processes). update-codebase/self-model-update are the
+deterministic git-diff paths. extract-from-documents/extract-preview are the
+LLM pipeline: they route through the configured LLM (local or Anthropic) and
+error when none is configured.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import Field
+
+from theloom.errors import NotFoundError, OperationError, ValidationError
+from theloom.extraction import treesitter
+from theloom.operations.bulk import BulkImportInput, bulk_import
+from theloom.operations.common import CommandInput
+from theloom.store.multigraph import MultiGraph
+from theloom.synthesis.llm import create_synthesis_client
+
+Doc = dict[str, Any]
+
+
+# =============================================================================
+# Input models
+# =============================================================================
+
+
+class ExtractCodebaseInput(CommandInput):
+    project_path: str = Field(alias="projectPath")
+    graph: str | None = None
+    include_tests: bool | None = Field(default=None, alias="includeTests")
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+    dry_run: bool | None = Field(default=None, alias="dryRun")
+
+
+class UpdateCodebaseInput(CommandInput):
+    project_path: str = Field(alias="projectPath")
+    graph_name: str = Field(alias="graphName")
+    git_ref: str | None = Field(default=None, alias="gitRef")
+    include_tests: bool | None = Field(default=None, alias="includeTests")
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+    dry_run: bool | None = Field(default=None, alias="dryRun")
+
+
+class SelfModelUpdateInput(CommandInput):
+    project_path: str | None = Field(default=None, alias="projectPath")
+    graph_name: str | None = Field(default=None, alias="graphName")
+    dry_run: bool | None = Field(default=None, alias="dryRun")
+
+
+class ExtractFromDocumentsInput(CommandInput):
+    category: str | None = None
+    document_id: str | None = Field(default=None, alias="documentId")
+    query: str | None = None
+    max_chunks: int | None = Field(default=None, gt=0, le=10000, alias="maxChunks")
+    model: str | None = None
+    focus: str | None = None
+    dry_run: bool | None = Field(default=None, alias="dryRun")
+    graph: str | None = None
+
+
+class ExtractPreviewInput(CommandInput):
+    category: str | None = None
+    document_id: str | None = Field(default=None, alias="documentId")
+    query: str | None = None
+    max_chunks: int | None = Field(default=None, gt=0, le=10000, alias="maxChunks")
+    model: str | None = None
+    focus: str | None = None
+    graph: str | None = None
+
+
+class ExtractionStatusInput(CommandInput):
+    run_id: str | None = Field(default=None, alias="runId")
+
+
+class ExtractionRollbackInput(CommandInput):
+    run_id: str = Field(alias="runId")
+    graph: str | None = None
+
+
+# =============================================================================
+# Codebase extraction (deterministic)
+# =============================================================================
+
+
+def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
+    # The tool handler wraps failures as
+    # "Error in codebase extraction: <msg>"; "does not exist" then classifies
+    # as OPERATION_ERROR (not NOT_FOUND).
+    try:
+        extraction = treesitter.extract_codebase(
+            params.project_path,
+            include_tests=params.include_tests if params.include_tests is not None else True,
+        )
+    except FileNotFoundError as exc:
+        raise OperationError(f"Error in codebase extraction: {exc}") from exc
+
+    result: Doc = {
+        "stats": extraction["stats"],
+        "indexPath": extraction["indexPath"],
+        "extractionMethod": extraction["extractionMethod"],
+    }
+    if params.graph is not None:
+        import_result = bulk_import(
+            BulkImportInput.model_validate(
+                {
+                    "entities": extraction["entities"],
+                    "relations": extraction["relations"],
+                    "graph": params.graph,
+                    "dryRun": params.dry_run or False,
+                }
+            ),
+            multi,
+        )
+        result["importResult"] = import_result
+    return result
+
+
+def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
+    from theloom.extraction.codebasediff import update_codebase_diff
+
+    try:
+        return update_codebase_diff(
+            params.project_path,
+            params.graph_name,
+            git_ref=params.git_ref or "HEAD~1..HEAD",
+            include_tests=params.include_tests if params.include_tests is not None else True,
+            dry_run=params.dry_run or False,
+            multi=multi,
+        )
+    except FileNotFoundError as exc:
+        raise NotFoundError(str(exc)) from exc
+
+
+def self_model_update(params: SelfModelUpdateInput, multi: MultiGraph) -> Doc:
+    from theloom.extraction.selfmodel import update_self_model
+
+    try:
+        return update_self_model(
+            project_path=params.project_path,
+            graph_name=params.graph_name or "loom-codebase",
+            dry_run=params.dry_run or False,
+            multi=multi,
+        )
+    except FileNotFoundError as exc:
+        raise NotFoundError(str(exc)) from exc
+
+
+# =============================================================================
+# Extraction runs (deterministic: status/rollback)
+# =============================================================================
+
+
+def extraction_status(params: ExtractionStatusInput, multi: MultiGraph) -> Any:
+    store = multi.run_store()
+    if params.run_id is not None:
+        run = store.get_run(params.run_id)
+        if run is None:
+            raise NotFoundError(f"Extraction run '{params.run_id}' not found")
+        return run
+    return store.list_runs()
+
+
+def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> Doc:
+    store = multi.run_store()
+    run = store.get_run(params.run_id)
+    if run is None:
+        raise NotFoundError(f"Extraction run '{params.run_id}' not found")
+
+    graph_store = multi.get_store(params.graph)
+    deleted_relations = 0
+    for relation_id in run.get("createdRelationIds", []):
+        parts = relation_id.split("->")
+        if len(parts) >= 2:
+            try:
+                graph_store.delete_relation(parts[0], parts[1])
+                deleted_relations += 1
+            except Exception:
+                pass
+
+    deleted_entities = 0
+    ordered_ids = [
+        *run.get("convergenceEntityIds", []),
+        *run.get("synthesisEntityIds", []),
+        *run.get("createdEntityIds", []),
+        *run.get("sourceEntityIds", []),
+    ]
+    for entity_id in ordered_ids:
+        try:
+            graph_store.delete_entity(entity_id)
+            deleted_entities += 1
+        except Exception:
+            pass
+
+    return {
+        "deletedEntities": deleted_entities,
+        "deletedRelations": deleted_relations,
+        "deletedLinks": 0,
+    }
+
+
+# =============================================================================
+# LLM document extraction (LLM-dependent)
+# =============================================================================
+
+
+def _require_extraction_llm() -> Any:
+    """Route through the configured LLM (local or Anthropic); when nothing is
+    configured, raise a typed error. The message names LLM config generally,
+    not the Anthropic key specifically."""
+    client = create_synthesis_client()
+    if client is None:
+        raise ValidationError(
+            "No LLM configured for extraction. Set an `llm` config section "
+            "(provider ollama|mlx|openai|anthropic) or ANTHROPIC_API_KEY."
+        )
+    return client
+
+
+def extract_from_documents(params: ExtractFromDocumentsInput, multi: MultiGraph) -> Doc:
+    if not params.category and not params.document_id and not params.query:
+        raise ValidationError("At least one of category, documentId, or query is required")
+    _require_extraction_llm()
+    from theloom.extraction.pipeline import run_document_extraction
+
+    return run_document_extraction(params, multi, dry_run=params.dry_run or False)
+
+
+def extract_preview(params: ExtractPreviewInput, multi: MultiGraph) -> Doc:
+    if not params.category and not params.document_id and not params.query:
+        raise ValidationError("At least one of category, documentId, or query is required")
+    _require_extraction_llm()
+    from theloom.extraction.pipeline import run_document_extraction
+
+    forwarded = ExtractFromDocumentsInput.model_validate(
+        {
+            **params.model_dump(by_alias=True, exclude_none=True),
+            "maxChunks": params.max_chunks if params.max_chunks is not None else 5,
+            "dryRun": True,
+        }
+    )
+    return run_document_extraction(forwarded, multi, dry_run=True)
+
+
+# OperationError is imported for symmetry with sibling ops modules.
+_ = OperationError

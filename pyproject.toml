@@ -1,0 +1,78 @@
+[project]
+name = "theloom"
+version = "0.1.0"
+description = "The Loom — a knowledge-graph substrate on FalkorDB with a JSON-in/JSON-out CLI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "ISC" }
+# Runtime dependencies. Floors are conservative; uv resolves to current versions.
+# Verified library state is recorded in STACK.md.
+dependencies = [
+  "falkordb", # graph + vector + full-text store client (STACK.md)
+  "pydantic>=2.7", # domain model / single source of truth
+  "typer>=0.12", # CLI framework
+  "rustworkx>=0.18", # in-memory graph algorithms (cycles, centrality, PPR, VF2)
+  "python-graphblas>=2025.2.0", # semiring path algebra
+  "fastembed>=0.8", # ONNX embeddings (nomic-embed-text-v1.5, 768-dim)
+  "instructor>=1.15", # structured, Pydantic-validated LLM outputs
+  "anthropic>=0.40", # Claude API
+  "docling>=2.100", # document ingestion (PDF/DOCX/HTML/MD/…)
+  "sympy>=1.13", # symbolic math
+  "scipy>=1.13", # sparse / numerics
+  "numpy>=1.26", # PCA projection (viz semantic section)
+  "POT>=0.9", # optimal transport (far-analogy sliced-Wasserstein)
+  "tree-sitter>=0.21", # codebase extraction
+  "tree-sitter-python>=0.25.0",
+  "tree-sitter-javascript>=0.25.0",
+  "tree-sitter-typescript>=0.23.2",
+  "tree-sitter-go>=0.25.0",
+  "tree-sitter-rust>=0.24.2",
+  "readability-lxml>=0.8.4.1",
+  "z3-solver>=4.16.0.0",
+]
+
+[project.optional-dependencies]
+viz-umap = ["umap-learn>=0.5"]  # optional UMAP projection for the Semantic Map (PCA is the default)
+viz-serve = ["fastapi>=0.115", "uvicorn>=0.30"]  # optional read-only live server (loom serve)
+
+[project.scripts]
+loom = "theloom.cli.app:main"
+the-loom = "theloom.cli.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["theloom"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "mypy>=1.11",
+  "z3-solver>=4.13",             # optional CEGIS backend
+  "httpx>=0.27",                 # fastapi.testclient.TestClient transport (viz-serve API tests)
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# .claude/ holds Claude Code tooling (agents, skills, harness templates), not the package.
+extend-exclude = [".claude"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["theloom"]
+
+[[tool.mypy.overrides]]
+module = ["falkordb.*", "sympy.*", "constraint.*", "z3.*", "tree_sitter_typescript.*", "umap.*", "fastapi.*", "uvicorn.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

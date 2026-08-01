@@ -1,0 +1,527 @@
+/* Overview dashboard — quiet elevated cards on the plane, reading the same token
+ * layer as the Explorer. Tiles and meters use mono tabular figures; distribution
+ * bars carry the entity/edge colours; magnitude fills use the brand accent; the
+ * health rows use the reserved status tokens with an icon + label. Both themes
+ * come free from the token layer. */
+
+.overview {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  background: var(--color-plane);
+}
+
+.overview:focus-visible {
+  outline-offset: -2px;
+}
+
+.overview__inner {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-5) var(--space-8);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* ---- Header --------------------------------------------------------------- */
+.overview__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: calc(-1 * var(--space-1));
+}
+
+.overview__headtext {
+  min-width: 0;
+}
+
+.overview__title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text);
+}
+
+.overview__lede {
+  margin: 0;
+  max-width: 46rem;
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  color: var(--color-text-2);
+}
+
+/* The dashboard's export path: arbitrary DOM cannot be rasterized offline
+ * without a heavy dependency, so Print/Save-as-PDF is the WYSIWYG route here —
+ * the @media print block below strips the app chrome and lays the cards out
+ * for paper. */
+.overview__print {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-2);
+  cursor: pointer;
+  transition:
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+
+.overview__print:hover {
+  color: var(--color-text);
+  border-color: var(--color-border-strong);
+}
+
+/* ---- Headline tiles ------------------------------------------------------- */
+.overview__tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-3);
+}
+
+.ov-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.ov-tile__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--tracking-tight);
+  line-height: 1.1;
+  color: var(--color-text);
+}
+
+.ov-tile__label {
+  font-size: var(--text-xs);
+  color: var(--color-text-2);
+}
+
+.ov-tile__hint {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-3);
+}
+
+/* ---- Panel grid ----------------------------------------------------------- */
+.overview__panels {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--space-4);
+}
+
+.overview__side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+@media (min-width: 880px) {
+  .overview__panels {
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+    align-items: start;
+  }
+}
+
+/* ---- Card ----------------------------------------------------------------- */
+.ov-card {
+  padding: var(--space-5);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.ov-card__title {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text);
+}
+
+.ov-card__eyebrow {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--color-text-3);
+}
+
+.ov-card__block + .ov-card__block {
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+.ov-empty {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-3);
+}
+
+/* ---- Distribution bars ---------------------------------------------------- */
+.ov-bars {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ov-bar {
+  display: grid;
+  grid-template-columns: minmax(4.5rem, 7rem) 1fr 2.25rem;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.ov-bar__key {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ov-bar__swatch {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px var(--color-border-strong) inset;
+}
+
+.ov-bar__swatch--edge {
+  border-radius: var(--radius-pill);
+}
+
+.ov-bar__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  text-transform: capitalize;
+  color: var(--color-text-2);
+}
+
+.ov-bar__track {
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  overflow: hidden;
+}
+
+.ov-bar__fill {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  border-radius: var(--radius-pill);
+}
+
+.ov-bar__value {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--color-text-3);
+}
+
+/* ---- Relation-family legend ----------------------------------------------- */
+.ov-legend {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+
+.ov-legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-2xs);
+  text-transform: capitalize;
+  color: var(--color-text-3);
+}
+
+.ov-legend__swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+}
+
+/* ---- Graph health --------------------------------------------------------- */
+.ov-health {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ov-health__row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+}
+
+.ov-health__row + .ov-health__row {
+  border-top: 1px solid var(--color-border);
+}
+
+.ov-health__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+}
+
+.ov-health__row--good .ov-health__icon {
+  color: var(--color-good);
+}
+
+.ov-health__row--warning .ov-health__icon {
+  color: var(--color-warning);
+}
+
+.ov-health__row--serious .ov-health__icon {
+  color: var(--color-serious);
+}
+
+.ov-health__row--info .ov-health__icon {
+  color: var(--color-text-3);
+}
+
+.ov-health__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.ov-health__label {
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+
+.ov-health__hint {
+  font-size: var(--text-2xs);
+  color: var(--color-text-3);
+}
+
+.ov-health__count {
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text);
+}
+
+/* ---- Confidence histogram ------------------------------------------------- */
+.ov-hist {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 96px;
+}
+
+.ov-hist__bin {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+}
+
+.ov-hist__bar {
+  width: 100%;
+  min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: var(--color-accent);
+}
+
+.ov-hist__axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-3);
+}
+
+.ov-hist__foot {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-2xs);
+  color: var(--color-text-3);
+}
+
+/* ---- Most central --------------------------------------------------------- */
+.ov-central {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ov-central__row {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1.6fr) minmax(6rem, 1fr) 3rem;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.ov-central__row:hover {
+  background: var(--color-surface-2);
+}
+
+.ov-central__rank {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--color-text-3);
+}
+
+.ov-central__ident {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.ov-central__dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 0 0 1px var(--color-border-strong) inset;
+}
+
+.ov-central__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+
+.ov-central__type {
+  flex: none;
+  font-size: var(--text-2xs);
+  text-transform: capitalize;
+  color: var(--color-text-3);
+}
+
+.ov-central__track {
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-2);
+  overflow: hidden;
+}
+
+.ov-central__fill {
+  display: block;
+  height: 100%;
+  min-width: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+}
+
+.ov-central__score {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  color: var(--color-text-2);
+}
+
+/* ---- Narrow viewports ----------------------------------------------------- */
+@media (max-width: 720px) {
+  .overview__inner {
+    padding: var(--space-5) var(--space-4) var(--space-6);
+  }
+
+  .ov-central__row {
+    grid-template-columns: 1.5rem 1fr 3rem;
+  }
+
+  .ov-central__track {
+    display: none;
+  }
+}
+
+/* ---- Print: the DOM view's own WYSIWYG export path -------------------------
+ * Arbitrary DOM can't be rasterized offline without a heavy dependency, so
+ * Print/Save-as-PDF (the `.overview__print` button) is the Overview's export
+ * path. Two things need undoing for it to read as a clean document rather
+ * than a cropped screenshot: the app chrome (header/tabs/ribbon — none of it
+ * is Overview content), and the SPA's single-viewport layout — `.app__main`
+ * is `overflow: hidden` and `.overview` is `position: absolute; inset: 0;
+ * overflow-y: auto`, both sized to exactly one screen, which would otherwise
+ * crop the dashboard to one page instead of letting it flow across as many as
+ * it needs. */
+@media print {
+  .app__header,
+  .ribbon,
+  .overview__print {
+    display: none !important;
+  }
+
+  .app,
+  .app__main {
+    height: auto;
+    overflow: visible;
+  }
+
+  .overview {
+    position: static;
+    overflow: visible;
+    background: #ffffff;
+  }
+
+  .overview__inner {
+    max-width: none;
+    padding: 0;
+  }
+
+  .ov-tile,
+  .ov-card {
+    border: 1px solid #ccc;
+    box-shadow: none;
+    break-inside: avoid;
+  }
+
+  .overview__panels {
+    break-inside: avoid;
+  }
+}

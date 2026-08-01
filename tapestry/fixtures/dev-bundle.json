@@ -1,0 +1,1512 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "graph": "tapestry-dev",
+    "scope": "full",
+    "generatedAt": "2026-07-11T22:38:05.537Z",
+    "entityCount": 10,
+    "relationCount": 6,
+    "sections": [
+      "analytics",
+      "temporal",
+      "semantic"
+    ]
+  },
+  "entities": [
+    {
+      "id": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+      "name": "Population",
+      "entityType": "variable",
+      "observations": [
+        "Number of individuals in the regional herd population.",
+        "Tracked quarterly by the wildlife survey."
+      ],
+      "created_at": "2026-07-11T17:48:06.737Z",
+      "updated_at": "2026-07-11T17:49:24.587Z",
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "1b752ed2ec300e9ba337a01ba9fb242c2238491cdebf1d255d5948b27e978a42",
+      "lastEmbeddedAt": "2026-07-11T17:49:24.585Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+      "name": "Resource Consumption",
+      "entityType": "variable",
+      "observations": [
+        "Rate at which the population consumes forage and water.",
+        "Rises with herd size."
+      ],
+      "created_at": "2026-07-11T17:48:16.604Z",
+      "updated_at": "2026-07-11T17:49:24.611Z",
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "252db5bdc19f9f5d2d7f00760fb756dc06c9f91d67bdcf552e31b93fff9bfbbf",
+      "lastEmbeddedAt": "2026-07-11T17:49:24.610Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "c9685945-f0a5-4b16-845b-602912e962dc",
+      "name": "Resource Scarcity",
+      "entityType": "variable",
+      "observations": [
+        "Depletion level of forage and water relative to demand.",
+        "Drives density-dependent mortality."
+      ],
+      "created_at": "2026-07-11T17:48:18.044Z",
+      "updated_at": "2026-07-11T17:49:24.632Z",
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "f0f9245604d377764b0e01695f1c4d07a41fe3e206e1692bf9937b83c3e6192b",
+      "lastEmbeddedAt": "2026-07-11T17:49:24.630Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "dc09712d-6bd5-41a3-9018-9448526e1865",
+      "name": "Scarcity Reduces Growth",
+      "entityType": "claim",
+      "observations": [
+        "Resource scarcity measurably suppresses population growth rate in the following season."
+      ],
+      "created_at": "2026-07-11T17:48:33.104Z",
+      "updated_at": "2026-07-11T17:49:24.651Z",
+      "confidence": {
+        "score": 0.75,
+        "basis": "multiple_sources",
+        "lastEvaluated": "2026-07-11T17:48:33.104Z"
+      },
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "997b5ecb4d5d85d46c5be3904de41c25a29f363eb52953f3e0413bbe978cd099",
+      "lastEmbeddedAt": "2026-07-11T17:49:24.650Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "1dc898ad-d497-455d-9621-785678b5d3c6",
+      "name": "Regional Survey Evidence",
+      "entityType": "evidence",
+      "observations": [
+        "Five-year wildlife survey correlates scarcity index with reduced fawn recruitment."
+      ],
+      "created_at": "2026-07-11T17:48:34.427Z",
+      "updated_at": "2026-07-11T17:49:24.676Z",
+      "confidence": {
+        "score": 0.9,
+        "basis": "peer_reviewed",
+        "lastEvaluated": "2026-07-11T17:48:34.427Z"
+      },
+      "provenance": {
+        "sourceType": "document",
+        "sourceId": null,
+        "externalRef": "survey-2025-annual-report",
+        "extractionDate": "2026-07-11T17:48:34.427Z",
+        "extractor": "field-biology-team",
+        "extractionMethod": "manual"
+      },
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "405e008e331abde4c2e8bc9b4959d92511cb2d5c9601a53f5fd48024fac81fa7",
+      "lastEmbeddedAt": "2026-07-11T17:49:24.675Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+      "name": "Growth Continues Unabated",
+      "entityType": "claim",
+      "observations": [
+        "Population growth is unaffected by resource scarcity in this range."
+      ],
+      "created_at": "2026-07-11T17:48:35.764Z",
+      "updated_at": "2026-07-11T20:12:03.593Z",
+      "confidence": {
+        "score": 0.3,
+        "basis": "speculation",
+        "lastEvaluated": "2026-07-11T17:48:35.764Z"
+      },
+      "status": "deprecated",
+      "statusReason": "outdated_knowledge",
+      "statusChangedAt": "2026-07-11T20:12:03.592Z",
+      "version": 2,
+      "previousVersionId": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+      "changeType": "status_changed",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "b795ec78ee81354d931c4b74a8f7483d9a3166ee2c4e676cd3b7aeba8dc69895",
+      "lastEmbeddedAt": "2026-07-11T17:49:24.695Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "875fa06d-50ce-46eb-8c59-550c682f21e2",
+      "name": "Feedback transparency",
+      "entityType": "leverage_point",
+      "observations": [
+        "level: 6",
+        "The strength of the balancing signal depends on how visible resource depletion is."
+      ],
+      "created_at": "2026-07-11T20:11:36.993Z",
+      "updated_at": "2026-07-11T20:11:36.993Z",
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null
+    },
+    {
+      "id": "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e",
+      "name": "Gradient descent optimization method",
+      "entityType": "concept",
+      "observations": [
+        "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+      ],
+      "created_at": "2026-07-11T22:37:43.449Z",
+      "updated_at": "2026-07-11T22:37:44.968Z",
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "e43916aca8ffd4f7fa976071bd9a979f1292e60ccf5196339615ebd3747bb491",
+      "lastEmbeddedAt": "2026-07-11T22:37:44.966Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "c878c022-16b7-43bf-b235-d79a4450f745",
+      "name": "Gradient descent optimization",
+      "entityType": "concept",
+      "observations": [
+        "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+      ],
+      "created_at": "2026-07-11T22:37:40.512Z",
+      "updated_at": "2026-07-11T22:37:42.043Z",
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "6deb0996acf13ccca32158a1f5eba7e110fd36ce44266659ebbd369f6365d9bb",
+      "lastEmbeddedAt": "2026-07-11T22:37:42.042Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    },
+    {
+      "id": "789dc948-379d-4e41-b175-b00846c08188",
+      "name": "Gradient descent optimization procedure",
+      "entityType": "concept",
+      "observations": [
+        "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+      ],
+      "created_at": "2026-07-11T22:37:46.324Z",
+      "updated_at": "2026-07-11T22:37:47.875Z",
+      "version": 1,
+      "previousVersionId": null,
+      "changeType": "created",
+      "changeReason": null,
+      "embeddingStatus": "completed",
+      "contentHash": "b10aadd99d6f69f2aac80581cce76fe791607bd893f0a191e4215566c4ec949e",
+      "lastEmbeddedAt": "2026-07-11T22:37:47.874Z",
+      "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+    }
+  ],
+  "relations": [
+    {
+      "id": "a7f87d5e-52a8-419c-a494-b1a62713f8e6",
+      "from": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+      "to": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+      "relationType": "causes",
+      "polarity": "+",
+      "strength": "strong",
+      "evidence": "Larger herds consume proportionally more forage and water.",
+      "created_at": "2026-07-11T17:49:02.393Z",
+      "updated_at": "2026-07-11T17:49:02.393Z"
+    },
+    {
+      "id": "bbce3e49-7ea6-427a-af5e-f0b53fb586e7",
+      "from": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+      "to": "c9685945-f0a5-4b16-845b-602912e962dc",
+      "relationType": "causes",
+      "polarity": "+",
+      "strength": "strong",
+      "evidence": "Sustained high consumption depletes standing forage stock.",
+      "created_at": "2026-07-11T17:49:03.915Z",
+      "updated_at": "2026-07-11T17:49:03.915Z"
+    },
+    {
+      "id": "e15c1539-da16-4b24-bf2e-53108bf21e3b",
+      "from": "c9685945-f0a5-4b16-845b-602912e962dc",
+      "to": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+      "relationType": "inhibits",
+      "polarity": "-",
+      "strength": "moderate",
+      "evidence": "Scarcity suppresses fawn survival, closing the balancing loop.",
+      "created_at": "2026-07-11T17:49:05.226Z",
+      "updated_at": "2026-07-11T17:49:05.226Z"
+    },
+    {
+      "id": "4b4096c4-498a-474a-b247-ecf45b8d5ca3",
+      "from": "1dc898ad-d497-455d-9621-785678b5d3c6",
+      "to": "dc09712d-6bd5-41a3-9018-9448526e1865",
+      "relationType": "supports",
+      "polarity": null,
+      "strength": "strong",
+      "evidence": "Survey data directly backs the claim.",
+      "created_at": "2026-07-11T17:49:14.096Z",
+      "updated_at": "2026-07-11T17:49:14.096Z"
+    },
+    {
+      "id": "5256f497-e61b-4327-952f-0b3c276fccd0",
+      "from": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+      "to": "dc09712d-6bd5-41a3-9018-9448526e1865",
+      "relationType": "contradicts",
+      "polarity": null,
+      "strength": "weak",
+      "evidence": "Opposing claim lacks the survey's empirical backing.",
+      "created_at": "2026-07-11T17:49:15.446Z",
+      "updated_at": "2026-07-11T17:49:15.446Z"
+    },
+    {
+      "id": "4ec57805-b90b-44ab-bc95-f4eb05a46b19",
+      "from": "875fa06d-50ce-46eb-8c59-550c682f21e2",
+      "to": "c9685945-f0a5-4b16-845b-602912e962dc",
+      "relationType": "part_of",
+      "polarity": null,
+      "strength": "strong",
+      "evidence": "Leverage analysis",
+      "created_at": "2026-07-11T20:11:57.552Z",
+      "updated_at": "2026-07-11T20:11:57.552Z"
+    }
+  ],
+  "analytics": {
+    "centrality": {
+      "degree": {
+        "c9685945-f0a5-4b16-845b-602912e962dc": 0.375,
+        "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6": 0.25,
+        "452d946e-d688-46ba-9ac6-3c19bdacb4b1": 0.25,
+        "dc09712d-6bd5-41a3-9018-9448526e1865": 0.125,
+        "1dc898ad-d497-455d-9621-785678b5d3c6": 0.125,
+        "875fa06d-50ce-46eb-8c59-550c682f21e2": 0.125,
+        "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e": 0.0,
+        "c878c022-16b7-43bf-b235-d79a4450f745": 0.0,
+        "789dc948-379d-4e41-b175-b00846c08188": 0.0
+      },
+      "betweenness": {
+        "c9685945-f0a5-4b16-845b-602912e962dc": 0.05357142857142857,
+        "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6": 0.03571428571428571,
+        "452d946e-d688-46ba-9ac6-3c19bdacb4b1": 0.017857142857142856,
+        "dc09712d-6bd5-41a3-9018-9448526e1865": 0.0,
+        "1dc898ad-d497-455d-9621-785678b5d3c6": 0.0,
+        "875fa06d-50ce-46eb-8c59-550c682f21e2": 0.0,
+        "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e": 0.0,
+        "c878c022-16b7-43bf-b235-d79a4450f745": 0.0,
+        "789dc948-379d-4e41-b175-b00846c08188": 0.0
+      },
+      "pagerank": {
+        "c9685945-f0a5-4b16-845b-602912e962dc": 0.27276580188140453,
+        "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6": 0.2626069639945429,
+        "452d946e-d688-46ba-9ac6-3c19bdacb4b1": 0.25396603473912166,
+        "dc09712d-6bd5-41a3-9018-9448526e1865": 0.05689390056381344,
+        "1dc898ad-d497-455d-9621-785678b5d3c6": 0.03075345976422348,
+        "875fa06d-50ce-46eb-8c59-550c682f21e2": 0.03075345976422348,
+        "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e": 0.03075345976422348,
+        "c878c022-16b7-43bf-b235-d79a4450f745": 0.03075345976422348,
+        "789dc948-379d-4e41-b175-b00846c08188": 0.03075345976422348
+      }
+    },
+    "components": [
+      [
+        "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+        "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+        "c9685945-f0a5-4b16-845b-602912e962dc",
+        "875fa06d-50ce-46eb-8c59-550c682f21e2"
+      ],
+      [
+        "dc09712d-6bd5-41a3-9018-9448526e1865",
+        "1dc898ad-d497-455d-9621-785678b5d3c6"
+      ],
+      [
+        "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e"
+      ],
+      [
+        "c878c022-16b7-43bf-b235-d79a4450f745"
+      ],
+      [
+        "789dc948-379d-4e41-b175-b00846c08188"
+      ]
+    ],
+    "loops": [
+      {
+        "id": null,
+        "name": "Population-Resource Consumption Balancing Loop",
+        "classification": "balancing",
+        "netPolarity": "-",
+        "memberCount": 3,
+        "path": [
+          "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+          "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+          "c9685945-f0a5-4b16-845b-602912e962dc",
+          "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6"
+        ],
+        "memberIds": [
+          "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+          "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+          "c9685945-f0a5-4b16-845b-602912e962dc"
+        ],
+        "persisted": false
+      }
+    ],
+    "leveragePoints": [
+      {
+        "id": "875fa06d-50ce-46eb-8c59-550c682f21e2",
+        "name": "Feedback transparency",
+        "entityType": "leverage_point",
+        "observations": [
+          "level: 6",
+          "The strength of the balancing signal depends on how visible resource depletion is."
+        ],
+        "created_at": "2026-07-11T20:11:36.993Z",
+        "updated_at": "2026-07-11T20:11:36.993Z",
+        "version": 1,
+        "previousVersionId": null,
+        "changeType": "created",
+        "changeReason": null,
+        "_metadata": {
+          "level": 6,
+          "depthCategory": "design",
+          "meadowsName": "Information flows",
+          "targetIds": [],
+          "intervention": null,
+          "rationale": null
+        }
+      }
+    ],
+    "bridges": []
+  },
+  "temporal": {
+    "events": [
+      {
+        "id": "1783792086735-0",
+        "at": "2026-07-11T17:48:06.735000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Population",
+            "entityType": "variable",
+            "observations": [
+              "Number of individuals in the regional herd population.",
+              "Tracked quarterly by the wildlife survey."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+            "created_at": "2026-07-11T17:48:06.737Z",
+            "updated_at": "2026-07-11T17:48:06.737Z"
+          }
+        }
+      },
+      {
+        "id": "1783792096606-0",
+        "at": "2026-07-11T17:48:16.606000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Resource Consumption",
+            "entityType": "variable",
+            "observations": [
+              "Rate at which the population consumes forage and water.",
+              "Rises with herd size."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+            "created_at": "2026-07-11T17:48:16.604Z",
+            "updated_at": "2026-07-11T17:48:16.604Z"
+          }
+        }
+      },
+      {
+        "id": "1783792098046-0",
+        "at": "2026-07-11T17:48:18.046000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Resource Scarcity",
+            "entityType": "variable",
+            "observations": [
+              "Depletion level of forage and water relative to demand.",
+              "Drives density-dependent mortality."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "c9685945-f0a5-4b16-845b-602912e962dc",
+            "created_at": "2026-07-11T17:48:18.044Z",
+            "updated_at": "2026-07-11T17:48:18.044Z"
+          }
+        }
+      },
+      {
+        "id": "1783792113106-0",
+        "at": "2026-07-11T17:48:33.106000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Scarcity Reduces Growth",
+            "entityType": "claim",
+            "observations": [
+              "Resource scarcity measurably suppresses population growth rate in the following season."
+            ],
+            "confidence": {
+              "score": 0.75,
+              "basis": "multiple_sources",
+              "lastEvaluated": "2026-07-11T17:48:33.104Z"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "dc09712d-6bd5-41a3-9018-9448526e1865",
+            "created_at": "2026-07-11T17:48:33.104Z",
+            "updated_at": "2026-07-11T17:48:33.104Z"
+          }
+        }
+      },
+      {
+        "id": "1783792114429-0",
+        "at": "2026-07-11T17:48:34.429000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Regional Survey Evidence",
+            "entityType": "evidence",
+            "observations": [
+              "Five-year wildlife survey correlates scarcity index with reduced fawn recruitment."
+            ],
+            "confidence": {
+              "score": 0.9,
+              "basis": "peer_reviewed",
+              "lastEvaluated": "2026-07-11T17:48:34.427Z"
+            },
+            "provenance": {
+              "sourceType": "document",
+              "sourceId": null,
+              "externalRef": "survey-2025-annual-report",
+              "extractionDate": "2026-07-11T17:48:34.427Z",
+              "extractor": "field-biology-team",
+              "extractionMethod": "manual"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "1dc898ad-d497-455d-9621-785678b5d3c6",
+            "created_at": "2026-07-11T17:48:34.427Z",
+            "updated_at": "2026-07-11T17:48:34.427Z"
+          }
+        }
+      },
+      {
+        "id": "1783792115766-0",
+        "at": "2026-07-11T17:48:35.766000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Growth Continues Unabated",
+            "entityType": "claim",
+            "observations": [
+              "Population growth is unaffected by resource scarcity in this range."
+            ],
+            "confidence": {
+              "score": 0.3,
+              "basis": "speculation",
+              "lastEvaluated": "2026-07-11T17:48:35.764Z"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+            "created_at": "2026-07-11T17:48:35.764Z",
+            "updated_at": "2026-07-11T17:48:35.764Z"
+          }
+        }
+      },
+      {
+        "id": "1783792142396-0",
+        "at": "2026-07-11T17:49:02.396000+00:00",
+        "type": "relation_created",
+        "payload": {
+          "relation": {
+            "from": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+            "to": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+            "relationType": "causes",
+            "polarity": "+",
+            "strength": "strong",
+            "evidence": "Larger herds consume proportionally more forage and water.",
+            "id": "a7f87d5e-52a8-419c-a494-b1a62713f8e6",
+            "created_at": "2026-07-11T17:49:02.393Z",
+            "updated_at": "2026-07-11T17:49:02.393Z"
+          }
+        }
+      },
+      {
+        "id": "1783792143917-0",
+        "at": "2026-07-11T17:49:03.917000+00:00",
+        "type": "relation_created",
+        "payload": {
+          "relation": {
+            "from": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+            "to": "c9685945-f0a5-4b16-845b-602912e962dc",
+            "relationType": "causes",
+            "polarity": "+",
+            "strength": "strong",
+            "evidence": "Sustained high consumption depletes standing forage stock.",
+            "id": "bbce3e49-7ea6-427a-af5e-f0b53fb586e7",
+            "created_at": "2026-07-11T17:49:03.915Z",
+            "updated_at": "2026-07-11T17:49:03.915Z"
+          }
+        }
+      },
+      {
+        "id": "1783792145228-0",
+        "at": "2026-07-11T17:49:05.228000+00:00",
+        "type": "relation_created",
+        "payload": {
+          "relation": {
+            "from": "c9685945-f0a5-4b16-845b-602912e962dc",
+            "to": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+            "relationType": "inhibits",
+            "polarity": "-",
+            "strength": "moderate",
+            "evidence": "Scarcity suppresses fawn survival, closing the balancing loop.",
+            "id": "e15c1539-da16-4b24-bf2e-53108bf21e3b",
+            "created_at": "2026-07-11T17:49:05.226Z",
+            "updated_at": "2026-07-11T17:49:05.226Z"
+          }
+        }
+      },
+      {
+        "id": "1783792154098-0",
+        "at": "2026-07-11T17:49:14.098000+00:00",
+        "type": "relation_created",
+        "payload": {
+          "relation": {
+            "from": "1dc898ad-d497-455d-9621-785678b5d3c6",
+            "to": "dc09712d-6bd5-41a3-9018-9448526e1865",
+            "relationType": "supports",
+            "polarity": null,
+            "strength": "strong",
+            "evidence": "Survey data directly backs the claim.",
+            "id": "4b4096c4-498a-474a-b247-ecf45b8d5ca3",
+            "created_at": "2026-07-11T17:49:14.096Z",
+            "updated_at": "2026-07-11T17:49:14.096Z"
+          }
+        }
+      },
+      {
+        "id": "1783792155449-0",
+        "at": "2026-07-11T17:49:15.449000+00:00",
+        "type": "relation_created",
+        "payload": {
+          "relation": {
+            "from": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+            "to": "dc09712d-6bd5-41a3-9018-9448526e1865",
+            "relationType": "contradicts",
+            "polarity": null,
+            "strength": "weak",
+            "evidence": "Opposing claim lacks the survey's empirical backing.",
+            "id": "5256f497-e61b-4327-952f-0b3c276fccd0",
+            "created_at": "2026-07-11T17:49:15.446Z",
+            "updated_at": "2026-07-11T17:49:15.446Z"
+          }
+        }
+      },
+      {
+        "id": "1783792164590-0",
+        "at": "2026-07-11T17:49:24.590000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Population",
+            "entityType": "variable",
+            "observations": [
+              "Number of individuals in the regional herd population.",
+              "Tracked quarterly by the wildlife survey."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+            "created_at": "2026-07-11T17:48:06.737Z",
+            "updated_at": "2026-07-11T17:49:24.587Z",
+            "embeddingStatus": "completed",
+            "contentHash": "1b752ed2ec300e9ba337a01ba9fb242c2238491cdebf1d255d5948b27e978a42",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.585Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Population",
+            "entityType": "variable",
+            "observations": [
+              "Number of individuals in the regional herd population.",
+              "Tracked quarterly by the wildlife survey."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6",
+            "created_at": "2026-07-11T17:48:06.737Z",
+            "updated_at": "2026-07-11T17:48:06.737Z"
+          }
+        }
+      },
+      {
+        "id": "1783792164612-0",
+        "at": "2026-07-11T17:49:24.612000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Resource Consumption",
+            "entityType": "variable",
+            "observations": [
+              "Rate at which the population consumes forage and water.",
+              "Rises with herd size."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+            "created_at": "2026-07-11T17:48:16.604Z",
+            "updated_at": "2026-07-11T17:49:24.611Z",
+            "embeddingStatus": "completed",
+            "contentHash": "252db5bdc19f9f5d2d7f00760fb756dc06c9f91d67bdcf552e31b93fff9bfbbf",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.610Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Resource Consumption",
+            "entityType": "variable",
+            "observations": [
+              "Rate at which the population consumes forage and water.",
+              "Rises with herd size."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "452d946e-d688-46ba-9ac6-3c19bdacb4b1",
+            "created_at": "2026-07-11T17:48:16.604Z",
+            "updated_at": "2026-07-11T17:48:16.604Z"
+          }
+        }
+      },
+      {
+        "id": "1783792164634-0",
+        "at": "2026-07-11T17:49:24.634000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Resource Scarcity",
+            "entityType": "variable",
+            "observations": [
+              "Depletion level of forage and water relative to demand.",
+              "Drives density-dependent mortality."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "c9685945-f0a5-4b16-845b-602912e962dc",
+            "created_at": "2026-07-11T17:48:18.044Z",
+            "updated_at": "2026-07-11T17:49:24.632Z",
+            "embeddingStatus": "completed",
+            "contentHash": "f0f9245604d377764b0e01695f1c4d07a41fe3e206e1692bf9937b83c3e6192b",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.630Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Resource Scarcity",
+            "entityType": "variable",
+            "observations": [
+              "Depletion level of forage and water relative to demand.",
+              "Drives density-dependent mortality."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "c9685945-f0a5-4b16-845b-602912e962dc",
+            "created_at": "2026-07-11T17:48:18.044Z",
+            "updated_at": "2026-07-11T17:48:18.044Z"
+          }
+        }
+      },
+      {
+        "id": "1783792164653-0",
+        "at": "2026-07-11T17:49:24.653000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Scarcity Reduces Growth",
+            "entityType": "claim",
+            "observations": [
+              "Resource scarcity measurably suppresses population growth rate in the following season."
+            ],
+            "confidence": {
+              "score": 0.75,
+              "basis": "multiple_sources",
+              "lastEvaluated": "2026-07-11T17:48:33.104Z"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "dc09712d-6bd5-41a3-9018-9448526e1865",
+            "created_at": "2026-07-11T17:48:33.104Z",
+            "updated_at": "2026-07-11T17:49:24.651Z",
+            "embeddingStatus": "completed",
+            "contentHash": "997b5ecb4d5d85d46c5be3904de41c25a29f363eb52953f3e0413bbe978cd099",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.650Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Scarcity Reduces Growth",
+            "entityType": "claim",
+            "observations": [
+              "Resource scarcity measurably suppresses population growth rate in the following season."
+            ],
+            "confidence": {
+              "score": 0.75,
+              "basis": "multiple_sources",
+              "lastEvaluated": "2026-07-11T17:48:33.104Z"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "dc09712d-6bd5-41a3-9018-9448526e1865",
+            "created_at": "2026-07-11T17:48:33.104Z",
+            "updated_at": "2026-07-11T17:48:33.104Z"
+          }
+        }
+      },
+      {
+        "id": "1783792164678-0",
+        "at": "2026-07-11T17:49:24.678000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Regional Survey Evidence",
+            "entityType": "evidence",
+            "observations": [
+              "Five-year wildlife survey correlates scarcity index with reduced fawn recruitment."
+            ],
+            "confidence": {
+              "score": 0.9,
+              "basis": "peer_reviewed",
+              "lastEvaluated": "2026-07-11T17:48:34.427Z"
+            },
+            "provenance": {
+              "sourceType": "document",
+              "sourceId": null,
+              "externalRef": "survey-2025-annual-report",
+              "extractionDate": "2026-07-11T17:48:34.427Z",
+              "extractor": "field-biology-team",
+              "extractionMethod": "manual"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "1dc898ad-d497-455d-9621-785678b5d3c6",
+            "created_at": "2026-07-11T17:48:34.427Z",
+            "updated_at": "2026-07-11T17:49:24.676Z",
+            "embeddingStatus": "completed",
+            "contentHash": "405e008e331abde4c2e8bc9b4959d92511cb2d5c9601a53f5fd48024fac81fa7",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.675Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Regional Survey Evidence",
+            "entityType": "evidence",
+            "observations": [
+              "Five-year wildlife survey correlates scarcity index with reduced fawn recruitment."
+            ],
+            "confidence": {
+              "score": 0.9,
+              "basis": "peer_reviewed",
+              "lastEvaluated": "2026-07-11T17:48:34.427Z"
+            },
+            "provenance": {
+              "sourceType": "document",
+              "sourceId": null,
+              "externalRef": "survey-2025-annual-report",
+              "extractionDate": "2026-07-11T17:48:34.427Z",
+              "extractor": "field-biology-team",
+              "extractionMethod": "manual"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "1dc898ad-d497-455d-9621-785678b5d3c6",
+            "created_at": "2026-07-11T17:48:34.427Z",
+            "updated_at": "2026-07-11T17:48:34.427Z"
+          }
+        }
+      },
+      {
+        "id": "1783792164697-0",
+        "at": "2026-07-11T17:49:24.697000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Growth Continues Unabated",
+            "entityType": "claim",
+            "observations": [
+              "Population growth is unaffected by resource scarcity in this range."
+            ],
+            "confidence": {
+              "score": 0.3,
+              "basis": "speculation",
+              "lastEvaluated": "2026-07-11T17:48:35.764Z"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+            "created_at": "2026-07-11T17:48:35.764Z",
+            "updated_at": "2026-07-11T17:49:24.695Z",
+            "embeddingStatus": "completed",
+            "contentHash": "b795ec78ee81354d931c4b74a8f7483d9a3166ee2c4e676cd3b7aeba8dc69895",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.695Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Growth Continues Unabated",
+            "entityType": "claim",
+            "observations": [
+              "Population growth is unaffected by resource scarcity in this range."
+            ],
+            "confidence": {
+              "score": 0.3,
+              "basis": "speculation",
+              "lastEvaluated": "2026-07-11T17:48:35.764Z"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+            "created_at": "2026-07-11T17:48:35.764Z",
+            "updated_at": "2026-07-11T17:48:35.764Z"
+          }
+        }
+      },
+      {
+        "id": "1783800696994-0",
+        "at": "2026-07-11T20:11:36.994000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Feedback transparency",
+            "entityType": "leverage_point",
+            "observations": [
+              "level: 6",
+              "The strength of the balancing signal depends on how visible resource depletion is."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "875fa06d-50ce-46eb-8c59-550c682f21e2",
+            "created_at": "2026-07-11T20:11:36.993Z",
+            "updated_at": "2026-07-11T20:11:36.993Z"
+          }
+        }
+      },
+      {
+        "id": "1783800717555-0",
+        "at": "2026-07-11T20:11:57.555000+00:00",
+        "type": "relation_created",
+        "payload": {
+          "relation": {
+            "from": "875fa06d-50ce-46eb-8c59-550c682f21e2",
+            "to": "c9685945-f0a5-4b16-845b-602912e962dc",
+            "relationType": "part_of",
+            "polarity": null,
+            "strength": "strong",
+            "evidence": "Leverage analysis",
+            "id": "4ec57805-b90b-44ab-bc95-f4eb05a46b19",
+            "created_at": "2026-07-11T20:11:57.552Z",
+            "updated_at": "2026-07-11T20:11:57.552Z"
+          }
+        }
+      },
+      {
+        "id": "1783800723595-0",
+        "at": "2026-07-11T20:12:03.595000+00:00",
+        "type": "entity_status_changed",
+        "payload": {
+          "entity": {
+            "name": "Growth Continues Unabated",
+            "entityType": "claim",
+            "observations": [
+              "Population growth is unaffected by resource scarcity in this range."
+            ],
+            "confidence": {
+              "score": 0.3,
+              "basis": "speculation",
+              "lastEvaluated": "2026-07-11T17:48:35.764Z"
+            },
+            "version": 2,
+            "previousVersionId": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+            "changeType": "status_changed",
+            "changeReason": null,
+            "id": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+            "created_at": "2026-07-11T17:48:35.764Z",
+            "updated_at": "2026-07-11T20:12:03.593Z",
+            "embeddingStatus": "completed",
+            "contentHash": "b795ec78ee81354d931c4b74a8f7483d9a3166ee2c4e676cd3b7aeba8dc69895",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.695Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5",
+            "status": "deprecated",
+            "statusChangedAt": "2026-07-11T20:12:03.592Z",
+            "statusReason": "outdated_knowledge"
+          },
+          "previous": {
+            "name": "Growth Continues Unabated",
+            "entityType": "claim",
+            "observations": [
+              "Population growth is unaffected by resource scarcity in this range."
+            ],
+            "confidence": {
+              "score": 0.3,
+              "basis": "speculation",
+              "lastEvaluated": "2026-07-11T17:48:35.764Z"
+            },
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "adeeb45d-2e9a-4cfe-bb22-4975df716c69",
+            "created_at": "2026-07-11T17:48:35.764Z",
+            "updated_at": "2026-07-11T17:49:24.695Z",
+            "embeddingStatus": "completed",
+            "contentHash": "b795ec78ee81354d931c4b74a8f7483d9a3166ee2c4e676cd3b7aeba8dc69895",
+            "lastEmbeddedAt": "2026-07-11T17:49:24.695Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          }
+        }
+      },
+      {
+        "id": "1783809238517-0",
+        "at": "2026-07-11T22:33:58.517000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Stochastic gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "77e70fc0-7608-4ac8-a075-0de7babac11a",
+            "created_at": "2026-07-11T22:33:58.516Z",
+            "updated_at": "2026-07-11T22:33:58.516Z"
+          }
+        }
+      },
+      {
+        "id": "1783809240184-0",
+        "at": "2026-07-11T22:34:00.184000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Stochastic gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "77e70fc0-7608-4ac8-a075-0de7babac11a",
+            "created_at": "2026-07-11T22:33:58.516Z",
+            "updated_at": "2026-07-11T22:34:00.181Z",
+            "embeddingStatus": "completed",
+            "contentHash": "e5e35ba064365827198a7fd51bc644748ec8644d310cd9f568444d9e418a6f21",
+            "lastEmbeddedAt": "2026-07-11T22:34:00.179Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Stochastic gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "77e70fc0-7608-4ac8-a075-0de7babac11a",
+            "created_at": "2026-07-11T22:33:58.516Z",
+            "updated_at": "2026-07-11T22:33:58.516Z"
+          }
+        }
+      },
+      {
+        "id": "1783809241360-0",
+        "at": "2026-07-11T22:34:01.360000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Mini-batch gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "51256576-7572-4a75-adc1-f1ee4ceb41b1",
+            "created_at": "2026-07-11T22:34:01.358Z",
+            "updated_at": "2026-07-11T22:34:01.358Z"
+          }
+        }
+      },
+      {
+        "id": "1783809242804-0",
+        "at": "2026-07-11T22:34:02.804000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Mini-batch gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "51256576-7572-4a75-adc1-f1ee4ceb41b1",
+            "created_at": "2026-07-11T22:34:01.358Z",
+            "updated_at": "2026-07-11T22:34:02.801Z",
+            "embeddingStatus": "completed",
+            "contentHash": "9aec2fabb8facee0e3ce560e6bc25da463e0f0b983e4a79c56991b468ba30365",
+            "lastEmbeddedAt": "2026-07-11T22:34:02.799Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Mini-batch gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "51256576-7572-4a75-adc1-f1ee4ceb41b1",
+            "created_at": "2026-07-11T22:34:01.358Z",
+            "updated_at": "2026-07-11T22:34:01.358Z"
+          }
+        }
+      },
+      {
+        "id": "1783809243979-0",
+        "at": "2026-07-11T22:34:03.979000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Backpropagation and the chain rule",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "6ee75d7e-e542-47d8-bf46-8ab1686191dc",
+            "created_at": "2026-07-11T22:34:03.978Z",
+            "updated_at": "2026-07-11T22:34:03.978Z"
+          }
+        }
+      },
+      {
+        "id": "1783809245441-0",
+        "at": "2026-07-11T22:34:05.441000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Backpropagation and the chain rule",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "6ee75d7e-e542-47d8-bf46-8ab1686191dc",
+            "created_at": "2026-07-11T22:34:03.978Z",
+            "updated_at": "2026-07-11T22:34:05.438Z",
+            "embeddingStatus": "completed",
+            "contentHash": "6270067800c475bc02b7c9d0abaf4c8216c2b5e841044f2e8be2f5440c36913d",
+            "lastEmbeddedAt": "2026-07-11T22:34:05.436Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Backpropagation and the chain rule",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "6ee75d7e-e542-47d8-bf46-8ab1686191dc",
+            "created_at": "2026-07-11T22:34:03.978Z",
+            "updated_at": "2026-07-11T22:34:03.978Z"
+          }
+        }
+      },
+      {
+        "id": "1783809314206-0",
+        "at": "2026-07-11T22:35:14.206000+00:00",
+        "type": "entity_deleted",
+        "payload": {
+          "entity": {
+            "name": "Stochastic gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "77e70fc0-7608-4ac8-a075-0de7babac11a",
+            "created_at": "2026-07-11T22:33:58.516Z",
+            "updated_at": "2026-07-11T22:34:00.181Z",
+            "embeddingStatus": "completed",
+            "contentHash": "e5e35ba064365827198a7fd51bc644748ec8644d310cd9f568444d9e418a6f21",
+            "lastEmbeddedAt": "2026-07-11T22:34:00.179Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          }
+        }
+      },
+      {
+        "id": "1783809315339-0",
+        "at": "2026-07-11T22:35:15.339000+00:00",
+        "type": "entity_deleted",
+        "payload": {
+          "entity": {
+            "name": "Mini-batch gradient descent",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "51256576-7572-4a75-adc1-f1ee4ceb41b1",
+            "created_at": "2026-07-11T22:34:01.358Z",
+            "updated_at": "2026-07-11T22:34:02.801Z",
+            "embeddingStatus": "completed",
+            "contentHash": "9aec2fabb8facee0e3ce560e6bc25da463e0f0b983e4a79c56991b468ba30365",
+            "lastEmbeddedAt": "2026-07-11T22:34:02.799Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          }
+        }
+      },
+      {
+        "id": "1783809316479-0",
+        "at": "2026-07-11T22:35:16.479000+00:00",
+        "type": "entity_deleted",
+        "payload": {
+          "entity": {
+            "name": "Backpropagation and the chain rule",
+            "entityType": "concept",
+            "observations": [
+              "A first-order optimization method for training neural networks by following the loss gradient."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "6ee75d7e-e542-47d8-bf46-8ab1686191dc",
+            "created_at": "2026-07-11T22:34:03.978Z",
+            "updated_at": "2026-07-11T22:34:05.438Z",
+            "embeddingStatus": "completed",
+            "contentHash": "6270067800c475bc02b7c9d0abaf4c8216c2b5e841044f2e8be2f5440c36913d",
+            "lastEmbeddedAt": "2026-07-11T22:34:05.436Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          }
+        }
+      },
+      {
+        "id": "1783809460583-0",
+        "at": "2026-07-11T22:37:40.583000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Gradient descent optimization",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "c878c022-16b7-43bf-b235-d79a4450f745",
+            "created_at": "2026-07-11T22:37:40.512Z",
+            "updated_at": "2026-07-11T22:37:40.512Z"
+          }
+        }
+      },
+      {
+        "id": "1783809462115-0",
+        "at": "2026-07-11T22:37:42.115000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Gradient descent optimization",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "c878c022-16b7-43bf-b235-d79a4450f745",
+            "created_at": "2026-07-11T22:37:40.512Z",
+            "updated_at": "2026-07-11T22:37:42.043Z",
+            "embeddingStatus": "completed",
+            "contentHash": "6deb0996acf13ccca32158a1f5eba7e110fd36ce44266659ebbd369f6365d9bb",
+            "lastEmbeddedAt": "2026-07-11T22:37:42.042Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Gradient descent optimization",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "c878c022-16b7-43bf-b235-d79a4450f745",
+            "created_at": "2026-07-11T22:37:40.512Z",
+            "updated_at": "2026-07-11T22:37:40.512Z"
+          }
+        }
+      },
+      {
+        "id": "1783809463521-0",
+        "at": "2026-07-11T22:37:43.521000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Gradient descent optimization method",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e",
+            "created_at": "2026-07-11T22:37:43.449Z",
+            "updated_at": "2026-07-11T22:37:43.449Z"
+          }
+        }
+      },
+      {
+        "id": "1783809465039-0",
+        "at": "2026-07-11T22:37:45.039000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Gradient descent optimization method",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e",
+            "created_at": "2026-07-11T22:37:43.449Z",
+            "updated_at": "2026-07-11T22:37:44.968Z",
+            "embeddingStatus": "completed",
+            "contentHash": "e43916aca8ffd4f7fa976071bd9a979f1292e60ccf5196339615ebd3747bb491",
+            "lastEmbeddedAt": "2026-07-11T22:37:44.966Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Gradient descent optimization method",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e",
+            "created_at": "2026-07-11T22:37:43.449Z",
+            "updated_at": "2026-07-11T22:37:43.449Z"
+          }
+        }
+      },
+      {
+        "id": "1783809466395-0",
+        "at": "2026-07-11T22:37:46.395000+00:00",
+        "type": "entity_created",
+        "payload": {
+          "entity": {
+            "name": "Gradient descent optimization procedure",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "789dc948-379d-4e41-b175-b00846c08188",
+            "created_at": "2026-07-11T22:37:46.324Z",
+            "updated_at": "2026-07-11T22:37:46.324Z"
+          }
+        }
+      },
+      {
+        "id": "1783809467946-0",
+        "at": "2026-07-11T22:37:47.946000+00:00",
+        "type": "entity_updated",
+        "payload": {
+          "entity": {
+            "name": "Gradient descent optimization procedure",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "789dc948-379d-4e41-b175-b00846c08188",
+            "created_at": "2026-07-11T22:37:46.324Z",
+            "updated_at": "2026-07-11T22:37:47.875Z",
+            "embeddingStatus": "completed",
+            "contentHash": "b10aadd99d6f69f2aac80581cce76fe791607bd893f0a191e4215566c4ec949e",
+            "lastEmbeddedAt": "2026-07-11T22:37:47.874Z",
+            "embeddingVersion": "nomic-ai/nomic-embed-text-v1.5"
+          },
+          "previous": {
+            "name": "Gradient descent optimization procedure",
+            "entityType": "concept",
+            "observations": [
+              "Updates model parameters by stepping in the direction of steepest descent of the loss function to minimize training error."
+            ],
+            "version": 1,
+            "previousVersionId": null,
+            "changeType": "created",
+            "changeReason": null,
+            "id": "789dc948-379d-4e41-b175-b00846c08188",
+            "created_at": "2026-07-11T22:37:46.324Z",
+            "updated_at": "2026-07-11T22:37:46.324Z"
+          }
+        }
+      }
+    ]
+  },
+  "semantic": {
+    "method": "pca",
+    "projection": {
+      "cd92c36f-35e9-4e09-984a-5ebc9bce8fe6": [
+        -0.1828,
+        0.4685
+      ],
+      "452d946e-d688-46ba-9ac6-3c19bdacb4b1": [
+        -0.213,
+        0.2742
+      ],
+      "c9685945-f0a5-4b16-845b-602912e962dc": [
+        -0.2988,
+        0.0046
+      ],
+      "dc09712d-6bd5-41a3-9018-9448526e1865": [
+        -0.3168,
+        -0.3212
+      ],
+      "1dc898ad-d497-455d-9621-785678b5d3c6": [
+        -0.3021,
+        -0.0472
+      ],
+      "adeeb45d-2e9a-4cfe-bb22-4975df716c69": [
+        -0.2602,
+        -0.2907
+      ],
+      "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e": [
+        0.5297,
+        -0.0285
+      ],
+      "c878c022-16b7-43bf-b235-d79a4450f745": [
+        0.5231,
+        -0.0317
+      ],
+      "789dc948-379d-4e41-b175-b00846c08188": [
+        0.5209,
+        -0.028
+      ]
+    },
+    "clusters": [
+      {
+        "id": 0,
+        "label": "concept",
+        "entityIds": [
+          "7ae04179-05a7-4b1e-8b3a-d0b5a4542f0e",
+          "c878c022-16b7-43bf-b235-d79a4450f745",
+          "789dc948-379d-4e41-b175-b00846c08188"
+        ],
+        "size": 3
+      }
+    ]
+  }
+}
