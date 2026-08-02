@@ -39,6 +39,13 @@ import {
   type LoopInfo,
 } from "./systems";
 import { LoopPanel } from "./LoopPanel";
+import {
+  createWrappedHoverRenderer,
+  createWrappedLabelRenderer,
+  labelMaxWidth,
+  maxLinesFor,
+  revealLabel,
+} from "../../lib/nodeLabels";
 import "./Systems.css";
 
 /** How long FA2 runs on mount before the causal layout freezes. */
@@ -59,7 +66,7 @@ const LEVERAGE_OFFSET = 13;
 const LABEL_FONT = "system-ui, sans-serif";
 /** Fallbacks mirror tokens.css (light) for headless/pre-resolve contexts. */
 const TEXT_FALLBACK = "#16181f";
-const DIM_FALLBACK = "#767b88";
+const DIM_FALLBACK = "#dfdedb";
 const POSITIVE_FALLBACK = "#2a6fd0";
 const NEGATIVE_FALLBACK = "#d83b48";
 
@@ -127,6 +134,20 @@ export function Systems() {
   // loop reads current values without re-instantiating Sigma.
   const isolatedNodesRef = useRef<Set<string> | null>(null);
   const isolatedEdgesRef = useRef<Set<string> | null>(null);
+  /** Hovered node, for reveal-on-interaction labels. This view has no selection
+   * of its own — loop isolation is its focus mechanism — so hover is the only
+   * input, alongside the isolated set. */
+  const hoveredRef = useRef<string | null>(null);
+  const labelStateFor = useCallback(
+    (node: string) => ({
+      hovered: node === hoveredRef.current,
+      selected: false,
+      // While a loop is isolated its members are the focus, so they keep labels
+      // without needing a hover — that is the point of isolating one.
+      neighbor: isolatedNodesRef.current?.has(node) ?? false,
+    }),
+    [],
+  );
   // The isolated loop's edges in path order — the flow pulse rides this array.
   const orderedLoopEdgesRef = useRef<string[]>([]);
   // Flow-animation state, read by the edge reducer each frame.
@@ -144,7 +165,7 @@ export function Systems() {
     if (!container) return;
 
     resolveSystemsColors(graph);
-    dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+    dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
 
     const sigma = new Sigma(graph, container, {
       renderEdgeLabels: false,
@@ -153,10 +174,21 @@ export function Systems() {
       labelColor: { color: readVar("--color-text", TEXT_FALLBACK) },
       labelDensity: 0.7,
       ...(graph.order > LABEL_LOD_MIN_ORDER ? { labelRenderedSizeThreshold: LABEL_LOD_SIZE } : {}),
+      defaultDrawNodeLabel: createWrappedLabelRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
+      // Required: sigma's own hover renderer would otherwise draw a second,
+      // unwrapped label over this one.
+      defaultDrawNodeHover: createWrappedHoverRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
       nodeReducer: (node, data) => {
         const iso = isolatedNodesRef.current;
         if (iso && !iso.has(node)) return { ...data, color: dimRef.current, label: "", zIndex: 0 };
-        return iso ? { ...data, zIndex: 1 } : data;
+        const label = revealLabel(String(data.label ?? ""), labelStateFor(node));
+        return iso ? { ...data, label, zIndex: 1 } : { ...data, label };
       },
       edgeReducer: (edge, data) => {
         const iso = isolatedEdgesRef.current;
@@ -174,6 +206,17 @@ export function Systems() {
       },
     });
     sigmaRef.current = sigma;
+
+    // Hover drives reveal-on-interaction labelling: without a label under the
+    // cursor this view is a diagram of unnamed variables.
+    sigma.on("enterNode", ({ node }) => {
+      hoveredRef.current = node;
+      sigma.refresh();
+    });
+    sigma.on("leaveNode", () => {
+      hoveredRef.current = null;
+      sigma.refresh();
+    });
 
     // Click-hold-drag node repositioning. The polarity glyphs and leverage
     // badges follow the dragged variable for free (they reposition on
@@ -352,7 +395,7 @@ export function Systems() {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         resolveSystemsColors(graph);
-        dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+        dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
         const sigma = sigmaRef.current;
         if (sigma) {
           sigma.setSetting("labelColor", { color: readVar("--color-text", TEXT_FALLBACK) });

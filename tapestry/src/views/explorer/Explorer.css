@@ -1305,3 +1305,85 @@
     height: 80px;
   }
 }
+
+/* ---- Entity-type legend --------------------------------------------------- *
+ * A persistent key for node colour, sat in the left gutter directly above
+ * `.explorer__controls` — the classic map-key corner, and the only free region
+ * that cannot collide with `.detail` (full-height right column) or `.minimap`
+ * (bottom-right). It shares the left column with the toolbar above it.
+ *
+ * z-index 2 matches `.explorer__controls` and sits under `.filters__panel`
+ * (z-index 3), so on a short viewport an open filter panel correctly covers the
+ * legend rather than fighting it — the panel already carries the same mapping.
+ */
+.legend {
+  position: absolute;
+  left: var(--space-4);
+  /* Clears `.explorer__controls` (a single row of buttons) plus a gap. */
+  bottom: calc(var(--space-4) + 2.4rem);
+  z-index: 2;
+  width: 11.5rem;
+  max-height: min(46vh, 24rem);
+  overflow-y: auto;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 32px rgba(18, 20, 28, 0.2);
+}
+
+.legend__title {
+  margin: 0 0 var(--space-2);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+.legend__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legend__row {
+  display: grid;
+  grid-template-columns: 0.6rem 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.legend__swatch {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 2px;
+}
+
+/* The label is always adjacent to the swatch — colour is never the sole
+ * carrier of the type, matching the rule the rest of the views follow. */
+.legend__label {
+  color: var(--color-text-2);
+  text-transform: capitalize;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.legend__count {
+  color: var(--color-text-3);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+}
+
+/* Short viewports: the canvas matters more than the key. */
+@media (max-height: 34rem) {
+  .legend {
+    display: none;
+  }
+}

@@ -33,6 +33,13 @@ import { buildTimeline, diffStates, stateAt, type ChronicleState, type Diff, typ
 import { Scrubber } from "./Scrubber";
 import { EventList } from "./EventList";
 import { formatInstant } from "./format";
+import {
+  createWrappedHoverRenderer,
+  createWrappedLabelRenderer,
+  labelMaxWidth,
+  maxLinesFor,
+  revealLabel,
+} from "../../lib/nodeLabels";
 import "./Chronicle.css";
 
 /** How long FA2 runs on mount before the layout freezes. */
@@ -55,7 +62,7 @@ const STATUS_OFFSET = 15;
 const LABEL_FONT = "system-ui, sans-serif";
 /** Fallbacks mirror tokens.css (light) for headless/pre-resolve contexts. */
 const TEXT_FALLBACK = "#16181f";
-const DIM_FALLBACK = "#767b88";
+const DIM_FALLBACK = "#dfdedb";
 /** Diff channel — the reserved status tokens (added / changed / invalidated). */
 const GOOD_FALLBACK = "#0ca30c";
 const WARN_FALLBACK = "#fab219";
@@ -122,6 +129,18 @@ export function Chronicle() {
   const diffMarkerLayerRef = useRef<HTMLDivElement | null>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const layoutRef = useRef<LayoutController | null>(null);
+  /** Hovered node, for reveal-on-interaction labels. This view has no selection
+   * of its own — the scrubber is its focus mechanism — so hover is the only
+   * label input. */
+  const hoveredRef = useRef<string | null>(null);
+  const labelStateFor = useCallback(
+    (node: string) => ({
+      hovered: node === hoveredRef.current,
+      selected: false,
+      neighbor: false,
+    }),
+    [],
+  );
 
   // Live reducer inputs — held in refs so the render loop reads current values
   // without re-instantiating Sigma.
@@ -143,7 +162,7 @@ export function Chronicle() {
     if (!container) return;
 
     resolveGraphColors(graph);
-    dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+    dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
     goodRef.current = readVar("--color-good", GOOD_FALLBACK);
     warnRef.current = readVar("--color-warning", WARN_FALLBACK);
     critRef.current = readVar("--color-critical", CRIT_FALLBACK);
@@ -158,7 +177,22 @@ export function Chronicle() {
       labelColor: { color: readVar("--color-text", TEXT_FALLBACK) },
       labelDensity: 0.6,
       ...(graph.order > LABEL_LOD_MIN_ORDER ? { labelRenderedSizeThreshold: LABEL_LOD_SIZE } : {}),
+      defaultDrawNodeLabel: createWrappedLabelRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
+      // Required: sigma's own hover renderer would otherwise draw a second,
+      // unwrapped label over this one.
+      defaultDrawNodeHover: createWrappedHoverRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
       nodeReducer: (node, data) => {
+        // The existing styling decides colour and z-order through several early
+        // returns. The label is applied afterwards so reveal-on-interaction
+        // composes with every one of them rather than being threaded through
+        // each branch.
+        const styled = (() => {
         const state = stateRef.current;
         if (!state) return data;
         if (!state.visibleNodes.has(node)) return { ...data, hidden: true };
@@ -191,6 +225,12 @@ export function Chronicle() {
           if (age >= 0 && age <= window) return { ...data, highlighted: true, zIndex: 1 };
         }
         return data;
+        })();
+        if (styled.hidden) return styled;
+        return {
+          ...styled,
+          label: revealLabel(String(data.label ?? ""), labelStateFor(node)),
+        };
       },
       edgeReducer: (edge, data) => {
         const state = stateRef.current;
@@ -202,6 +242,16 @@ export function Chronicle() {
       },
     });
     sigmaRef.current = sigma;
+
+    // Hover drives reveal-on-interaction labelling.
+    sigma.on("enterNode", ({ node }) => {
+      hoveredRef.current = node;
+      sigma.refresh();
+    });
+    sigma.on("leaveNode", () => {
+      hoveredRef.current = null;
+      sigma.refresh();
+    });
 
     // Click-hold-drag node repositioning. The status/diff badges follow the
     // dragged node for free (they reposition on afterRender), and the bbox
@@ -414,7 +464,7 @@ export function Chronicle() {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         resolveGraphColors(graph);
-        dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+        dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
         goodRef.current = readVar("--color-good", GOOD_FALLBACK);
         warnRef.current = readVar("--color-warning", WARN_FALLBACK);
         critRef.current = readVar("--color-critical", CRIT_FALLBACK);
