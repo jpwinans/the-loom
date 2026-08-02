@@ -1,6 +1,6 @@
 ---
 name: the-loom
-description: "Knowledge graph substrate for externalized reasoning, persistent memory, and semantic search. The Loom provides 100+ MCP tools for building, querying, and analyzing knowledge graphs with typed entities, causal relations, epistemic metadata, semantic embeddings, and document ingestion. Use when: (1) Building or querying knowledge graphs, (2) Ingesting documents for semantic search, (3) Modeling causal systems with feedback loops and leverage points, (4) Tracking epistemic provenance and confidence, (5) Analyzing graph topology (centrality, cycles, clusters), (6) Extracting codebase structure into graphs, (7) Running semantic search across entities or documents, (8) Generating hypotheses from graph gaps, (9) Finding analogies via structural matching and concept slippage, (10) Mining recurring subgraph motifs, (11) Mapping concepts across domains, (12) Any task involving The Loom's MCP tools or CLI."
+description: "Knowledge graph substrate for externalized reasoning, persistent memory, and semantic search. The Loom provides 156 CLI commands for building, querying, and analyzing knowledge graphs with typed entities, causal relations, epistemic metadata, semantic embeddings, and document ingestion. Use when: (1) Building or querying knowledge graphs, (2) Ingesting documents for semantic search, (3) Modeling causal systems with feedback loops and leverage points, (4) Tracking epistemic provenance and confidence, (5) Analyzing graph topology (centrality, cycles, clusters), (6) Extracting codebase structure into graphs, (7) Running semantic search across entities or documents, (8) Generating hypotheses from graph gaps, (9) Finding analogies via structural matching and concept slippage, (10) Mining recurring subgraph motifs, (11) Mapping concepts across domains, (12) Any task involving The Loom's CLI."
 ---
 
 # The Loom
@@ -23,26 +23,27 @@ Layer 1: ENTITIES   — 16 entity types, observations, timestamps
 
 ## Quick Start
 
-### Access Patterns
+### Access Pattern
 
-**MCP tools** (primary — used within Claude Code sessions):
-Tools use `snake_case` naming. All accept optional `graph` parameter for multi-graph mode.
+The Loom exposes a single JSON-in/JSON-out CLI. There is no MCP server in this
+repository — every operation goes through:
 
-**CLI** (for scripts and automation):
 ```bash
 uv run loom <command> '<json>'
 ```
-Commands use `kebab-case` (e.g., `create-entity`, `hybrid-search`).
+
+Commands use `kebab-case` (e.g., `create-entity`, `hybrid-search`). All accept an
+optional `graph` parameter for multi-graph mode.
 
 ### First Steps with Any Graph
 
 ```
-graph_stats                    → understand scale
-list_entities (entityType)     → see what exists
-analyze_centrality (degree)    → find hubs
+graph-stats                    → understand scale
+list-entities (entityType)     → see what exists
+analyze-centrality (degree)    → find hubs
 ```
 
-Or use the `graph_reconnaissance` composite for all of the above in one call.
+Or use the `graph-reconnaissance` composite for all of the above in one call.
 
 ### Create an Entity
 

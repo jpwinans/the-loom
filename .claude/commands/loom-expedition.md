@@ -1,7 +1,7 @@
 ---
 description: Run a standalone Loom expedition to discover emergent theories from graph structure
 argument-hint: <GRAPH_NAME> [--seed TOPIC] [--session-folder PATH] [--iteration N]
-allowed-tools: Read, Write, Bash, Grep, Glob, mcp__the-loom__*
+allowed-tools: Read, Write, Bash, Grep, Glob
 model: opus
 ---
 

@@ -1,8 +1,9 @@
 """trigger-status / process-triggers tests.
 
-These ops are not exposed on the CLI (MCP-only), so they cannot be golden-gated
-through the CLI — the shapes below are the MCP contracts (trigger-queue status
-and dequeue plus the misc handlers), unit-tested here.
+Both are registered CLI commands, but these tests exercise the operations in
+`theloom.operations.reification` directly rather than through the CLI, so the
+trigger-queue shapes (status and dequeue, plus the misc handlers) are pinned at
+the ops layer where the queue behaviour actually lives.
 """
 
 from __future__ import annotations

@@ -162,7 +162,7 @@ Phase 5: Finalize
 Phase 0: Initialize
   ├─ Parse arguments (context doc, topic, graph, output)
   ├─ Create session folder (DeepResearch/hyper-sessions/)
-  ├─ Create/use Loom graph (MCP)
+  ├─ Create/use Loom graph (loom CLI)
   └─ Create blank incremental report
 
 Phase 1: Comprehension
@@ -171,7 +171,7 @@ Phase 1: Comprehension
   ├─ Identify open questions
   └─ Derive topic if not provided
 
-Phase 2: Graph Exploration (MCP)
+Phase 2: Graph Exploration (loom CLI)
   ├─ Query Loom graph (hybrid_search, graph_stats, detect_loops)
   ├─ Find existing relevant knowledge
   ├─ Identify gaps between context and graph
@@ -197,7 +197,7 @@ Phase 6: Synthesis
   ├─ Cross-cutting themes across all sessions
   └─ What remains open
 
-Phase 7: Ingestion (MCP)
+Phase 7: Ingestion (loom CLI)
   ├─ ingest_document into Loom
   └─ Mark complete
 ```
