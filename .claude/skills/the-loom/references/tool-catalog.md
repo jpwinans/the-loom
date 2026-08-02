@@ -1,6 +1,6 @@
 # Tool Catalog
 
-All Loom MCP tools grouped by function. CLI equivalents use kebab-case (e.g., `create_entity` → `create-entity`).
+All Loom commands grouped by function. Commands use kebab-case (e.g., `create-entity`).
 
 **CLI invocation:** `uv run loom <command> '<json>'`
 

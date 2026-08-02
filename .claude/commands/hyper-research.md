@@ -1,7 +1,7 @@
 ---
 description: Meta-orchestrator — extracts questions from context, runs sequential deep-research, synthesizes report
 argument-hint: <CONTEXT_DOC> [--topic TOPIC] [--graph GRAPH_NAME] [--output REPORT_PATH]
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Task, Skill, mcp__the-loom__*
+allowed-tools: Read, Write, Edit, Bash, Grep, Glob, Task, Skill
 model: opus
 hooks:
     Stop:
@@ -56,10 +56,13 @@ This is an unattended, fully autonomous workflow. You MUST NOT:
 
 Instead: Make reasonable assumptions, log decisions to state, continue forward.
 
-### MCP for Orchestrator, CLI for Agents
-The orchestrator (this command) runs in the main conversation with full MCP access.
-Phases 0, 2, and 7 use MCP tools (create_graph, hybrid_search, graph_stats, detect_loops, list_entities, ingest_document).
-Task agents (Phases 4, 5) inherit the CLI pattern from the skills they invoke.
+### One interface: the CLI
+The Loom ships a single JSON-in/JSON-out CLI (`theloom.cli.app:main`, installed as
+`loom`). There is no MCP server in this repository, so every phase drives the graph
+the same way — `loom <command> '<json>'` over Bash.
+Phases 0, 2, and 7 use `create-graph`, `hybrid-search`, `graph-stats`, `detect-loops`,
+`list-entities`, and `ingest-document`. Task agents (Phases 4, 5) inherit the same
+pattern from the skills they invoke.
 
 ### Incremental Report
 The report file is created in Phase 0 and sections are appended after each phase.
@@ -112,7 +115,7 @@ Phase 1: Comprehension (phase = "comprehension")
   |
   v
 Phase 2: Graph Exploration (phase = "graph_exploration")
-  - Query Loom graph via MCP tools
+  - Query Loom graph via the loom CLI
   - Amend understanding with existing graph knowledge
   - Identify gaps between context doc and graph
   - Append to report
@@ -139,8 +142,8 @@ Phase 5: Expedition (phase = "expedition")
   |
   v
 Phase 5.5: Absence Analysis (phase = "absence_analysis")
-  - MCP: Run creativity_loop with purpose={topic} to find analogies
-  - MCP: Analyze transfer gaps — what structures exist in other graphs but are absent here?
+  - Run creativity-loop with purpose={topic} to find analogies
+  - Analyze transfer gaps — what structures exist in other graphs but are absent here?
   - Append "What's Missing" section to report
   |
   v
@@ -150,7 +153,7 @@ Phase 6: Synthesis (phase = "synthesis")
   |
   v
 Phase 7: Ingestion (phase = "ingestion")
-  - MCP: ingest_document (category: "hyper-research")
+  - ingest-document (category: "hyper-research")
   - Mark complete
   - phase -> "complete"
 ```
@@ -217,7 +220,7 @@ else:
 
 **Create or verify Loom graph:**
 
-Use MCP tool `mcp__the-loom__create_graph` to create the graph (MCP tools load automatically when servers are configured).
+Create the graph with `loom create-graph '{"name": "{graphName}"}'`.
 
 If the graph already exists (e.g., custom graph), that's fine — we add to it.
 
@@ -336,19 +339,19 @@ Amend understanding with what the graph already knows. Identify gaps.
 
 1. Read `hyper-research-state.json`
 
-2. Query the graph using MCP tools (MCP tools load automatically when servers are configured):
+2. Query the graph with the loom CLI:
 
-   a. **Graph stats** — `mcp__the-loom__graph_stats` with `{"graph": "{graphName}"}` to understand graph size and structure
+   a. **Graph stats** — `loom graph-stats '{"graph": "{graphName}"}'` to understand graph size and structure
 
-   b. **Hybrid search** — `mcp__the-loom__hybrid_search` with queries derived from:
+   b. **Hybrid search** — `loom hybrid-search '{"query": "<search text>", "graph": "{graphName}"}'` with queries derived from:
       - The topic
       - Key claims from comprehension phase
       - Key tensions identified
       Run 2-4 searches depending on topic complexity.
 
-   c. **Loop detection** — `mcp__the-loom__detect_loops` with `{"graph": "{graphName}"}` to find feedback structures
+   c. **Loop detection** — `loom detect-loops '{"graph": "{graphName}"}'` to find feedback structures
 
-   d. **Entity listing** — `mcp__the-loom__list_entities` with relevant type filters (e.g., `{"entityType": "claim", "graph": "{graphName}"}`) for key entity types
+   d. **Entity listing** — `loom list-entities '{"entityType": "claim", "graph": "{graphName}"}'` with relevant type filters for key entity types
 
 4. Analyze results:
    - **Existing knowledge**: What the graph already knows that's relevant
@@ -608,7 +611,7 @@ graph to discover structural patterns present in other graphs that are absent fr
 2. Check if the research graph has enough structure for meaningful analysis:
 
    ```
-   mcp__the-loom__graph_stats with {"graph": "{state.graphName}"}
+   loom graph-stats '{"graph": "{state.graphName}"}'
    ```
 
    If fewer than 15 entities, skip this phase (set phase -> "synthesis", append note to report).
@@ -616,13 +619,7 @@ graph to discover structural patterns present in other graphs that are absent fr
 3. Run a purpose-directed creativity loop on the research graph:
 
    ```
-   mcp__the-loom__creativity_loop with {
-     "graph": "{state.graphName}",
-     "purpose": "{state.topic}",
-     "maxCycles": 2,
-     "acceptanceThreshold": 0.3,
-     "detectPlateau": true
-   }
+   loom creativity-loop '{"graph": "{state.graphName}", "purpose": "{state.topic}", "maxCycles": 2, "acceptanceThreshold": 0.3, "detectPlateau": true}'
    ```
 
    This leverages TL-284's purpose parameter (MCT pragmatic bias) and absence surprise scoring
@@ -746,11 +743,9 @@ and the expedition.
 
 1. Read `hyper-research-state.json`
 
-2. Ingest the report (MCP tools load automatically when servers are configured):
+2. Ingest the report:
    ```
-   mcp__the-loom__ingest_document with:
-     file_path: {state.reportPath}
-     category: "hyper-research"
+   loom ingest-document '{"file_path": "{state.reportPath}", "category": "hyper-research"}'
    ```
 
 3. Update state:
@@ -818,13 +813,13 @@ ON EXPEDITION FAILURE:
   4. Note in report: "Expedition could not be completed"
 ```
 
-### MCP Tool Failure
+### Loom CLI Failure
 
 ```
-ON MCP TOOL FAILURE:
+ON LOOM CLI FAILURE:
   1. Log warning to state.errors[]
-  2. Skip the specific MCP operation
-  3. Continue workflow (MCP issues are non-blocking for most phases)
+  2. Skip the specific loom operation
+  3. Continue workflow (loom issues are non-blocking for most phases)
   4. For Phase 2 (graph exploration): degrade gracefully, work with whatever data available
   5. For Phase 7 (ingestion): log warning, mark complete anyway (report file exists)
 ```
@@ -863,7 +858,7 @@ When facing ambiguity, use these defaults:
 | Deep-research session hangs | Task agent has its own timeout handling |
 | Expedition finds nothing | Note "no emergent theories" in report |
 | Report path conflict | Append counter to filename |
-| MCP tools unavailable | Fall back to CLI via Bash where possible |
+| `loom` not on PATH | Run via `uv run loom` from the repo root |
 | 0 questions extracted | Skip to expedition (Phase 5) |
 | All questions fail | Continue to expedition with whatever graph has |
 
