@@ -321,10 +321,13 @@ artifacts.push({
 ### Step 6: Generate Artifact Manifest
 
 ```typescript
+// Field names must match the manifest contract in .claude/commands/deep-research.md
+// Phase 4 (Finalize), which reads this file: sessionId / createdAt / graphName.
 const manifest = {
-  session: sessionId,
-  created: new Date().toISOString(),
+  sessionId: sessionId,
   topic: topic,
+  graphName: GRAPH_NAME,
+  createdAt: new Date().toISOString(),
   qualityScore: qualityScore,
   artifacts: artifacts
 };
@@ -478,9 +481,10 @@ The agent creates `artifact-manifest.json` in the session folder:
 
 ```json
 {
-  "session": "{session_id}",
-  "created": "{ISO timestamp}",
+  "sessionId": "{session_id}",
   "topic": "{topic}",
+  "graphName": "{graph_name}",
+  "createdAt": "{ISO timestamp}",
   "qualityScore": 7.5,
   "artifacts": [
     {

@@ -818,8 +818,8 @@ ON EXPEDITION FAILURE:
 ```
 ON LOOM CLI FAILURE:
   1. Log warning to state.errors[]
-  2. Skip the specific loom operation
-  3. Continue workflow (loom issues are non-blocking for most phases)
+  2. Skip that graph operation
+  3. Continue workflow (CLI failures are non-blocking for most phases)
   4. For Phase 2 (graph exploration): degrade gracefully, work with whatever data available
   5. For Phase 7 (ingestion): log warning, mark complete anyway (report file exists)
 ```

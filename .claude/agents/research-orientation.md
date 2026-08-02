@@ -521,6 +521,22 @@ loom create-relation '{"from":"'"${CONCEPT_ID}"'","to":"'"${RELATED_CONCEPT_ID}"
 loom create-relation '{"from":"'"${QUESTION_ID}"'","to":"'"${CONCEPT_ID}"'","relationType":"questions","polarity":null,"strength":"moderate","evidence":"<why this relation holds>","graph":"'"${GRAPH_NAME}"'"}'
 ```
 
+#### Embed the entities you just created
+
+**Required — do not skip.** Entities are not embedded on creation. Until they are, every
+semantic operation returns empty: `hybrid-search` finds nothing, `semantic-neighbors`
+returns no neighbours, and `find-clusters` reports no clusters. The research step that runs
+after you opens with `hybrid-search` against this graph, so skipping this makes its first
+query silently useless.
+
+```bash
+loom embed-entities '{"graph":"'"${GRAPH_NAME}"'"}'
+```
+
+The call is incremental and idempotent — already-embedded entities are skipped, so it is
+safe to re-run. Check the result: `completed` plus `skipped` should equal `total`, and
+`failed` should be 0.
+
 ### Step 6: Update Research State
 
 Write the populated context back to the state file:

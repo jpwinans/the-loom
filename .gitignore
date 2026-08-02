@@ -36,3 +36,7 @@ node_modules/
 vestige/
 loom-viz/
 wip-TL-332/
+
+# Deep-research session output: per-run state, findings and artifacts. Working
+# output of a run, not repository content.
+DeepResearch/
