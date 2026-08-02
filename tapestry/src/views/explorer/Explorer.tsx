@@ -51,6 +51,14 @@ import { Minimap } from "./Minimap";
 import { SearchBox } from "./SearchBox";
 import { FilterPanel } from "./FilterPanel";
 import { DetailPanel } from "./DetailPanel";
+import { Legend } from "./Legend";
+import {
+  createWrappedHoverRenderer,
+  createWrappedLabelRenderer,
+  labelMaxWidth,
+  maxLinesFor,
+  revealLabel,
+} from "../../lib/nodeLabels";
 import "./Explorer.css";
 
 /** How long FA2 runs on mount before the layout freezes. */
@@ -66,9 +74,9 @@ const LABEL_LOD_MIN_ORDER = 2000;
 const LABEL_LOD_SIZE = 14;
 /** A concrete family stack for canvas labels (CSS vars don't resolve on canvas). */
 const LABEL_FONT = "system-ui, sans-serif";
-/** Fallbacks mirror tokens.css `--color-text` / `--color-text-3` / `--color-accent` (light). */
+/** Fallbacks mirror tokens.css `--color-text` / `--color-graph-dim` / `--color-accent` (light). */
 const TEXT_FALLBACK = "#16181f";
-const DIM_FALLBACK = "#767b88";
+const DIM_FALLBACK = "#dfdedb";
 const ACCENT_FALLBACK = "#4a44c4";
 /** Fallback mirrors tokens.css `--color-canvas` (light) — the SVG export background. */
 const CANVAS_FALLBACK = "#f7f6f3";
@@ -110,6 +118,16 @@ export function Explorer() {
   const hoveredRef = useRef<string | null>(null);
   const neighborsRef = useRef<Set<string> | null>(null);
   const selectionRef = useRef<string | null>(null);
+  /** Interaction state a node's label is decided from. Reads refs, so it is
+   * safe to call from inside sigma's reducers and label renderer. */
+  const labelStateFor = useCallback(
+    (node: string) => ({
+      hovered: node === hoveredRef.current,
+      selected: node === selectionRef.current,
+      neighbor: neighborsRef.current?.has(node) ?? false,
+    }),
+    [],
+  );
   const pathHighlightRef = useRef<PathHighlight | null>(null);
   // The Semantic Map lasso's brushed set, echoed here as an emphasis layer.
   const brushSetRef = useRef<Set<string> | null>(null);
@@ -130,7 +148,7 @@ export function Explorer() {
     if (!container) return;
 
     resolveGraphColors(graph);
-    dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+    dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
     accentRef.current = readVar("--color-accent", ACCENT_FALLBACK);
 
     const sigma = new Sigma(graph, container, {
@@ -140,11 +158,25 @@ export function Explorer() {
       labelColor: { color: readVar("--color-text", TEXT_FALLBACK) },
       labelDensity: 0.6,
       ...(graph.order > LABEL_LOD_MIN_ORDER ? { labelRenderedSizeThreshold: LABEL_LOD_SIZE } : {}),
+      defaultDrawNodeLabel: createWrappedLabelRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
+      // Required: sigma's own hover renderer would otherwise draw a second,
+      // unwrapped label over this one.
+      defaultDrawNodeHover: createWrappedHoverRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
       nodeReducer: (node, data) => {
         const vis = visibilityRef.current;
         if (vis && !vis.visibleNodes.has(node)) return { ...data, hidden: true };
 
+        // Reveal-on-interaction: only the focused node and its neighbourhood
+        // carry a label. Runs first so the dim/brush/path branches below can
+        // still blank it, as they do today.
         let res = data;
+        res = { ...res, label: revealLabel(String(data.label ?? ""), labelStateFor(node)) };
         // BRUSH layer: when the Semantic Map lasso is active, emphasise its set
         // and dim the rest (emphasis, never hiding — that stays the FILTER job).
         const brush = brushSetRef.current;
@@ -315,7 +347,7 @@ export function Explorer() {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         resolveGraphColors(graph);
-        dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+        dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
         accentRef.current = readVar("--color-accent", ACCENT_FALLBACK);
         const sigma = sigmaRef.current;
         if (sigma) {
@@ -539,6 +571,8 @@ export function Explorer() {
       )}
 
       {selection && <DetailPanel onNavigate={navigate} />}
+
+      <Legend />
 
       <div className="explorer__controls">
         <button

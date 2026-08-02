@@ -28,6 +28,13 @@ import { useTapestry } from "../../state/store";
 import { allVisible, exportFilename, exportPngFile, exportSvgFile } from "../../lib/exportSvg";
 import { resolveTypeColor } from "../explorer/buildGraph";
 import {
+  createWrappedHoverRenderer,
+  createWrappedLabelRenderer,
+  labelMaxWidth,
+  maxLinesFor,
+  revealLabel,
+} from "../../lib/nodeLabels";
+import {
   buildSemanticGraph,
   clusterPolygons,
   pointsInLasso,
@@ -39,7 +46,7 @@ const SVG_NS = "http://www.w3.org/2000/svg";
 const LABEL_FONT = "system-ui, sans-serif";
 /** Fallbacks mirror tokens.css (light) for headless/pre-resolve contexts. */
 const TEXT_FALLBACK = "#16181f";
-const DIM_FALLBACK = "#767b88";
+const DIM_FALLBACK = "#dfdedb";
 const CANVAS_FALLBACK = "#f7f6f3";
 const HULL_STROKE_FALLBACK = "#6c7385";
 /** A lasso under this many points is ignored (a stray click, not a loop). */
@@ -124,6 +131,16 @@ export function SemanticMap() {
   const selectionRef = useRef<string | null>(null);
   const brushSetRef = useRef<Set<string> | null>(null);
   const hoveredRef = useRef<string | null>(null);
+  /** Interaction state a node's label is decided from. Reads refs, so it is
+   * safe to call from sigma's reducer and label renderer. */
+  const labelStateFor = useCallback(
+    (node: string) => ({
+      hovered: node === hoveredRef.current,
+      selected: node === selectionRef.current,
+      neighbor: false,
+    }),
+    [],
+  );
   const dimRef = useRef<string>(DIM_FALLBACK);
   const showHullsRef = useRef<boolean>(true);
 
@@ -146,7 +163,7 @@ export function SemanticMap() {
     if (!container) return;
 
     resolveSemanticColors(graph);
-    dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+    dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
 
     const sigma = new Sigma(graph, container, {
       renderEdgeLabels: false,
@@ -154,11 +171,26 @@ export function SemanticMap() {
       labelColor: { color: readVar("--color-text", TEXT_FALLBACK) },
       labelDensity: 0.7,
       ...(graph.order > LABEL_LOD_MIN_ORDER ? { labelRenderedSizeThreshold: LABEL_LOD_SIZE } : {}),
+      defaultDrawNodeLabel: createWrappedLabelRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
+      // Required: sigma's own hover renderer would otherwise draw a second,
+      // unwrapped label over this one.
+      defaultDrawNodeHover: createWrappedHoverRenderer(
+        () => labelMaxWidth(containerRef.current),
+        (node) => maxLinesFor(labelStateFor(node)),
+      ),
       // Extra breathing room so a tight cluster hugging the projection's edge —
       // and its labels — stay inside the viewport rather than clipping.
       stagePadding: 90,
       nodeReducer: (node, data) => {
         let res = data;
+        // Reveal-on-interaction. Unlike the Explorer there is no neighbour
+        // layer: adjacency is a graph property, and points that are adjacent in
+        // the graph can sit anywhere in a semantic projection, so labelling them
+        // would scatter text across unrelated regions.
+        res = { ...res, label: revealLabel(String(data.label ?? ""), labelStateFor(node)) };
         const brush = brushSetRef.current;
         if (brush && !brush.has(node)) {
           res = { ...res, color: dimRef.current, label: "", zIndex: 0 };
@@ -291,7 +323,7 @@ export function SemanticMap() {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         resolveSemanticColors(graph);
-        dimRef.current = readVar("--color-text-3", DIM_FALLBACK);
+        dimRef.current = readVar("--color-graph-dim", DIM_FALLBACK);
         const sigma = sigmaRef.current;
         if (sigma) {
           sigma.setSetting("labelColor", { color: readVar("--color-text", TEXT_FALLBACK) });
@@ -380,7 +412,7 @@ export function SemanticMap() {
     const sigma = sigmaRef.current;
     if (!sigma) return;
     const legend = [
-      { label: `${method === "umap" ? "UMAP" : "PCA"} projection`, color: readVar("--color-text-3", DIM_FALLBACK) },
+      { label: `${method === "umap" ? "UMAP" : "PCA"} projection`, color: readVar("--color-graph-dim", DIM_FALLBACK) },
       ...(hasClusters
         ? [{ label: "cluster region", color: readVar("--hull-stroke", HULL_STROKE_FALLBACK) }]
         : []),

@@ -75,6 +75,14 @@
   --color-text-2: #4b4f5b;       /* secondary ink */
   --color-text-3: #636772;       /* muted / captions / axis — WCAG-AA (>=4.5:1) on every surface it lands on */
 
+  /* De-emphasised graph marks: nodes and edges pushed to the back so a revealed
+   * label reads over them. Deliberately NOT an ink token — text-3 is tuned for
+   * >=4.5:1 legibility, which is exactly wrong for something meant to recede.
+   * This sits just off --color-canvas, so it stays perceptible as structure
+   * without competing with label text. Per-theme, because "recede" means
+   * lighter on a light canvas and darker on a dark one. */
+  --color-graph-dim: #dfdedb;
+
   /* Brand: the "warp-thread" iris — used only on chrome, never on graph marks. */
   --color-accent: #4a44c4;
   --color-accent-hover: #3d37ac;
@@ -168,6 +176,10 @@
   --color-text: #f2f3f6;
   --color-text-2: #b6bbc6;
   --color-text-3: #888e9b;       /* muted / captions / axis — WCAG-AA (>=4.5:1) on every dark surface it lands on */
+
+  /* See the light-theme note. On a #15161a canvas "recede" means darker, so a
+   * light grey here would make dimmed marks MORE prominent, not less. */
+  --color-graph-dim: #2b2d35;
 
   --color-accent: #8e8bf0;
   --color-accent-hover: #a4a2f5;
