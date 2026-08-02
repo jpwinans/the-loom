@@ -263,8 +263,8 @@ If using a custom graph name, check if the graph already exists:
 If using default session graph name: Always create new.
 
 ```bash
-# Ensure GRAPH_FOLDER is set for loom CLI multi-graph mode
-export GRAPH_FOLDER="${GRAPH_FOLDER:-./data/graphs}"
+# Multi-graph mode needs no environment setup — every command takes a `graph` parameter.
+# FalkorDB must be running: docker compose up -d falkordb
 
 # Using the loom CLI
 if [ -n "$CUSTOM_GRAPH" ]; then
@@ -503,10 +503,10 @@ if (totalAttempted > 0 && totalVerified === 0) {
   state.errors.push({
     phase: "research_loop",
     type: "no_entities_verified",
-    message: `Iteration ${state.iterationCount}: Agents attempted to create ${totalAttempted} entities but ZERO were verified. Entity creation is likely failing silently. Check loom CLI installation and GRAPH_FOLDER configuration.`,
+    message: `Iteration ${state.iterationCount}: Agents attempted to create ${totalAttempted} entities but ZERO were verified. Entity creation is likely failing silently. Check that FalkorDB is running (docker compose up -d falkordb) and that the loom CLI is installed.`,
     timestamp: new Date().toISOString(),
     severity: "critical",
-    recoveryAction: "Check loom CLI is available and GRAPH_FOLDER is set"
+    recoveryAction: "Check FalkorDB is running and the loom CLI is available"
   });
   state.phaseSummary = `CRITICAL: No entities verified in iteration ${state.iterationCount}. Entity creation may be failing silently.`;
 } else if (totalFailed > 0) {

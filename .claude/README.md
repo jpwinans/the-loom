@@ -52,18 +52,27 @@ DeepResearch agents interact with The Loom knowledge graph via the `loom` CLI. T
    uv sync
    ```
 
-2. **Configure GRAPH_FOLDER for multi-graph mode:**
+2. **Start FalkorDB:**
    ```bash
-   export GRAPH_FOLDER="./data/graphs"
+   docker compose up -d falkordb
    ```
-   The `GRAPH_FOLDER` environment variable enables multi-graph mode, which allows each research session to have its own isolated graph.
+   The Loom keeps graphs, entity vectors, document chunks and full-text in FalkorDB — there
+   is no file-backed store. Nothing works until this is running.
+
+   Multi-graph mode needs no configuration: every command takes an optional `graph`
+   parameter, so each research session simply names its own graph. Connection settings are
+   resolved by `theloom/config.py` in the order *CLI flags > environment >
+   `~/.loom/config.json` > defaults*; the environment variables it reads are `GRAPH_HOST`,
+   `GRAPH_PORT` and `DEFAULT_GRAPH`.
 
 3. **Verify CLI is working:**
    ```bash
    loom graph-stats
    ```
 
-**Important:** Without this configuration, research agents will be unable to create entities in The Loom graph. They may appear to succeed (writing findings files) but no entities will be persisted to the graph.
+**Important:** Without FalkorDB running, research agents cannot create entities. They may
+appear to succeed — findings files still get written — while nothing is persisted to the
+graph. If `loom graph-stats` errors on connection, that is the cause.
 
 ### Basic Usage
 

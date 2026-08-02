@@ -409,6 +409,23 @@ Unique independence groups: K
 Unassessed sources resolved: J
 ```
 
+### Step 10.5: Embed New Entities
+
+**Required — do not skip.** Entities are not embedded on creation, and each iteration adds
+new ones. Until they are embedded, every semantic operation returns empty — including your
+own Step 4 duplicate detection by similarity, and the `semantic-neighbors` calls the
+expedition step makes against this graph.
+
+Run this **before** Step 4 if you intend to rely on semantic similarity there, and again
+here to cover anything created during consolidation:
+
+```bash
+loom embed-entities '{"graph":"'"${GRAPH_NAME}"'"}'
+```
+
+Incremental and idempotent — already-embedded entities are skipped. Verify `completed` +
+`skipped` equals `total` and `failed` is 0. On a ~100-entity graph this takes a few seconds.
+
 ### Step 11: Update Research State
 
 ```typescript
