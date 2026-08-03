@@ -41,6 +41,8 @@ ID_KEYS = frozenset(
         "entityId",
         "source",
         "target",
+        "sourceId",
+        "targetId",
         "from",
         "to",
         "startId",
@@ -49,6 +51,8 @@ ID_KEYS = frozenset(
         "nodeId",
         "relationId",
         "seed",
+        "primary",
+        "secondary",
     }
 )
 GRAPH_KEYS = frozenset({"graph", "sourceGraph", "targetGraph"})

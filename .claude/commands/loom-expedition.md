@@ -96,7 +96,7 @@ loom graph-stats '{"graph":"'"${GRAPH_NAME}"'"}'
 loom detect-loops '{"graph":"'"${GRAPH_NAME}"'","maxSize":6}'
 
 # Cross-graph bridges
-loom list-bridges '{"graph":"'"${GRAPH_NAME}"'"}'
+loom list-bridges '{"from_graph":"'"${GRAPH_NAME}"'"}'
 ```
 
 Parse results. Early exit if graph has < 20 entities:
@@ -110,7 +110,7 @@ Find the most interesting thread to follow.
 
 If SEED_TOPIC is provided, search for topic-relevant entities:
 ```bash
-loom list-entities '{"query":"'"${SEED_TOPIC}"'","graph":"'"${GRAPH_NAME}"'","limit":10}'
+loom list-entities '{"query":"'"${SEED_TOPIC}"'","graph":"'"${GRAPH_NAME}"'"}'
 ```
 
 Selection criteria (in priority order):

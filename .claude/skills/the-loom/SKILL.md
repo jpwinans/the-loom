@@ -74,12 +74,14 @@ Optional: `confidence`, `provenance`, `graph`.
 }
 ```
 
-Required: `from`, `to`, `relationType`, `polarity` (null for non-causal), `strength`.
+Required: `from`, `to`, `relationType`, `polarity` (null for non-causal), `strength`
+(`weak|moderate|strong|foundational`), and `evidence` (string, or null when there is
+genuinely nothing to cite). The CLI rejects a relation missing any of these.
 
 ### Search
 
 ```json
-// hybrid_search — combines vector + keyword + graph
+// hybrid-search — combines vector + keyword + graph
 { "query": "feedback loops in organizational change", "limit": 10 }
 
 // With category filter (for documents)
@@ -92,10 +94,10 @@ Required: `from`, `to`, `relationType`, `polarity` (null for non-causal), `stren
 ### Ingest a Document
 
 ```json
-// ingest_document
-{ "filePath": "/path/to/document.pdf", "category": "research" }
+// ingest-document
+{ "file_path": "/path/to/document.pdf", "category": "research" }
 
-// ingest_directory (batch)
+// ingest-directory (batch)
 { "dir_path": "/path/to/docs/", "pattern": "**/*.md", "category": "docs" }
 ```
 
@@ -148,8 +150,8 @@ Cross-graph connections use bridge relations, held transactionally in FalkorDB
 alongside the graphs themselves.
 
 ```
-list_graphs                     → see all graphs
-graph_stats (graph: "name")     → inspect specific graph
+list-graphs                     → see all graphs
+graph-stats (graph: "name")     → inspect specific graph
 ```
 
 ## Tool Selection Guide
@@ -158,54 +160,54 @@ graph_stats (graph: "name")     → inspect specific graph
 
 | Goal | Tool(s) |
 |------|---------|
-| Understand a graph's structure | `graph_reconnaissance` |
-| Search for something | `hybrid_search` |
-| Find similar entities | `semantic_neighbors` |
-| Find what's connected to X | `get_neighbors`, `get_relations` |
-| Find the path between A and B | `find_shortest_path`, `explain_path` |
-| Find hub entities | `analyze_centrality` |
-| Find feedback loops | `detect_loops`, `list_loops` |
-| Find weak claims | `uncertain_claims`, `needs_evidence` |
-| Find contradictions | `contested_claims` |
-| Find stale knowledge | `stale_beliefs` |
-| Trace where knowledge came from | `provenance_chain`, `provenance_audit` |
-| Ingest documents | `ingest_document`, `ingest_directory` |
-| Extract entities from documents | `extract_from_documents` |
-| Extract code structure | `extract_codebase` |
-| Get complete analysis of one entity | `entity_deep_dive` |
-| Map influence from one entity | `influence_map` |
-| Find gaps in the graph | `semantic_gaps`, `gap_fill_cycle` |
-| Generate hypotheses from gaps | `hypothesis_engine` |
-| Find analogies across domains | `cross_domain_mapping` |
-| Find concept substitutions | `concept_slippage` |
-| Find recurring structural motifs | `find_frequent_subgraphs` |
-| Find structurally similar patterns | `find_subgraph_matches` |
-| Generate synthesis | `synthesize`, `traverse_synthesis` |
-| Batch create entities | `bulk_import` |
-| Verify graph integrity | `check_consistency`, `check_invariants` |
-| Simulate what-if changes | `simulate_change` |
+| Understand a graph's structure | `graph-reconnaissance` |
+| Search for something | `hybrid-search` |
+| Find similar entities | `semantic-neighbors` |
+| Find what's connected to X | `get-neighbors`, `get-relations` |
+| Find the path between A and B | `find-shortest-path`, `explain-path` |
+| Find hub entities | `analyze-centrality` |
+| Find feedback loops | `detect-loops`, `list-loops` |
+| Find weak claims | `uncertain-claims`, `needs-evidence` |
+| Find contradictions | `contested-claims` |
+| Find stale knowledge | `stale-beliefs` |
+| Trace where knowledge came from | `provenance-chain`, `provenance-audit` |
+| Ingest documents | `ingest-document`, `ingest-directory` |
+| Extract entities from documents | `extract-from-documents` |
+| Extract code structure | `extract-codebase` |
+| Get complete analysis of one entity | `entity-deep-dive` |
+| Map influence from one entity | `influence-map` |
+| Find gaps in the graph | `semantic-gaps`, `gap-fill-cycle` |
+| Generate hypotheses from gaps | `hypothesis-engine` |
+| Find analogies across domains | `cross-domain-mapping` |
+| Find concept substitutions | `concept-slippage` |
+| Find recurring structural motifs | `find-frequent-subgraphs` |
+| Find structurally similar patterns | `find-subgraph-matches` |
+| Generate synthesis | `synthesize`, `traverse-synthesis` |
+| Batch create entities | `bulk-import` |
+| Verify graph integrity | `check-consistency`, `check-invariants` |
+| Simulate what-if changes | `simulate-change` |
 
 ### Composite vs Manual
 
 **Prefer composites** for common multi-step analyses:
-- `graph_reconnaissance` over manual stats + centrality + components
-- `entity_deep_dive` over manual read + relations + neighbors
-- `semantic_landscape` over manual clusters + gaps + suggestions
-- `gap_fill_cycle` over manual gaps + suggest + create
-- `hypothesis_engine` over manual gaps + propose + filter + dedup + rank
+- `graph-reconnaissance` over manual stats + centrality + components
+- `entity-deep-dive` over manual read + relations + neighbors
+- `semantic-landscape` over manual clusters + gaps + suggestions
+- `gap-fill-cycle` over manual gaps + suggest + create
+- `hypothesis-engine` over manual gaps + propose + filter + dedup + rank
 
 ## References
 
-- **[Tool Catalog](references/tool-catalog.md)** — Complete list of all tools with parameters
-- **[Data Model](references/data-model.md)** — Entity types, relation types, epistemic metadata, storage format
-- **[Workflows](references/workflows.md)** — Multi-step patterns for research, system modeling, codebase analysis, maintenance
+- **[Tool Catalog](references/tool-catalog.md)** — read when you need a command's exact parameters, or to scan what exists in an unfamiliar category
+- **[Data Model](references/data-model.md)** — read before creating entities/relations of a type you haven't used yet: entity types, relation types, epistemic metadata, storage format
+- **[Workflows](references/workflows.md)** — read at the start of a multi-step task (research, system modeling, codebase analysis, maintenance) to follow the established pattern instead of improvising one
 
 ## Common Pitfalls
 
 1. **Forgetting polarity on causal relations** — `causes`, `enables`, `requires`, `inhibits`, `amplifies`, `dampens` need `+` or `-`
-2. **Not embedding after bulk creation** — Run `embed_entities` after creating many entities to enable semantic search
-3. **Searching non-active entities** — `list_entities` defaults to active only; pass `statusFilter` to include others
+2. **Not embedding after bulk creation** — Run `embed-entities` after creating many entities to enable semantic search
+3. **Searching non-active entities** — `list-entities` defaults to active only; pass `includeSuperseded` / `includeDeprecated` / `includeRetracted` / `includeInvestigating` to widen it
 4. **Swapping from/to on relations** — Relations are directional; check which entity is source vs target
 5. **Observations as single string** — Must be an array of strings, not one string
 6. **Missing category on document ingestion** — Without category, documents aren't filterable in search
-7. **Using delete instead of status change** — Prefer `status: "superseded"` over `delete_entity` to preserve history
+7. **Using delete instead of status change** — Prefer `status: "superseded"` over `delete-entity` to preserve history
