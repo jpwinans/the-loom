@@ -125,8 +125,11 @@ verification{entitiesAttempted, entitiesVerified, failedCreations}}`.
    `detect-cycles`, `find-clusters`, `detect-components`, `semantic-gaps`,
    `graph-stats`.
 2. Write `ARCHITECTURE-MAP.md` (structure below).
-3. Render `codebase-map.html`: `loom visualize` scoped to the module-level story —
-   `include` limited to `system` + semantic-layer types, `maxEntities` 400 (halved per retry on render failure).
+3. Render `codebase-map.html`: `loom visualize` with `scope: {"mode": "full"}` and
+   `maxEntities: 400` (halved per retry on render failure). Note: `visualize`'s
+   `include` field is `{analytics, temporal, semantic}` booleans — bundle features,
+   not an entity-type filter — and `scope.entityType` is singular; density is
+   managed by the `maxEntities` cap.
 4. Write `map-manifest.json`: `{graphName, projectPath, commit, mode, timestamp,
    groups, outputs}`.
 
