@@ -8,8 +8,8 @@ type lists keep per-edge duplicates and are sorted; instance_of edges and
 pattern entities are excluded from fingerprinting for idempotency (an existing
 pattern is recognized by its exact `fingerprint: <hash>` observation line).
 
-trigger-status / process-triggers are exposed as CLI commands with MCP-style
-output shapes. Queue state lives in graph metadata under 'trigger_queue'.
+trigger-status / process-triggers are exposed as CLI commands returning the
+standard JSON envelope. Queue state lives in graph metadata under 'trigger_queue'.
 The mutation-trigger screening itself is not wired: in the one-shot CLI the
 handler never sees a second loaded graph, so it can never enqueue — the
 queue's observable CLI behavior is read/dequeue only.
@@ -290,7 +290,7 @@ def reify_patterns(params: ReifyPatternsInput, multi: MultiGraph) -> Doc:
 
 
 # =============================================================================
-# Trigger queue (CLI-exposed with MCP-style output shapes)
+# Trigger queue (CLI-exposed, standard JSON envelope)
 # =============================================================================
 
 

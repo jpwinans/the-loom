@@ -2,6 +2,20 @@
 
 Common multi-step patterns for effective Loom usage.
 
+## Contents
+
+1. [Orientation](#1-orientation-understanding-an-existing-graph) — first contact with any graph
+2. [Research](#2-research-workflow) — sources → claims → synthesis → validation
+3. [System Modeling](#3-system-modeling-workflow) — causal models, loops, leverage points
+4. [Codebase Cognition](#4-codebase-cognition-workflow) — code structure into graphs
+5. [Document-to-Knowledge](#5-document-to-knowledge-pipeline) — ingest → extract → verify
+6. [Hypothesis Generation](#6-hypothesis-generation-workflow) — gaps → proposals → dedup
+7. [Analogical Reasoning](#7-analogical-reasoning-workflow) — motifs → cross-domain maps
+8. [Graph Maintenance](#8-graph-maintenance-workflow) — health checks and cleanup
+9. [Search Strategy](#9-search-strategy-guide) — which search tool when
+10. [Multi-Graph](#10-multi-graph-workflow) — bridges and cross-graph search
+11. [Epistemic Rigor](#11-epistemic-rigor-workflow) — provenance, validation, versioning
+
 ---
 
 ## 1. Orientation: Understanding an Existing Graph
@@ -9,13 +23,13 @@ Common multi-step patterns for effective Loom usage.
 Start any session by understanding what's already there.
 
 ```
-graph_stats → understand scale
-list_entities (by type) → see what exists
-analyze_centrality (degree) → find hubs
-detect_components → find isolated clusters
+graph-stats → understand scale
+list-entities (by type) → see what exists
+analyze-centrality (degree) → find hubs
+detect-components → find isolated clusters
 ```
 
-**Fast version:** Use `graph_reconnaissance` composite — does all of the above in one call.
+**Fast version:** Use `graph-reconnaissance` composite — does all of the above in one call.
 
 ---
 
@@ -25,32 +39,32 @@ Building knowledge from sources.
 
 ### Phase 1: Seed Sources
 ```
-create_entity (type: source) → register each source
-ingest_document (with category) → make content searchable
+create-entity (type: source) → register each source
+ingest-document (with category) → make content searchable
 ```
 
 ### Phase 2: Extract Claims
 ```
-hybrid_search (query, category) → find relevant chunks
-create_entity (type: claim) → atomic assertions
-create_relation (sources) → claim → sources → source
-create_relation (supports) → evidence → supports → claim
+hybrid-search (query, category) → find relevant chunks
+create-entity (type: claim) → atomic assertions
+create-relation (sources) → claim → sources → source
+create-relation (supports) → evidence → supports → claim
 ```
 
 ### Phase 3: Synthesize
 ```
-semantic_gaps → find disconnected similar entities
-suggest_relations → propose missing connections
-create_entity (type: insight) → synthesized understanding
-create_entity (type: pattern) → recurring structures
+semantic-gaps → find disconnected similar entities
+suggest-relations → propose missing connections
+create-entity (type: insight) → synthesized understanding
+create-entity (type: pattern) → recurring structures
 ```
 
 ### Phase 4: Validate
 ```
-uncertain_claims → find weak claims
-single_source_claims → find under-supported claims
-contested_claims → find contradictions
-check_consistency → verify graph integrity
+uncertain-claims → find weak claims
+single-source-claims → find under-supported claims
+contested-claims → find contradictions
+check-consistency → verify graph integrity
 ```
 
 ---
@@ -61,14 +75,14 @@ Building causal models.
 
 ### Step 1: Define System
 ```
-create_entity (type: system) → boundary and purpose
-create_entity (type: variable) → each measurable quantity
-create_relation (part_of) → variable → part_of → system
+create-entity (type: system) → boundary and purpose
+create-entity (type: variable) → each measurable quantity
+create-relation (part_of) → variable → part_of → system
 ```
 
 ### Step 2: Map Causation
 ```
-create_relation (causes/enables/inhibits) → with polarity + strength
+create-relation (causes/enables/inhibits) → with polarity + strength
 ```
 
 **Polarity rules:**
@@ -77,7 +91,7 @@ create_relation (causes/enables/inhibits) → with polarity + strength
 
 ### Step 3: Detect Dynamics
 ```
-detect_loops → find feedback loops
+detect-loops → find feedback loops
 ```
 
 **Loop classification:**
@@ -86,15 +100,15 @@ detect_loops → find feedback loops
 
 ### Step 4: Find Leverage Points
 ```
-create_entity (type: leverage_point) → with level, intervention
-list_leverage_points → review by depth category
-leverage_point_details → full analysis
+create-entity (type: leverage_point) → with level, intervention
+list-leverage-points → review by depth category
+leverage-point-details → full analysis
 ```
 
 ### Step 5: Simulate
 ```
-simulate_change → what-if analysis on entities
-influence_map → trace causal flow from seed
+simulate-change → what-if analysis on entities
+influence-map → trace causal flow from seed
 ```
 
 ---
@@ -105,27 +119,27 @@ Understanding code through graph analysis.
 
 ### Layer 1: Extract Structure
 ```
-extract_codebase → SCIP-based TS/JS extraction
+extract-codebase → SCIP-based TS/JS extraction
   OR
-ingest_directory → for Python/other languages
-extract_from_documents → LLM extraction
+ingest-directory → for Python/other languages
+extract-from-documents → LLM extraction
 ```
 
 ### Layer 2: Semantic Enrichment
 Read code module by module. For each:
 ```
-create_entity (type: pattern) → design patterns found
-create_entity (type: claim) → invariants and contracts
-create_entity (type: evidence) → risks identified
-create_entity (type: tension) → contradictions found
+create-entity (type: pattern) → design patterns found
+create-entity (type: claim) → invariants and contracts
+create-entity (type: evidence) → risks identified
+create-entity (type: tension) → contradictions found
 ```
 
 ### Layer 3: Analyze Architecture
 ```
-analyze_centrality (degree) → find hub modules
-detect_cycles → circular dependencies
-find_clusters → module communities
-semantic_gaps → implicit connections
+analyze-centrality (degree) → find hub modules
+detect-cycles → circular dependencies
+find-clusters → module communities
+semantic-gaps → implicit connections
 ```
 
 ---
@@ -135,14 +149,14 @@ semantic_gaps → implicit connections
 Converting documents into structured knowledge.
 
 ```
-ingest_document (filePath, category) → chunk and embed
-hybrid_search (query) → verify ingestion
-extract_from_documents (category, focus) → LLM extraction into entities
-embed_entities → make new entities searchable
-check_consistency → verify integrity
+ingest-document (file_path, category) → chunk and embed
+hybrid-search (query) → verify ingestion
+extract-from-documents (category, focus) → LLM extraction into entities
+embed-entities → make new entities searchable
+check-consistency → verify integrity
 ```
 
-**Best practice:** Use `extract_preview` before `extract_from_documents` to preview what will be created.
+**Best practice:** Use `extract-preview` before `extract-from-documents` to preview what will be created.
 
 ---
 
@@ -152,7 +166,7 @@ Discovering what's missing and generating novel proposals.
 
 ### Quick: Use the Composite
 ```
-hypothesis_engine → full pipeline in one call
+hypothesis-engine → full pipeline in one call
   Sections: gaps → proposals → quality filter → dedup gate → ranking
 ```
 
@@ -160,14 +174,14 @@ Returns scored hypotheses with novelty, plausibility, and testability metrics.
 
 ### Manual: Step by Step
 ```
-semantic_gaps → find similar but unconnected entities
-propose_entities → generate candidates for missing concepts
+semantic-gaps → find similar but unconnected entities
+propose-entities → generate candidates for missing concepts
 ```
 
 Then review and create:
 ```
-create_entity (type: hypothesis) → with prediction and test plan
-create_relation (supports/contradicts) → link to existing evidence
+create-entity (type: hypothesis) → with prediction and test plan
+create-relation (supports/contradicts) → link to existing evidence
 ```
 
 ### Dedup Configuration
@@ -185,19 +199,19 @@ Finding structural parallels across domains.
 
 ### Step 1: Mine Structural Motifs
 ```
-find_frequent_subgraphs → discover recurring patterns
+find-frequent-subgraphs → discover recurring patterns
   e.g., {"frequencyThreshold": 3, "maxMotifSize": 4}
 ```
 
 ### Step 2: Find Structural Matches
 ```
-find_subgraph_matches → search for a specific pattern shape
+find-subgraph-matches → search for a specific pattern shape
   e.g., pattern with concept → causes → variable → enables → pattern
 ```
 
 ### Step 3: Map Across Domains
 ```
-cross_domain_mapping → map concepts by structural role
+cross-domain-mapping → map concepts by structural role
   sourceDomain: {"entityType": "concept", "label": "Biology"}
   targetDomain: {"entityType": "concept", "label": "Economics"}
 ```
@@ -206,7 +220,7 @@ Maps by relational signature (degree profile, relation types, neighbor types), n
 
 ### Step 4: Explore Concept Slippage
 ```
-concept_slippage → find creative substitutions
+concept-slippage → find creative substitutions
   conceptId: <uuid>, temperature: 0.5
 ```
 
@@ -216,7 +230,7 @@ Temperature controls distance:
 - **High (0.7-1.0):** Creative leaps, cross-domain associations
 
 ### Combining Tools
-A powerful pattern: use `find_frequent_subgraphs` to discover motifs, then `cross_domain_mapping` to see if the same motif appears in another domain, then `concept_slippage` to explore what substitutions would make the analogy work.
+A powerful pattern: use `find-frequent-subgraphs` to discover motifs, then `cross-domain-mapping` to see if the same motif appears in another domain, then `concept-slippage` to explore what substitutions would make the analogy work.
 
 ---
 
@@ -226,26 +240,26 @@ Keeping the graph healthy.
 
 ### Regular Checks
 ```
-stale_beliefs (daysOld: 30) → find outdated entities
+stale-beliefs (daysOld: 30) → find outdated entities
 unprovenanced → find entities missing provenance
-check_invariants → verify constraints
-embedding_status → check embedding coverage
+check-invariants → verify constraints
+embedding-status → check embedding coverage
 ```
 
 ### Cleanup
 ```
-update_entity (status: superseded) → mark outdated
-update_entity (status: retracted) → mark invalid
-semantic_gaps → find disconnected knowledge
-gap_fill_cycle → automated gap detection + resolution
+update-entity (status: superseded) → mark outdated
+update-entity (status: retracted) → mark invalid
+semantic-gaps → find disconnected knowledge
+gap-fill-cycle → automated gap detection + resolution
 ```
 
 ### Quality Improvement
 ```
-self_improve → autonomous graph refinement
-postmortem_evaluate → evaluate session quality
-propagate_credit → cascade confidence changes
-reify_patterns → discover and materialize patterns
+self-improve → autonomous graph refinement
+postmortem-evaluate → evaluate session quality
+propagate-credit → cascade confidence changes
+reify-patterns → discover and materialize patterns
 ```
 
 ---
@@ -256,12 +270,12 @@ reify_patterns → discover and materialize patterns
 
 | Situation | Tool | Why |
 |-----------|------|-----|
-| Natural language question | `hybrid_search` | Combines all modalities |
-| Find similar entities | `semantic_neighbors` | Vector similarity |
-| Find entities by name/type | `list_entities` | Exact filtering |
-| Find document content | `hybrid_search` with `category` | Scoped doc search |
-| Explore around an entity | `get_neighbors` + `get_relations` | Graph traversal |
-| Find structural gaps | `semantic_gaps` | Disconnected but similar |
+| Natural language question | `hybrid-search` | Combines all modalities |
+| Find similar entities | `semantic-neighbors` | Vector similarity |
+| Find entities by name/type | `list-entities` | Exact filtering |
+| Find document content | `hybrid-search` with `category` | Scoped doc search |
+| Explore around an entity | `get-neighbors` + `get-relations` | Graph traversal |
+| Find structural gaps | `semantic-gaps` | Disconnected but similar |
 
 ### Hybrid search weights:
 
@@ -287,17 +301,17 @@ Adjust weights based on query type:
 Working across multiple knowledge domains.
 
 ```
-list_graphs → see all graphs
-graph_stats (graph: "name") → inspect specific graph
+list-graphs → see all graphs
+graph-stats (graph: "name") → inspect specific graph
 
 # Create cross-graph connections
-create_relation (from: entityA, to: entityB, graph: "bridges") → bridge relation
-list_bridges → see all cross-graph connections
-find_related_graphs (graph: "main") → discover connected graphs
+create-relation (from: entityA, to: entityB, graph: "bridges") → bridge relation
+list-bridges → see all cross-graph connections
+find-related-graphs (graph: "main") → discover connected graphs
 
 # Search across graphs
-hybrid_search (query, graph: "*") → search all graphs
-multi_graph_landscape → comprehensive cross-graph view
+hybrid-search (query, graph: "*") → search all graphs
+multi-graph-landscape → comprehensive cross-graph view
 ```
 
 ---
@@ -314,23 +328,23 @@ Every entity should have:
 
 ### Validate Claims
 ```
-uncertain_claims → find low-confidence claims
-single_source_claims → find under-corroborated
-needs_evidence → find unsupported claims
-contested_claims → find contradictions
+uncertain-claims → find low-confidence claims
+single-source-claims → find under-corroborated
+needs-evidence → find unsupported claims
+contested-claims → find contradictions
 ```
 
 ### Resolve Contradictions
-When `contested_claims` returns results:
-1. Read both sides with `read_entity`
-2. Trace provenance with `provenance_chain`
+When `contested-claims` returns results:
+1. Read both sides with `read-entity`
+2. Trace provenance with `provenance-chain`
 3. Create `tension` entity capturing the contradiction
 4. Or resolve: update confidence, retract one claim
 
 ### Version Knowledge
 When knowledge evolves:
 ```
-update_entity (id, status: "superseded", statusReason: "outdated_knowledge")
-create_entity → new version with updated content
-create_relation (supersedes) → new → supersedes → old
+update-entity (id, status: "superseded", statusReason: "outdated_knowledge")
+create-entity → new version with updated content
+create-relation (supersedes) → new → supersedes → old
 ```
