@@ -37,7 +37,7 @@ from __future__ import annotations
 import contextlib
 import json
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from falkordb import FalkorDB
@@ -321,6 +321,21 @@ class FalkorGraphStore(GraphStore):
         """The verbatim wire doc — key order preserved (synthesis `raw` output
         serializes docs into text, where JS object key order is contract)."""
         return self._read_doc(entity_id)
+
+    def read_entity_docs(self, entity_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Wire docs for many ids in ONE query, keyed by id; ids with no live
+        node are simply absent. A single-id read costs a label scan, so any
+        command that hydrates a whole neighbourhood (the consumption commands
+        resolve hundreds of rows at once) must fetch the set, not the elements.
+        """
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return {}
+        rows = self._rows_paged(
+            "MATCH (n:_Entity) WHERE n.id IN $ids RETURN n._doc ORDER BY id(n)", {"ids": ids}
+        )
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        return {doc["id"]: doc for doc in docs}
 
     def apply_entity_merge(
         self,

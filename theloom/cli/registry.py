@@ -46,6 +46,7 @@ from theloom.model import LoomModel
 from theloom.operations import algebra as algebra_ops
 from theloom.operations import analysis as analysis_ops
 from theloom.operations import bulk as bulk_ops
+from theloom.operations import consumption as consumption_ops
 from theloom.operations import documents as document_ops
 from theloom.operations import entity as entity_ops
 from theloom.operations import epistemic as epistemic_ops
@@ -1302,6 +1303,49 @@ def _synthesis_commands() -> list[CommandDescriptor]:
     ]
 
 
+def _consumption_commands() -> list[CommandDescriptor]:
+    """Consumption: one-call comprehension answers, token-budgeted and honest
+    about what they had to cut."""
+    entries: list[tuple[str, str, Any, Any]] = [
+        (
+            "explore",
+            "Everything about one symbol in one call: definition, callers, callees, imports, "
+            "containment, inheritance and the semantic layer, within a token budget.",
+            consumption_ops.ExploreInput,
+            consumption_ops.explore,
+        ),
+        (
+            "find-callers",
+            "Ranked list of the symbols that call this one, each anchored at its call site.",
+            consumption_ops.FindCallsInput,
+            consumption_ops.find_callers,
+        ),
+        (
+            "find-callees",
+            "Ranked list of the symbols this one calls, each anchored at its call site.",
+            consumption_ops.FindCallsInput,
+            consumption_ops.find_callees,
+        ),
+        (
+            "blast-radius",
+            "Reverse dependency reach of a symbol over calls/requires/instance_of, grouped by "
+            "module, with hub suppression.",
+            consumption_ops.BlastRadiusInput,
+            consumption_ops.blast_radius,
+        ),
+    ]
+    return [
+        CommandDescriptor(
+            name=name,
+            category="Consumption",
+            summary=summary,
+            input_model=input_model,
+            handler=handler,
+        )
+        for name, summary, input_model, handler in entries
+    ]
+
+
 def _composite_commands() -> list[CommandDescriptor]:
     """Composites: multi-section bundles over the core operations."""
     entries: list[tuple[str, str, Any, Any, bool]] = [
@@ -1489,6 +1533,7 @@ COMMANDS: list[CommandDescriptor] = [
     *_symbolic_commands(),
     *_inference_commands(),
     *_verification_commands(),
+    *_consumption_commands(),
     *_composite_commands(),
     CommandDescriptor(
         name="reify-patterns",

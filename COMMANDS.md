@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**157 registry commands** across 21 categories, plus the special `init` command.
+**161 registry commands** across 22 categories, plus the special `init` command.
 
 ## Adaptive Routing
 
@@ -32,6 +32,13 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 - **`simulate-change`** — Simulate graph mutations and preview structural impact (composite).
 - **`structural-survey`** — Structural analysis around an entity: ego subgraph, cycles, paths (composite).
 - **`verified-extract`** — Extract from documents then verify graph integrity (composite).
+
+## Consumption
+
+- **`blast-radius`** — Reverse dependency reach of a symbol over calls/requires/instance_of, grouped by module, with hub suppression.
+- **`explore`** — Everything about one symbol in one call: definition, callers, callees, imports, containment, inheritance and the semantic layer, within a token budget.
+- **`find-callees`** — Ranked list of the symbols this one calls, each anchored at its call site.
+- **`find-callers`** — Ranked list of the symbols that call this one, each anchored at its call site.
 
 ## Documents
 
