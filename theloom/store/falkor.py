@@ -233,8 +233,13 @@ class FalkorGraphStore(GraphStore):
 
     def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
         """(entity id, cosine similarity) for the k nearest embedded entities.
-        FalkorDB returns cosine *distance*; similarity = 1 - distance."""
-        self.ensure_vector_index()
+        FalkorDB returns cosine *distance*; similarity = 1 - distance.
+
+        The index dimension follows the query vector's own length (real
+        embeddings are always 768-dim; tests may seed lower-dimensional
+        synthetic vectors), so ``ensure_vector_index`` is idempotent whether
+        this is the first vector op on the graph or a later one."""
+        self.ensure_vector_index(dimension=len(query_vector))
         rows = self._rows(
             "CALL db.idx.vector.queryNodes('_Entity', '_embedding', $k, vecf32($q)) "
             "YIELD node, score RETURN node.id, score",

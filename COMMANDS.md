@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**156 registry commands** across 21 categories, plus the special `init` command.
+**157 registry commands** across 21 categories, plus the special `init` command.
 
 ## Adaptive Routing
 
@@ -57,6 +57,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 - **`retry-failed-embeddings`** — Retry dead-lettered embeddings.
 - **`semantic-gaps`** — Similar but unconnected entity pairs.
 - **`suggest-relations`** — Suggest relations from patterns.
+- **`warm-embedder`** — Pre-download and warm the embedding model.
 
 ## Entity Management
 

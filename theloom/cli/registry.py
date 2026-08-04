@@ -500,6 +500,14 @@ def _semantic_commands() -> list[CommandDescriptor]:
             True,
         ),
         (
+            "warm-embedder",
+            "Embeddings",
+            "Pre-download and warm the embedding model.",
+            s.WarmEmbedderInput,
+            s.warm_embedder,
+            True,
+        ),
+        (
             "flush-pending-embeddings",
             "Embeddings",
             "Flush the pending embedding queue.",
