@@ -79,12 +79,50 @@ class TestExtractFromSource:
         assert names["Reporter.summarize (index)"] == "procedure"
         assert names["make (index)"] == "procedure"
 
-    def test_import_becomes_requires(self) -> None:
+    def test_import_is_captured_with_its_bound_names(self) -> None:
+        """The per-file pass records the import; it does not emit the edge.
+
+        A single file cannot know which file ``dataclasses`` denotes, so the
+        edge is made later against the full file set (see
+        ``tests/test_extraction_resolution.py``). Emitting it here is what
+        produced edges pointing at names that were never entities.
+        """
         result = treesitter.extract_from_source(
             "from dataclasses import dataclass\n", "m.py", "python"
         )
-        requires = [r for r in result["relations"] if r["relationType"] == "requires"]
-        assert requires[0]["to"] == "dataclasses"
+        assert result["imports"] == [{"module": "dataclasses", "names": ["dataclass"]}]
+        assert [r for r in result["relations"] if r["relationType"] == "requires"] == []
+
+    def test_aliased_import_records_the_local_name(self) -> None:
+        """Calling code writes the alias, so the alias is what call resolution
+        must match on."""
+        result = treesitter.extract_from_source(
+            "from src.models import open_account as make\n", "m.py", "python"
+        )
+        assert result["imports"] == [{"module": "src.models", "names": ["make"]}]
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            # ``import X as Y`` binds Y but imports X — capturing the whole
+            # "X as Y" text produced package nodes literally named "numpy as np".
+            ("import numpy as np\n", [{"module": "numpy", "names": ["np"]}]),
+            ("import os\n", [{"module": "os", "names": []}]),
+            ("import a.b.c\n", [{"module": "a.b.c", "names": []}]),
+            ("from x import y as z\n", [{"module": "x", "names": ["z"]}]),
+        ],
+    )
+    def test_import_forms(self, source: str, expected: list[dict[str, object]]) -> None:
+        result = treesitter.extract_from_source(source, "m.py", "python")
+        assert result["imports"] == expected
+
+    def test_call_from_a_method_body_is_attributed_to_the_method(self) -> None:
+        """The caller key must match how the symbol map names methods
+        (``Class.method``); a bare name never matched, so every call made
+        inside a method was discarded."""
+        source = "class C:\n    def m(self):\n        helper()\n"
+        result = treesitter.extract_from_source(source, "c.py", "python")
+        assert result["unresolvedCalls"] == [{"caller": "C.m (c)", "callee": "helper"}]
 
 
 class TestExtractCodebaseDeterminism:
@@ -93,10 +131,13 @@ class TestExtractCodebaseDeterminism:
         assert result["stats"] == {
             "totalFiles": 4,
             "totalSymbols": 12,
-            "totalEntities": 16,
-            "totalRelations": 19,
-            "entityBreakdown": {"system": 4, "procedure": 9, "concept": 3},
-            "relationBreakdown": {"part_of": 15, "requires": 3, "related_to": 1},
+            # 16 symbols/files + the pkg:dataclasses node for the one
+            # third-party import in the fixture
+            "totalEntities": 17,
+            # 19 + the two cross-file calls resolution now recovers
+            "totalRelations": 21,
+            "entityBreakdown": {"system": 5, "procedure": 9, "concept": 3},
+            "relationBreakdown": {"part_of": 15, "related_to": 3, "requires": 3},
         }
 
     def test_deterministic_across_runs(self) -> None:

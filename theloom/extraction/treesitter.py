@@ -4,9 +4,11 @@ Uses the native py-tree-sitter bindings. Symbol/relation MAPPING: file ->
 system, class/interface/struct/trait/type_alias/enum -> concept,
 function/method -> procedure, variable/constant -> variable; entity name
 ``qualified (fileBaseName)``; symbol part_of file (+ enclosing), imports ->
-requires (raw module string), inheritance -> instance_of, resolved calls ->
-related_to. Grammar-version differences can shift a symbol across tree-sitter
-releases; the entity/relation semantics are the contract.
+requires (resolved to the target file entity, or a ``pkg:`` node for a
+third-party package), inheritance -> instance_of, calls -> related_to
+(intra-file directly, cross-file via ``theloom.extraction.resolution``).
+Grammar-version differences can shift a symbol across tree-sitter releases; the
+entity/relation semantics are the contract.
 
 Files are traversed in SORTED order so output is deterministic (an unsorted
 directory walk would be machine-dependent).
@@ -16,6 +18,8 @@ from __future__ import annotations
 
 import os
 from typing import Any
+
+from theloom.extraction import resolution
 
 Doc = dict[str, Any]
 
@@ -132,6 +136,25 @@ def _extract_calls(node: Any, caller: str, source: bytes, calls: list[Doc]) -> N
         _extract_calls(child, caller, source, calls)
 
 
+def _python_imported_names(node: Any, module_node: Any, source: bytes) -> list[str]:
+    """The bound names of a ``from X import a, b as c`` — ``a`` and ``c``.
+
+    The alias is what the calling code writes, so the alias is what a call
+    resolver must match on.
+    """
+    names: list[str] = []
+    for child in _named(node):
+        if child.id == module_node.id:
+            continue
+        if child.type == "aliased_import":
+            alias = _field(child, "alias")
+            if alias is not None:
+                names.append(_text(alias, source))
+        elif child.type in ("dotted_name", "identifier"):
+            names.append(_text(child, source).split(".")[0])
+    return names
+
+
 def _extract_python(root: Any, source: bytes) -> Doc:
     symbols: list[Doc] = []
     imports: list[Doc] = []
@@ -140,13 +163,30 @@ def _extract_python(root: Any, source: bytes) -> Doc:
 
     def walk(node: Any, enclosing_class: str | None, enclosing_func: str | None) -> None:
         if node.type == "import_statement":
-            name = _field(node, "name")
-            if name is not None:
-                imports.append({"module": _text(name, source)})
+            for child in _named(node):
+                if child.type == "aliased_import":
+                    # ``import numpy as np``: the module is the dotted name, and
+                    # ``np`` is the name calling code writes.
+                    module_node = _field(child, "name")
+                    alias = _field(child, "alias")
+                    if module_node is not None:
+                        imports.append(
+                            {
+                                "module": _text(module_node, source),
+                                "names": [_text(alias, source)] if alias is not None else [],
+                            }
+                        )
+                elif child.type == "dotted_name":
+                    imports.append({"module": _text(child, source), "names": []})
         elif node.type == "import_from_statement":
             module = _field(node, "module_name")
             if module is not None:
-                imports.append({"module": _text(module, source)})
+                imports.append(
+                    {
+                        "module": _text(module, source),
+                        "names": _python_imported_names(node, module, source),
+                    }
+                )
         elif node.type == "class_definition":
             name = _field(node, "name")
             if name is not None:
@@ -187,7 +227,8 @@ def _extract_python(root: Any, source: bytes) -> Doc:
                 )
                 body = _field(node, "body")
                 if body is not None:
-                    _extract_calls(body, func_name, source, calls)
+                    caller_key = f"{enclosing_class}.{func_name}" if enclosing_class else func_name
+                    _extract_calls(body, caller_key, source, calls)
                 return
         elif node.type == "expression_statement":
             children = _named(node)
@@ -239,6 +280,32 @@ def _ts_heritage(class_node: Any, class_name: str, source: bytes, inheritances: 
                             inheritances.append({"child": class_name, "parent": ident})
 
 
+def _js_imported_names(node: Any, source: bytes) -> list[str]:
+    """Bound names of an ES import — ``{a, b as c}`` gives ``a`` and ``c``,
+    and a default or namespace import gives its local name."""
+    names: list[str] = []
+
+    def walk(n: Any) -> None:
+        if n.type == "import_specifier":
+            alias = _field(n, "alias")
+            name = _field(n, "name")
+            chosen = alias if alias is not None else name
+            if chosen is not None:
+                names.append(_text(chosen, source))
+            return
+        if n.type in ("namespace_import", "identifier") and n.parent is not None:  # noqa: SIM102
+            if n.parent.type in ("import_clause", "namespace_import"):
+                text = _text(n, source).replace("* as ", "").strip()
+                if text and text not in ("type",):
+                    names.append(text)
+                return
+        for child in _named(n):
+            walk(child)
+
+    walk(node)
+    return names
+
+
 def _extract_typescript(root: Any, source: bytes) -> Doc:
     symbols: list[Doc] = []
     imports: list[Doc] = []
@@ -250,7 +317,12 @@ def _extract_typescript(root: Any, source: bytes) -> Doc:
         if t == "import_statement":
             src = _field(node, "source")
             if src is not None:
-                imports.append({"module": _text(src, source).strip("'\"")})
+                imports.append(
+                    {
+                        "module": _text(src, source).strip("'\""),
+                        "names": _js_imported_names(node, source),
+                    }
+                )
         elif t == "interface_declaration":
             name = _field(node, "name")
             if name is not None:
@@ -277,7 +349,10 @@ def _extract_typescript(root: Any, source: bytes) -> Doc:
                 symbols.append(_symbol(name, "method", node, source, enclosing_class))
                 body = _field(node, "body")
                 if body is not None:
-                    _extract_calls(body, method_name, source, calls)
+                    caller_key = (
+                        f"{enclosing_class}.{method_name}" if enclosing_class else method_name
+                    )
+                    _extract_calls(body, caller_key, source, calls)
         elif t == "function_declaration":
             name = _field(node, "name")
             if name is not None:
@@ -321,7 +396,7 @@ def _extract_require_calls(node: Any, source: bytes, imports: list[Doc]) -> None
             if args is not None:
                 first = _named(args)[0] if _named(args) else None
                 if first is not None and first.type == "string":
-                    imports.append({"module": _text(first, source).strip("'\"")})
+                    imports.append({"module": _text(first, source).strip("'\""), "names": []})
     for child in _named(node):
         _extract_require_calls(child, source, imports)
 
@@ -337,7 +412,12 @@ def _extract_javascript(root: Any, source: bytes) -> Doc:
         if t == "import_statement":
             src = _field(node, "source")
             if src is not None:
-                imports.append({"module": _text(src, source).strip("'\"")})
+                imports.append(
+                    {
+                        "module": _text(src, source).strip("'\""),
+                        "names": _js_imported_names(node, source),
+                    }
+                )
         elif t == "expression_statement":
             children = _named(node)
             if children:
@@ -375,7 +455,10 @@ def _extract_javascript(root: Any, source: bytes) -> Doc:
                 symbols.append(_symbol(name, "method", node, source, enclosing_class))
                 body = _field(node, "body")
                 if body is not None:
-                    _extract_calls(body, method_name, source, calls)
+                    caller_key = (
+                        f"{enclosing_class}.{method_name}" if enclosing_class else method_name
+                    )
+                    _extract_calls(body, caller_key, source, calls)
         elif t == "function_declaration":
             name = _field(node, "name")
             if name is not None:
@@ -506,23 +589,18 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
                     }
                 )
 
-    for imp in extraction["imports"]:
-        relations.append(
-            {
-                "from": file_entity_name,
-                "to": imp["module"],
-                "relationType": "requires",
-                "polarity": None,
-                "strength": "moderate",
-                "evidence": f"{file_path} imports {imp['module']}",
-            }
-        )
 
+    unresolved_inheritances: list[Doc] = []
     for inh in extraction["inheritances"]:
         child_name = symbol_name_map.get(inh["child"], _build_entity_name(inh["child"], file_path))
-        parent_name = symbol_name_map.get(
-            inh["parent"], _build_entity_name(inh["parent"], file_path)
-        )
+        parent_local = symbol_name_map.get(inh["parent"])
+        if parent_local is None:
+            # The base class is imported; naming it as though it lived in this
+            # file invents an entity that never exists, so the edge is dropped
+            # at import. Defer it to the cross-file pass instead.
+            unresolved_inheritances.append({"caller": child_name, "callee": inh["parent"]})
+            continue
+        parent_name = parent_local
         relations.append(
             {
                 "from": child_name,
@@ -534,6 +612,7 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
             }
         )
 
+    unresolved_calls: list[Doc] = []
     for call in extraction["calls"]:
         caller_name = symbol_name_map.get(call["caller"])
         callee_name = symbol_name_map.get(call["callee"])
@@ -548,8 +627,18 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
                     "evidence": f"{call['caller']} calls {call['callee']}",
                 }
             )
+        elif caller_name:
+            # Callee is not defined in this file; the cross-file pass may find it.
+            unresolved_calls.append({"caller": caller_name, "callee": call["callee"]})
 
-    return {"entities": entities, "relations": relations}
+    return {
+        "entities": entities,
+        "relations": relations,
+        "imports": extraction["imports"],
+        "symbols": symbol_name_map,
+        "unresolvedCalls": unresolved_calls,
+        "unresolvedInheritances": unresolved_inheritances,
+    }
 
 
 def collect_source_files(project_path: str, include_tests: bool = True) -> list[Doc]:
@@ -582,21 +671,57 @@ def _is_test_file(rel: str) -> bool:
     return any(marker in lowered for marker in (".test.", ".spec.", "__tests__/", "__test__/"))
 
 
-def extract_from_files(files: list[Doc]) -> Doc:
+def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> Doc:
+    """Parse every file, then join the edges that span files.
+
+    The per-file pass cannot see past its own file, so imports and calls to
+    imported symbols are resolved afterwards against the full file set (see
+    ``theloom.extraction.resolution``).
+    """
     all_entities: list[Doc] = []
     all_relations: list[Doc] = []
     entity_names: set[str] = set()
+    per_file: list[Doc] = []
     for file in files:
         lang = detect_language(file["relativePath"])
         if lang is None:
             continue
-        result = extract_from_source(file["content"], file["relativePath"], lang)
+        path = resolution.normalise_path(file["relativePath"])
+        result = extract_from_source(file["content"], path, lang)
         for entity in result["entities"]:
             if entity["name"] not in entity_names:
                 entity_names.add(entity["name"])
                 all_entities.append(entity)
         all_relations.extend(result["relations"])
-    return {"entities": all_entities, "relations": all_relations}
+        per_file.append(
+            {
+                "path": path,
+                "imports": result["imports"],
+                "symbols": result["symbols"],
+                "unresolvedCalls": result["unresolvedCalls"],
+                "unresolvedInheritances": result["unresolvedInheritances"],
+            }
+        )
+
+    known_files = frozenset(record["path"] for record in per_file)
+    imports = resolution.resolve_imports(
+        per_file, known_files, external_entities=external_entities
+    )
+    calls = resolution.resolve_calls(per_file, known_files)
+    inheritances = resolution.resolve_inheritances(per_file, known_files)
+    for entity in imports["entities"]:
+        if entity["name"] not in entity_names:
+            entity_names.add(entity["name"])
+            all_entities.append(entity)
+    all_relations.extend(imports["relations"])
+    all_relations.extend(calls["relations"])
+    all_relations.extend(inheritances["relations"])
+
+    return {
+        "entities": all_entities,
+        "relations": all_relations,
+        "resolution": {**imports["stats"], **calls["stats"], **inheritances["stats"]},
+    }
 
 
 def extract_codebase(
@@ -610,6 +735,7 @@ def extract_codebase(
     result = extract_from_files(files)
     entities = result["entities"]
     relations = result["relations"]
+    resolution_stats = result["resolution"]
 
     entity_breakdown: dict[str, int] = {}
     for entity in entities:
@@ -631,6 +757,7 @@ def extract_codebase(
             "entityBreakdown": entity_breakdown,
             "relationBreakdown": relation_breakdown,
         },
+        "resolution": resolution_stats,
         "extractionMethod": "tree-sitter",
         "indexPath": "",
     }
