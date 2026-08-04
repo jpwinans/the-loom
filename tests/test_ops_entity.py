@@ -5,7 +5,8 @@ warnings appended as observations, revision auto-population (version=1 /
 changeType / previousVersionId self-reference on update), confidence/provenance
 date auto-population, changeType auto-detection precedence, statusChangedAt,
 replacedById → auto supersedes relation, include* status flags, graph="*"
-wildcard, and read-entities-by-name partitioning.
+wildcard, list-entities' two output shapes (bare array without `limit`, the
+items/truncated envelope with it), and read-entities-by-name partitioning.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import pytest
 from falkordb import FalkorDB
 from redis import Redis
 
+from theloom.cli.registry import run_handler
 from theloom.errors import LoomError, NotFoundError
 from theloom.operations.entity import (
     CreateEntityInput,
@@ -248,6 +250,82 @@ def test_list_wildcard_graph_annotates_graph(multi: MultiGraph) -> None:
     result = list_entities(ListEntitiesInput.model_validate({"graph": "*"}), multi)
     graphs = {e["name"]: e["graph"] for e in result}
     assert graphs == {"In Default": "default", "In Research": "research"}
+
+
+def test_list_without_limit_keeps_the_bare_array_shape(multi: MultiGraph) -> None:
+    make(multi, "One")
+    make(multi, "Two")
+    result = list_entities(ListEntitiesInput.model_validate({}), multi)
+    assert isinstance(result, list)
+    assert [e["name"] for e in result] == ["One", "Two"]
+
+
+def test_list_with_limit_returns_the_truncation_envelope(multi: MultiGraph) -> None:
+    for name in ("One", "Two", "Three"):
+        make(multi, name)
+    result = list_entities(ListEntitiesInput.model_validate({"limit": 2}), multi)
+    assert isinstance(result, dict)
+    assert set(result) == {"items", "truncated"}
+    assert [e["name"] for e in result["items"]] == ["One", "Two"]
+    assert result["truncated"] == {
+        "shown": 2,
+        "total": 3,
+        "hint": "raise limit or narrow with entityType/query",
+    }
+
+
+def test_list_with_a_generous_limit_reports_no_truncation(multi: MultiGraph) -> None:
+    make(multi, "Only")
+    result = list_entities(ListEntitiesInput.model_validate({"limit": 50}), multi)
+    assert isinstance(result, dict)
+    assert result["truncated"]["shown"] == result["truncated"]["total"] == 1
+
+
+def test_list_limit_composes_with_the_other_filters(multi: MultiGraph) -> None:
+    make(multi, "Concept A")
+    make(multi, "Concept B")
+    make(multi, "A Pattern", entityType="pattern")
+    result = list_entities(
+        ListEntitiesInput.model_validate({"entityType": "concept", "limit": 1}), multi
+    )
+    assert isinstance(result, dict)
+    assert [e["name"] for e in result["items"]] == ["Concept A"]
+    assert result["truncated"]["total"] == 2
+
+
+def test_list_limit_totals_across_the_wildcard_graph(multi: MultiGraph) -> None:
+    multi.create_graph("research")
+    make(multi, "In Default")
+    make(multi, "In Research", graph="research")
+    result = list_entities(ListEntitiesInput.model_validate({"graph": "*", "limit": 1}), multi)
+    assert isinstance(result, dict)
+    assert [e["name"] for e in result["items"]] == ["In Default"]
+    assert result["truncated"] == {
+        "shown": 1,
+        "total": 2,
+        "hint": "raise limit or narrow with entityType/query",
+    }
+
+
+def test_list_limit_rejects_zero(multi: MultiGraph) -> None:
+    with pytest.raises(ValueError):
+        ListEntitiesInput.model_validate({"limit": 0})
+
+
+def test_list_entities_shapes_through_the_registry(multi: MultiGraph) -> None:
+    make(multi, "One")
+    make(multi, "Two")
+    bare = run_handler("list-entities", {}, multi)
+    assert isinstance(bare, list)
+    assert [e["name"] for e in bare] == ["One", "Two"]
+    capped = run_handler("list-entities", {"limit": 1}, multi)
+    assert isinstance(capped, dict)
+    assert [e["name"] for e in capped["items"]] == ["One"]
+    assert capped["truncated"] == {
+        "shown": 1,
+        "total": 2,
+        "hint": "raise limit or narrow with entityType/query",
+    }
 
 
 def test_read_entities_by_name_partitions(multi: MultiGraph) -> None:

@@ -66,7 +66,8 @@ class GraphStore(ABC):
     def list_entities(self, filter: EntityFilter | None = None) -> list[Entity]:
         """List entities with the filter semantics (status defaults to
         ['active']; order: status → type → name → query → version; then
-        sourcedFrom/excludeSourcedFrom with exclude winning)."""
+        sourcedFrom/excludeSourcedFrom with exclude winning), capped at
+        ``filter.limit`` when set."""
 
     # -- Relations ------------------------------------------------------------
 

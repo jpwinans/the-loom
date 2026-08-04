@@ -124,6 +124,7 @@ class ListEntitiesInput(CommandInput):
     version: int | None = Field(default=None, ge=1)
     min_version: int | None = Field(default=None, ge=1, alias="minVersion")
     session: str | None = None
+    limit: int | None = Field(default=None, ge=1)
     graph: str | None = None
 
 
@@ -304,7 +305,19 @@ def delete_entity(params: DeleteEntityInput, multi: MultiGraph) -> dict[str, Any
     return deleted.model_dump(by_alias=True, exclude_unset=True)
 
 
-def list_entities(params: ListEntitiesInput, multi: MultiGraph) -> list[dict[str, Any]]:
+TRUNCATION_HINT = "raise limit or narrow with entityType/query"
+
+
+def list_entities(
+    params: ListEntitiesInput, multi: MultiGraph
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Entity docs in the store's deterministic order.
+
+    Output shape is behaviour-first: without ``limit`` the legacy bare array is
+    preserved; with ``limit`` the result is
+    ``{"items": [...], "truncated": {"shown", "total", "hint"}}`` so a capped
+    read always says how much it did not show.
+    """
     status_filter = ["active"]
     if params.include_superseded is True:
         status_filter.append("superseded")
@@ -325,23 +338,37 @@ def list_entities(params: ListEntitiesInput, multi: MultiGraph) -> list[dict[str
         ("version", "version"),
         ("min_version", "minVersion"),
         ("session", "session"),
+        ("limit", "limit"),
     ):
         value = getattr(params, field)
         if value is not None:
             filter_doc[key] = value
     entity_filter = EntityFilter.model_validate(filter_doc)
 
+    results: list[dict[str, Any]] = []
+    total = 0
     if params.graph == WILDCARD_GRAPH:
-        results: list[dict[str, Any]] = []
+        # Each graph is capped at `limit` and reports its own total; the
+        # concatenation is then re-capped, which is the same prefix a single
+        # uncapped concatenation would have produced.
         for graph_name in multi.graph_names():
-            for entity in multi.get_store(graph_name).list_entities(entity_filter):
+            entities, graph_total = multi.get_store(graph_name).list_entities_page(entity_filter)
+            total += graph_total
+            for entity in entities:
                 doc = entity.model_dump(by_alias=True, exclude_unset=True)
                 doc["graph"] = graph_name
                 results.append(doc)
-        return results
+    else:
+        entities, total = multi.get_store(params.graph).list_entities_page(entity_filter)
+        results = [e.model_dump(by_alias=True, exclude_unset=True) for e in entities]
 
-    entities = multi.get_store(params.graph).list_entities(entity_filter)
-    return [e.model_dump(by_alias=True, exclude_unset=True) for e in entities]
+    if params.limit is None:
+        return results
+    shown = results[: params.limit]
+    return {
+        "items": shown,
+        "truncated": {"shown": len(shown), "total": total, "hint": TRUNCATION_HINT},
+    }
 
 
 def read_entities_by_name(params: ReadEntitiesByNameInput, multi: MultiGraph) -> dict[str, Any]:

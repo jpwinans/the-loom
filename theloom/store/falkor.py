@@ -6,6 +6,15 @@ Storage model — one FalkorDB graph per named Loom graph:
   JSON (key presence preserved — the store serves exactly what was written,
   explicit nulls included). ``tx_from`` is the system time of the doc's current
   incarnation.
+- Entity read index = four *derived* properties on the same node, projected
+  from ``_doc`` on every write: ``_status`` (effective status — unset means
+  'active'), ``_type`` (entityType), ``_name`` (lowercased name) and
+  ``_search`` (lowercased name + observations). They carry no information
+  ``_doc`` doesn't already have; they exist so status/entityType/name/query
+  filtering runs server-side instead of shipping and validating the whole
+  graph per list call. Graphs written before the index existed are tolerated
+  (a missing ``_status`` always passes the prefilter) and migrated in place on
+  the first filtered read.
 - Relation = typed edge ``-[:<relationType> {id, _doc}]->`` between entity
   nodes; parallel edges between the same pair are native.
 - Version  = node ``:_EntityVersion {entity_id, _doc, tx_from, tx_to}`` — an
@@ -49,11 +58,88 @@ from theloom.store.filters import (
     apply_relation_filters,
     extract_neighbor_ids,
 )
-from theloom.store.paging import fetch_all_rows
+from theloom.store.paging import PAGE_SIZE, fetch_all_rows
 from theloom.timeutil import iso_now
 
 _IMMUTABLE_ENTITY_FIELDS = ("id", "created_at")
 _IMMUTABLE_RELATION_FIELDS = ("id", "from", "to", "created_at")
+
+# The derived read-index properties, in wire-doc projection order. Named
+# without the leading underscore here; the node property is "_" + field.
+_INDEX_FIELDS = ("status", "type", "name", "search")
+
+
+def _index_props(doc: Mapping[str, Any]) -> dict[str, str]:
+    """Project a wire doc onto the derived read-index properties.
+
+    Mirrors theloom/store/filters.py exactly: effective status (unset means
+    'active'), and case-insensitive name / name+observations haystacks.
+    """
+    name = str(doc.get("name") or "")
+    observations = doc.get("observations") or []
+    return {
+        "status": str(doc.get("status") or "active"),
+        "type": str(doc.get("entityType") or ""),
+        "name": name.lower(),
+        "search": "\n".join([name, *(str(obs) for obs in observations)]).lower(),
+    }
+
+
+def _index_params(doc: Mapping[str, Any], prefix: str) -> dict[str, str]:
+    """Query parameters for a doc's index projection, under a name prefix."""
+    return {f"{prefix}{field.capitalize()}": value for field, value in _index_props(doc).items()}
+
+
+def _index_literal(prefix: str) -> str:
+    """Cypher map entries for a CREATE pattern."""
+    return ", ".join(f"_{field}: ${prefix}{field.capitalize()}" for field in _INDEX_FIELDS)
+
+
+def _index_assignments(alias: str, prefix: str) -> str:
+    """Cypher SET assignments for an already-bound node."""
+    return ", ".join(f"{alias}._{field} = ${prefix}{field.capitalize()}" for field in _INDEX_FIELDS)
+
+
+def _pushdown_is_exact(filter: EntityFilter | None) -> bool:
+    """True when the Cypher prefilter alone decides membership — i.e. no
+    filter field is left for the Python pass. Only then may LIMIT/count run
+    server-side."""
+    if filter is None:
+        return True
+    return (
+        filter.version is None
+        and filter.min_version is None
+        and filter.session is None
+        and not filter.sourced_from
+        and not filter.exclude_sourced_from
+    )
+
+
+def _entity_prefilter(filter: EntityFilter | None) -> tuple[str, dict[str, Any]]:
+    """The server-side WHERE clause + params for an entity list read.
+
+    Every predicate is written ``(prop IS NULL OR <test>)`` so a node that
+    predates the read index always survives into the candidate set and is
+    decided exactly by the Python pass.
+    """
+    statuses = (
+        [s.value for s in filter.status_filter]
+        if filter is not None and filter.status_filter is not None
+        else ["active"]
+    )
+    clauses = ["(n._status IS NULL OR n._status IN $fStatuses)"]
+    params: dict[str, Any] = {"fStatuses": statuses}
+    if filter is not None:
+        if filter.entity_type is not None:
+            clauses.append("(n._type IS NULL OR n._type = $fType)")
+            params["fType"] = filter.entity_type.value
+        if filter.name is not None:
+            clauses.append("(n._name IS NULL OR n._name CONTAINS $fName)")
+            params["fName"] = filter.name.lower()
+        if filter.query is not None:
+            clauses.append("(n._search IS NULL OR n._search CONTAINS $fQuery)")
+            params["fQuery"] = filter.query.lower()
+    return " AND ".join(clauses), params
 
 
 def _transition_error(from_status: str | None, to_status: str) -> str:
@@ -87,9 +173,12 @@ class FalkorGraphStore(GraphStore):
         rows: list[list[Any]] = result.result_set or []
         return rows
 
-    def _rows_paged(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        """All rows of an ORDER BY-carrying query, immune to RESULTSET_SIZE."""
-        return fetch_all_rows(self._rows, cypher, params)
+    def _rows_paged(
+        self, cypher: str, params: dict[str, Any] | None = None, limit: int | None = None
+    ) -> list[list[Any]]:
+        """All rows of an ORDER BY-carrying query, immune to RESULTSET_SIZE.
+        ``limit`` caps the window server-side (the paging loop stops there)."""
+        return fetch_all_rows(self._rows, cypher, params, limit)
 
     # -- entities ----------------------------------------------------------------
 
@@ -99,8 +188,8 @@ class FalkorGraphStore(GraphStore):
         doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
         entity = Entity.model_validate(doc)
         self._query(
-            "CREATE (n:_Entity {id: $id, _doc: $doc, tx_from: $now})",
-            {"id": doc["id"], "doc": json.dumps(doc), "now": now},
+            f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, {_index_literal('ix')}}})",
+            {"id": doc["id"], "doc": json.dumps(doc), "now": now, **_index_params(doc, "ix")},
         )
         self._events.append("entity_created", {"entity": doc})
         return entity
@@ -108,8 +197,13 @@ class FalkorGraphStore(GraphStore):
     def import_entity_doc(self, doc: Mapping[str, Any]) -> None:
         """Write a pre-existing wire doc verbatim (migration path; no event)."""
         self._query(
-            "CREATE (n:_Entity {id: $id, _doc: $doc, tx_from: $tx})",
-            {"id": doc["id"], "doc": json.dumps(doc), "tx": doc.get("updated_at", iso_now())},
+            f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $tx, {_index_literal('ix')}}})",
+            {
+                "id": doc["id"],
+                "doc": json.dumps(doc),
+                "tx": doc.get("updated_at", iso_now()),
+                **_index_params(doc, "ix"),
+            },
         )
 
     # -- vectors (entity vectors live in the same store) ------------------------
@@ -188,13 +282,19 @@ class FalkorGraphStore(GraphStore):
             merged[field] = current[field]
         entity = Entity.model_validate(merged)
 
-        # One atomic query: snapshot the prior incarnation, then swap the doc.
+        # One atomic query: snapshot the prior incarnation, then swap the doc
+        # (and its derived read-index projection).
         self._query(
             "MATCH (n:_Entity {id: $id}) "
             "CREATE (:_EntityVersion {entity_id: $id, _doc: n._doc, "
             "tx_from: n.tx_from, tx_to: $now}) "
-            "SET n._doc = $doc, n.tx_from = $now",
-            {"id": entity_id, "doc": json.dumps(merged), "now": now},
+            f"SET n._doc = $doc, n.tx_from = $now, {_index_assignments('n', 'ix')}",
+            {
+                "id": entity_id,
+                "doc": json.dumps(merged),
+                "now": now,
+                **_index_params(merged, "ix"),
+            },
         )
         event_type = "entity_status_changed" if status_changed else "entity_updated"
         self._events.append(event_type, {"entity": merged, "previous": current})
@@ -239,7 +339,9 @@ class FalkorGraphStore(GraphStore):
             "tx_from: p.tx_from, tx_to: $now}) ",
             "CREATE (:_EntityVersion {entity_id: $secondaryId, _doc: s._doc, "
             "tx_from: s.tx_from, tx_to: $now}) ",
-            "SET p._doc = $primaryDoc, p.tx_from = $now, s._doc = $secondaryDoc, s.tx_from = $now",
+            "SET p._doc = $primaryDoc, p.tx_from = $now, ",
+            "s._doc = $secondaryDoc, s.tx_from = $now, ",
+            f"{_index_assignments('p', 'pIx')}, {_index_assignments('s', 'sIx')}",
         ]
         params: dict[str, Any] = {
             "primaryId": primary_id,
@@ -247,6 +349,8 @@ class FalkorGraphStore(GraphStore):
             "primaryDoc": json.dumps(dict(primary_doc)),
             "secondaryDoc": json.dumps(dict(secondary_doc)),
             "now": now,
+            **_index_params(primary_doc, "pIx"),
+            **_index_params(secondary_doc, "sIx"),
         }
         for i, doc in enumerate(redirects):
             rid, rdoc, other = f"r{i}Id", f"r{i}Doc", f"r{i}Other"
@@ -286,25 +390,58 @@ class FalkorGraphStore(GraphStore):
 
     def list_entity_docs(self, filter: EntityFilter | None = None) -> list[dict[str, Any]]:
         """Verbatim wire docs, same filtering/order as list_entities."""
-        rows = self._rows_paged("MATCH (n:_Entity) RETURN n._doc ORDER BY id(n)")
-        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
-        by_id = {doc["id"]: doc for doc in docs}
-        return [by_id[e.id] for e in self.list_entities(filter)]
-
-    def list_relation_docs(self, filter: RelationFilter | None = None) -> list[dict[str, Any]]:
-        """Verbatim relation wire docs, same filtering/order as list_relations."""
-        rows = self._rows_paged("MATCH (:_Entity)-[r]->(:_Entity) RETURN r._doc ORDER BY id(r)")
-        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
-        by_id = {doc["id"]: doc for doc in docs}
-        return [by_id[r.id] for r in self.list_relations(filter)]
+        return self._entity_page(filter)[1]
 
     def list_entities(self, filter: EntityFilter | None = None) -> list[Entity]:
-        rows = self._rows_paged("MATCH (n:_Entity) RETURN n._doc ORDER BY id(n)")
-        entities = [Entity.model_validate(json.loads(row[0])) for row in rows]
+        return self._entity_page(filter)[0]
+
+    def list_entities_page(self, filter: EntityFilter | None = None) -> tuple[list[Entity], int]:
+        """``(entities, total)`` — the entities honour ``filter.limit``, the
+        total counts every match had the limit not been applied."""
+        entities, _, total = self._entity_page(filter)
+        return entities, total
+
+    def _entity_page(
+        self, filter: EntityFilter | None
+    ) -> tuple[list[Entity], list[dict[str, Any]], int]:
+        """The one entity read path: Cypher prefilter → Python confirmation
+        (filters.py stays the semantics oracle) → limit.
+
+        ``limit`` and the total are computed server-side whenever the prefilter
+        alone decides membership; when a filter field has no server-side
+        counterpart (version/session/sourcedFrom) the candidate window is read
+        whole and sliced after the Python pass, so semantics never depend on
+        which path ran.
+        """
+        where, params = _entity_prefilter(filter)
+        cypher = f"MATCH (n:_Entity) WHERE {where} RETURN n._doc, n._status ORDER BY id(n)"
+        limit = filter.limit if filter is not None else None
+        server_limit = limit if limit is not None and _pushdown_is_exact(filter) else None
+
+        rows = self._rows_paged(cypher, params, server_limit)
+        if any(row[1] is None for row in rows):
+            # A graph written before the read index existed. Migrate it in
+            # place, then re-read: the window above was a superset (and, under
+            # a server-side limit, possibly the wrong superset).
+            self._migrate_entity_index()
+            rows = self._rows_paged(cypher, params, server_limit)
+
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        entities = [Entity.model_validate(doc) for doc in docs]
+        entities = self._confirm_entity_filters(entities, filter)
+        total = len(entities) if server_limit is None else self._count_entities(where, params)
+        if limit is not None:
+            entities = entities[:limit]
+        by_id = {doc["id"]: doc for doc in docs}
+        return entities, [by_id[e.id] for e in entities], total
+
+    def _confirm_entity_filters(
+        self, entities: list[Entity], filter: EntityFilter | None
+    ) -> list[Entity]:
+        """Exact filter semantics over the candidate set."""
         entities = apply_entity_filters(entities, filter)
         if filter is None:
             return entities
-
         included = self._sources_of(filter.sourced_from)
         excluded = self._sources_of(filter.exclude_sourced_from)
         if included is not None:
@@ -312,6 +449,36 @@ class FalkorGraphStore(GraphStore):
         if excluded is not None:
             entities = [e for e in entities if e.id not in excluded]
         return entities
+
+    def _count_entities(self, where: str, params: dict[str, Any]) -> int:
+        rows = self._rows(f"MATCH (n:_Entity) WHERE {where} RETURN count(n)", params)
+        return int(rows[0][0]) if rows else 0
+
+    def _migrate_entity_index(self) -> None:
+        """Backfill the derived read-index properties for every entity that
+        predates them. Batched (each batch removes itself from the predicate),
+        derived-only, so no event is appended — this changes no domain state."""
+        seen: set[str] = set()
+        while True:
+            rows = self._rows(
+                "MATCH (n:_Entity) WHERE n._status IS NULL RETURN n._doc LIMIT $batch",
+                {"batch": PAGE_SIZE},
+            )
+            docs = [json.loads(row[0]) for row in rows]
+            fresh = [doc for doc in docs if doc["id"] not in seen]
+            if not fresh:
+                return
+            seen.update(doc["id"] for doc in fresh)
+            self._query(
+                "UNWIND $rows AS row MATCH (n:_Entity {id: row.id}) "
+                "SET n._status = row.status, n._type = row.type, "
+                "n._name = row.name, n._search = row.search",
+                {"rows": [{"id": doc["id"], **_index_props(doc)} for doc in fresh]},
+            )
+
+    def list_relation_docs(self, filter: RelationFilter | None = None) -> list[dict[str, Any]]:
+        """Verbatim relation wire docs, same filtering/order as list_relations."""
+        return self._relation_page(filter)[1]
 
     def _sources_of(self, target_ids: list[str] | None) -> set[str] | None:
         """Ids of entities holding a 'sources' relation TO any of the targets."""
@@ -468,9 +635,34 @@ class FalkorGraphStore(GraphStore):
         self._events.append("relation_deleted", {"relation": doc})
 
     def list_relations(self, filter: RelationFilter | None = None) -> list[Relation]:
-        rows = self._rows_paged("MATCH (:_Entity)-[r]->(:_Entity) RETURN r._doc ORDER BY id(r)")
-        relations = [Relation.model_validate(json.loads(row[0])) for row in rows]
-        return apply_relation_filters(relations, filter)
+        return self._relation_page(filter)[0]
+
+    def _relation_page(
+        self, filter: RelationFilter | None
+    ) -> tuple[list[Relation], list[dict[str, Any]]]:
+        """The one relation read path. from/to/relationType are structural —
+        they push into the MATCH pattern exactly (endpoint ids, edge label) —
+        and polarity/session are confirmed in Python by filters.py."""
+        edge_type = ""
+        from_pattern, to_pattern = "(:_Entity)", "(:_Entity)"
+        params: dict[str, Any] = {}
+        if filter is not None:
+            if filter.relation_type is not None:
+                edge_type = f":{filter.relation_type.value}"
+            if filter.from_ is not None:
+                from_pattern = "(a:_Entity {id: $fFrom})"
+                params["fFrom"] = filter.from_
+            if filter.to is not None:
+                to_pattern = "(b:_Entity {id: $fTo})"
+                params["fTo"] = filter.to
+        rows = self._rows_paged(
+            f"MATCH {from_pattern}-[r{edge_type}]->{to_pattern} RETURN r._doc ORDER BY id(r)",
+            params,
+        )
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        relations = apply_relation_filters([Relation.model_validate(doc) for doc in docs], filter)
+        by_id = {doc["id"]: doc for doc in docs}
+        return relations, [by_id[r.id] for r in relations]
 
     def get_relations(
         self,

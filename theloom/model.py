@@ -502,7 +502,10 @@ class EntityFilter(LoomModel):
     theloom/store/filters.py with the ordering:
     status → type → name → query → version → session; exclude wins over
     sourcedFrom. The session filter matches the first-class field or the
-    legacy "subgraph: {sid}-{qid}" observation tag."""
+    legacy "subgraph: {sid}-{qid}" observation tag.
+
+    ``limit`` caps the returned window *after* filtering, in the store's
+    deterministic order; the store also reports the untruncated match total."""
 
     entity_type: EntityType | None = Field(default=None, alias="entityType")
     name: str | None = None
@@ -518,6 +521,7 @@ class EntityFilter(LoomModel):
     durability: Durability | list[Durability] | None = None
     exclude_expired: bool | None = Field(default=None, alias="excludeExpired")
     session: str | None = None
+    limit: int | None = Field(default=None, ge=1)
 
 
 class RelationFilter(LoomModel):
