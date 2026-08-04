@@ -119,9 +119,9 @@ Understanding code through graph analysis.
 
 ### Layer 1: Extract Structure
 ```
-extract-codebase → SCIP-based TS/JS extraction
+extract-codebase → tree-sitter extraction (py, ts, tsx, js, go, rust)
   OR
-ingest-directory → for Python/other languages
+ingest-directory → for other languages
 extract-from-documents → LLM extraction
 ```
 
