@@ -46,6 +46,8 @@ class UpdateCodebaseInput(CommandInput):
     include: list[str] | None = None
     exclude: list[str] | None = None
     dry_run: bool | None = Field(default=None, alias="dryRun")
+    # Override the shrink guard (a collapsed extraction is refused by default).
+    force: bool | None = None
 
 
 class SelfModelUpdateInput(CommandInput):
@@ -133,6 +135,14 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
 
 
 def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
+    """Replay a git diff over an existing codebase graph.
+
+    Per changed file the update replaces what that file contributed: vanished
+    entities are superseded, edges it sourced are re-diffed and the stale ones
+    closed out bi-temporally. A collapsed extraction (a still-present file that
+    now yields nothing, or an update that would supersede more than half the
+    graph) is refused with OPERATION_ERROR unless ``force`` is set.
+    """
     from theloom.extraction.codebasediff import update_codebase_diff
 
     try:
@@ -142,6 +152,7 @@ def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
             git_ref=params.git_ref or "HEAD~1..HEAD",
             include_tests=params.include_tests if params.include_tests is not None else True,
             dry_run=params.dry_run or False,
+            force=params.force or False,
             multi=multi,
         )
     except FileNotFoundError as exc:

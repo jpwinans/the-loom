@@ -20,6 +20,10 @@ Storage model — one FalkorDB graph per named Loom graph:
 - Version  = node ``:_EntityVersion {entity_id, _doc, tx_from, tx_to}`` — an
   invalidated prior incarnation. Updates snapshot, they never erase;
   ``read_entity_as_of`` reads these.
+- Closed-out relation = node ``:_RelationVersion {relation_id, _doc, tx_from,
+  tx_to}`` — the same bi-temporal shape for an edge that has left the live
+  projection (``invalidate_relation``). An edge carries no status field, so
+  retiring one means closing its system-time interval, not flipping a flag.
 - Metadata = singleton node ``:_GraphMeta {_doc}``.
 
 Every mutation is a single atomic Cypher query, followed by an event append
@@ -630,6 +634,41 @@ class FalkorGraphStore(GraphStore):
             )
         self._events.append("relation_updated", {"relation": merged, "previous": current})
         return relation
+
+    def invalidate_relation(
+        self, from_id: str, to_id: str, relation_type: str | None = None
+    ) -> Relation:
+        """Retire an edge bi-temporally: it leaves the live projection and its
+        final doc is snapshotted as ``:_RelationVersion`` with ``tx_to`` set.
+
+        The counterpart of an entity's ``superseded`` status. A relation has no
+        status field to flip, so its retirement is a closed system-time
+        interval instead: ``tx_from`` is the doc's own ``created_at`` and
+        ``tx_to`` is now. History is preserved — the edge is never erased —
+        while every read path (which matches live edges) stops seeing it.
+
+        Raises NotFoundError when no such edge exists.
+        """
+        edges = self._edge_rows(from_id, to_id, relation_type)
+        if not edges:
+            raise NotFoundError("Relation not found")
+        edge_id, doc = edges[0]
+        now = iso_now()
+        self._query(
+            "MATCH ()-[r]->() WHERE id(r) = $rid "
+            "CREATE (:_RelationVersion {relation_id: $id, _doc: $doc, "
+            "tx_from: $txFrom, tx_to: $now}) "
+            "DELETE r",
+            {
+                "rid": edge_id,
+                "id": doc["id"],
+                "doc": json.dumps(doc),
+                "txFrom": doc.get("created_at", now),
+                "now": now,
+            },
+        )
+        self._events.append("relation_invalidated", {"relation": doc, "tx_to": now})
+        return Relation.model_validate(doc)
 
     def delete_relation(self, from_id: str, to_id: str, relation_type: str | None = None) -> None:
         edges = self._edge_rows(from_id, to_id, relation_type)
