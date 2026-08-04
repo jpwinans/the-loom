@@ -85,6 +85,46 @@ def test_create_structural_keeps_null_polarity(multi: MultiGraph) -> None:
     assert "_bridge_created" not in result
 
 
+@pytest.mark.parametrize("relation_type", ["calls", "references"])
+def test_create_code_relation_keeps_null_polarity(multi: MultiGraph, relation_type: str) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    result = create_relation(
+        CreateRelationInput.model_validate(rel_input(a, b, relation_type)), multi
+    )
+    assert result["relationType"] == relation_type
+    assert result["polarity"] is None
+
+
+@pytest.mark.parametrize("relation_type", ["calls", "references"])
+def test_create_code_relation_rejects_polarity(multi: MultiGraph, relation_type: str) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    with pytest.raises(OperationError) as excinfo:
+        create_relation(
+            CreateRelationInput.model_validate(rel_input(a, b, relation_type, polarity="+")),
+            multi,
+        )
+    assert "verification gate" in str(excinfo.value)
+    assert "must not have polarity" in str(excinfo.value)
+
+
+def test_batch_code_relation_rejects_polarity(multi: MultiGraph) -> None:
+    a, b, c = ent(multi, "A"), ent(multi, "B"), ent(multi, "C")
+    result = create_relations(
+        CreateRelationsInput.model_validate(
+            {
+                "relations": [
+                    rel_input(a, b, "calls", polarity="+"),
+                    rel_input(b, c, "references"),
+                ]
+            }
+        ),
+        multi,
+    )
+    assert result["applied"] == 1
+    assert result["failed"] == 1
+    assert "must not have polarity" in result["errors"][0]["error"]
+
+
 def test_create_self_loop_blocked_by_gate(multi: MultiGraph) -> None:
     a = ent(multi, "A")
     with pytest.raises(OperationError) as excinfo:

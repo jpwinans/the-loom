@@ -118,6 +118,28 @@ def test_relation_dedup_is_per_type_not_per_pair(multi: MultiGraph) -> None:
     assert created_types == {"supports", "related_to"}
 
 
+def test_code_relation_types_round_trip(multi: MultiGraph) -> None:
+    """Structural code relations import like any other type, polarity null."""
+    result = run(
+        multi,
+        entities=ENTITIES,
+        relations=[
+            {"from": "Alpha", "to": "Beta", "relationType": "calls"},
+            {"from": "Beta", "to": "Alpha", "relationType": "references"},
+        ],
+    )
+    assert result["relationsCreated"] == 2
+    assert result["relationsSkipped"] == 0
+    store = multi.get_store("default")
+    from_id, to_id = result["mapping"]["Alpha"], result["mapping"]["Beta"]
+    calls = store.read_relations(from_id, to_id, "calls")
+    assert [r.relation_type.value for r in calls] == ["calls"]
+    assert calls[0].polarity is None
+    references = store.read_relations(to_id, from_id, "references")
+    assert [r.relation_type.value for r in references] == ["references"]
+    assert references[0].polarity is None
+
+
 def test_relations_resolve_against_existing_graph_entities(multi: MultiGraph) -> None:
     existing = create_entity(
         CreateEntityInput.model_validate(

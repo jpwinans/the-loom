@@ -12,7 +12,8 @@ the input models, so only the two warning guards can fire here:
 OBSERVATIONS_REQUIRED and DUPLICATE_NAME. The duplicate check uses
 listEntities({name}) — a *partial*, case-insensitive match.
 
-Default relation guards: CAUSAL_MISSING_POLARITY (post-inference), SELF_LOOP,
+Default relation guards: CAUSAL_MISSING_POLARITY (post-inference), the mirror
+NON_CAUSAL_POLARITY (structural/epistemic types carry no polarity), SELF_LOOP,
 ORPHAN_RELATION_FROM/TO — all error severity.
 """
 
@@ -36,6 +37,11 @@ def entity_gate_warnings(store: FalkorGraphStore, name: str, observations: list[
     return warnings
 
 
+def non_causal_polarity_error(relation_type: str, polarity: str) -> str:
+    """Gate message for polarity on a non-causal (structural/epistemic) type."""
+    return f"Non-causal relation type '{relation_type}' must not have polarity, got: {polarity}"
+
+
 def relation_gate_errors(
     store: FalkorGraphStore,
     from_id: str,
@@ -45,11 +51,14 @@ def relation_gate_errors(
 ) -> list[str]:
     """Error messages for create-relation, in guard order."""
     errors: list[str] = []
-    if relation_type in CAUSAL_RELATION_TYPES and polarity not in ("+", "-"):
-        errors.append(
-            f"Causal relation type '{relation_type}' requires polarity ('+' or '-'), "
-            f"got: {polarity if polarity is not None else 'undefined'}"
-        )
+    if relation_type in CAUSAL_RELATION_TYPES:
+        if polarity not in ("+", "-"):
+            errors.append(
+                f"Causal relation type '{relation_type}' requires polarity ('+' or '-'), "
+                f"got: {polarity if polarity is not None else 'undefined'}"
+            )
+    elif polarity is not None:
+        errors.append(non_causal_polarity_error(relation_type, polarity))
     if from_id == to_id:
         errors.append(
             f"Relation cannot reference the same entity as source and target: '{from_id}'"

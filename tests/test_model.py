@@ -19,11 +19,14 @@ from theloom.model import (
     ALL_ENTITY_STATUSES,
     ALL_ENTITY_TYPES,
     ALL_RELATION_TYPES,
+    CAUSAL_POLARITY_DEFAULTS,
+    CAUSAL_RELATION_TYPES,
     VALID_TRANSITIONS,
     Confidence,
     Entity,
     Provenance,
     Relation,
+    RelationType,
     confidence_label,
     is_valid_transition,
 )
@@ -89,12 +92,14 @@ def test_all_19_entity_types_match_reference() -> None:
     ]
 
 
-def test_all_15_relation_types_match_reference() -> None:
+def test_all_17_relation_types_match_reference() -> None:
     assert [t.value for t in ALL_RELATION_TYPES] == [
         "related_to",
         "instance_of",
         "part_of",
         "sources",
+        "calls",
+        "references",
         "supports",
         "contradicts",
         "questions",
@@ -107,6 +112,14 @@ def test_all_15_relation_types_match_reference() -> None:
         "dampens",
         "crystallized_from",
     ]
+
+
+def test_code_relation_types_are_non_causal() -> None:
+    """calls/references are structural: no polarity, ever."""
+    for value in ("calls", "references"):
+        relation_type = RelationType(value)
+        assert relation_type not in CAUSAL_RELATION_TYPES
+        assert relation_type not in CAUSAL_POLARITY_DEFAULTS
 
 
 def test_all_5_entity_statuses_match_reference() -> None:

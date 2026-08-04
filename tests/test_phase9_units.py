@@ -3,6 +3,7 @@ detection, and inference matching that the golden tests can't fully isolate."""
 
 from __future__ import annotations
 
+from theloom.algebra import routing
 from theloom.symbolic import core
 from theloom.verification import checks, propagation
 
@@ -128,6 +129,14 @@ class TestGuards:
 
     def test_causal_polarity_ok(self) -> None:
         assert checks.guard_causal_polarity({"relationType": "causes", "polarity": "+"}) == []
+
+    def test_code_relations_are_structural(self) -> None:
+        """calls/references are non-causal: the polarity guard never fires and
+        the algebra router treats them as structural."""
+        for relation_type in ("calls", "references"):
+            relation = {"relationType": relation_type, "from": "a", "to": "b"}
+            assert checks.guard_causal_polarity(relation) == []
+            assert routing.relation_category(relation_type) == "structural"
 
     def test_self_loop(self) -> None:
         assert checks.guard_no_self_loop({"from": "a", "to": "a"})[0]["code"] == "SELF_LOOP"

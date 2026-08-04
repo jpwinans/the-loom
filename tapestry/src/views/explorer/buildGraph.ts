@@ -41,6 +41,8 @@ const EDGE_FAMILY: Record<string, EdgeFamily> = {
   instance_of: "structural",
   part_of: "structural",
   sources: "structural",
+  calls: "structural",
+  references: "structural",
   crystallized_from: "structural",
   supports: "epistemic",
   contradicts: "epistemic",

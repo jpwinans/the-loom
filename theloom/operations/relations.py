@@ -33,7 +33,7 @@ from theloom.model import (
 )
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.store.multigraph import MultiGraph
-from theloom.verification.guards import relation_gate_errors
+from theloom.verification.guards import non_causal_polarity_error, relation_gate_errors
 
 WILDCARD_GRAPH = "*"
 
@@ -205,10 +205,13 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
     for item in params.relations:
         polarity = _effective_polarity(item)
         gate_errors: list[str] = []
-        if item.relation_type in CAUSAL_POLARITY_DEFAULTS and polarity not in ("+", "-"):
-            gate_errors.append(
-                f"Causal relation type '{item.relation_type.value}' requires polarity"
-            )
+        if item.relation_type in CAUSAL_POLARITY_DEFAULTS:
+            if polarity not in ("+", "-"):
+                gate_errors.append(
+                    f"Causal relation type '{item.relation_type.value}' requires polarity"
+                )
+        elif polarity is not None:
+            gate_errors.append(non_causal_polarity_error(item.relation_type.value, polarity))
         if item.from_ == item.to:
             gate_errors.append(
                 f"Relation cannot reference the same entity as source and target: '{item.from_}'"
