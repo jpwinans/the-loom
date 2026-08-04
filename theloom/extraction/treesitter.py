@@ -589,7 +589,6 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
                     }
                 )
 
-
     unresolved_inheritances: list[Doc] = []
     for inh in extraction["inheritances"]:
         child_name = symbol_name_map.get(inh["child"], _build_entity_name(inh["child"], file_path))
@@ -704,9 +703,7 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
         )
 
     known_files = frozenset(record["path"] for record in per_file)
-    imports = resolution.resolve_imports(
-        per_file, known_files, external_entities=external_entities
-    )
+    imports = resolution.resolve_imports(per_file, known_files, external_entities=external_entities)
     calls = resolution.resolve_calls(per_file, known_files)
     inheritances = resolution.resolve_inheritances(per_file, known_files)
     for entity in imports["entities"]:

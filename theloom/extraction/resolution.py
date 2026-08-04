@@ -92,9 +92,7 @@ def _resolve_relative_js(module: str, importer: str, known_files: frozenset[str]
     return _probe(base, _JS_SUFFIXES, known_files)
 
 
-def _resolve_relative_python(
-    module: str, importer: str, known_files: frozenset[str]
-) -> str | None:
+def _resolve_relative_python(module: str, importer: str, known_files: frozenset[str]) -> str | None:
     """``from ..pkg import x`` — leading dots count levels up from the importer."""
     dots = len(module) - len(module.lstrip("."))
     remainder = module[dots:]
@@ -325,13 +323,8 @@ def _resolve_symbol_edges(
                 evidence = f"{caller_name} {verb} {callee}, imported from {origin}"
             else:
                 inferred_count += 1
-                evidence = (
-                    f"{caller_name} {verb} {callee}, "
-                    f"the project's only symbol of that name"
-                )
-            relations.append(
-                _relation(caller_name, target, relation_type, evidence, proven=proven)
-            )
+                evidence = f"{caller_name} {verb} {callee}, the project's only symbol of that name"
+            relations.append(_relation(caller_name, target, relation_type, evidence, proven=proven))
 
     return {
         "relations": relations,
