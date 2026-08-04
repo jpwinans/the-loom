@@ -633,8 +633,16 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
     return {
         "entities": entities,
         "relations": relations,
+        "language": lang,
         "imports": extraction["imports"],
         "symbols": symbol_name_map,
+        "symbolKinds": {
+            key: kind_to_entity_type(sym["kind"])
+            for sym in extraction["symbols"]
+            for key in (
+                [f"{sym['enclosingName']}.{sym['name']}"] if sym["enclosingName"] else [sym["name"]]
+            )
+        },
         "unresolvedCalls": unresolved_calls,
         "unresolvedInheritances": unresolved_inheritances,
     }
@@ -695,6 +703,8 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
         per_file.append(
             {
                 "path": path,
+                "language": result["language"],
+                "symbolKinds": result["symbolKinds"],
                 "imports": result["imports"],
                 "symbols": result["symbols"],
                 "unresolvedCalls": result["unresolvedCalls"],

@@ -149,14 +149,18 @@ class TestResolveCalls:
         per_file = [
             {
                 "path": "src/service.py",
+                "language": "python",
                 "imports": [],
                 "symbols": {"onboard": "onboard (service)"},
+                "symbolKinds": {"onboard": "procedure"},
                 "unresolvedCalls": [{"caller": "onboard (service)", "callee": "only_one"}],
             },
             {
                 "path": "src/models.py",
+                "language": "python",
                 "imports": [],
                 "symbols": {"only_one": "only_one (models)"},
+                "symbolKinds": {"only_one": "procedure"},
                 "unresolvedCalls": [],
             },
         ]
@@ -172,12 +176,26 @@ class TestResolveCalls:
         per_file = [
             {
                 "path": "src/service.py",
+                "language": "python",
                 "imports": [],
                 "symbols": {"onboard": "onboard (service)"},
+                "symbolKinds": {"onboard": "procedure"},
                 "unresolvedCalls": [{"caller": "onboard (service)", "callee": "run"}],
             },
-            {"path": "src/models.py", "imports": [], "symbols": {"run": "run (models)"}},
-            {"path": "lib/helper.js", "imports": [], "symbols": {"run": "run (helper)"}},
+            {
+                "path": "src/models.py",
+                "language": "python",
+                "imports": [],
+                "symbols": {"run": "run (models)"},
+                "symbolKinds": {"run": "procedure"},
+            },
+            {
+                "path": "src/other.py",
+                "language": "python",
+                "imports": [],
+                "symbols": {"run": "run (other)"},
+                "symbolKinds": {"run": "procedure"},
+            },
         ]
         out = resolution.resolve_calls(per_file, FILES)
         assert out["relations"] == []
@@ -198,6 +216,57 @@ class TestResolveCalls:
         assert [(r["from"], r["to"]) for r in out["relations"]] == [
             ("onboard (service)", "run (models)")
         ]
+
+
+class TestUniqueNameGuards:
+    """The unique-name rule is the low-precision resolver, so it needs guards.
+
+    Without them a single project symbol that happens to share a common name
+    absorbs every unqualified caller: 288 Python ``len()`` calls resolved to a
+    lone TypeScript ``len`` constant, making it the most-connected node in the
+    graph and welding the frontend to the backend.
+    """
+
+    def _calls(self, callee: str, target_lang: str, target_kind: str) -> dict[str, object]:
+        return resolution.resolve_calls(
+            [
+                {
+                    "path": "src/service.py",
+                    "language": "python",
+                    "imports": [],
+                    "symbols": {"onboard": "onboard (service)"},
+                    "symbolKinds": {"onboard": "procedure"},
+                    "unresolvedCalls": [{"caller": "onboard (service)", "callee": callee}],
+                },
+                {
+                    "path": "lib/index.ts",
+                    "language": target_lang,
+                    "imports": [],
+                    "symbols": {callee: f"{callee} (index)"},
+                    "symbolKinds": {callee: target_kind},
+                    "unresolvedCalls": [],
+                },
+            ],
+            FILES,
+        )
+
+    def test_a_language_builtin_never_resolves(self) -> None:
+        assert self._calls("len", "python", "procedure")["relations"] == []
+
+    def test_a_call_does_not_cross_a_language_boundary(self) -> None:
+        """A Python file cannot call a TypeScript symbol."""
+        assert self._calls("helper", "typescript", "procedure")["relations"] == []
+
+    def test_a_non_callable_symbol_is_not_a_call_target(self) -> None:
+        """A local constant that merely shares the name is not a dependency."""
+        assert self._calls("helper", "python", "variable")["relations"] == []
+
+    def test_a_same_language_callable_still_resolves(self) -> None:
+        out = self._calls("helper", "python", "procedure")
+        assert [(r["from"], r["to"]) for r in out["relations"]] == [
+            ("onboard (service)", "helper (index)")
+        ]
+        assert out["relations"][0]["confidence"]["basis"] == "inference"
 
 
 class TestResolveInheritances:
@@ -228,12 +297,26 @@ class TestResolveInheritances:
         per_file = [
             {
                 "path": "src/service.py",
+                "language": "python",
                 "imports": [],
                 "symbols": {"Savings": "Savings (service)"},
+                "symbolKinds": {"Savings": "concept"},
                 "unresolvedInheritances": [{"caller": "Savings (service)", "callee": "Base"}],
             },
-            {"path": "src/models.py", "imports": [], "symbols": {"Base": "Base (models)"}},
-            {"path": "lib/helper.js", "imports": [], "symbols": {"Base": "Base (helper)"}},
+            {
+                "path": "src/models.py",
+                "language": "python",
+                "imports": [],
+                "symbols": {"Base": "Base (models)"},
+                "symbolKinds": {"Base": "concept"},
+            },
+            {
+                "path": "src/other.py",
+                "language": "python",
+                "imports": [],
+                "symbols": {"Base": "Base (other)"},
+                "symbolKinds": {"Base": "concept"},
+            },
         ]
         out = resolution.resolve_inheritances(per_file, FILES)
         assert out["relations"] == []
