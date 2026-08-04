@@ -3,17 +3,25 @@
 CommandInput uses strict object schemas: unknown keys are
 stripped, known keys validated. UuidStr enforces a strict UUID string so
 malformed ids fail with VALIDATION_ERROR before any store work.
+
+``resolve_entity_ref`` is the one name-first addressing path: every
+entity-addressed read takes either an id or a name, and a name resolves through
+the store's server-side filtered read — never a full scan.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import pydantic
 from pydantic import AfterValidator
 
-from theloom.model import LoomModel
+from theloom.errors import NotFoundError, ValidationError
+from theloom.model import Entity, EntityFilter, LoomModel
+
+if TYPE_CHECKING:
+    from theloom.store.falkor import FalkorGraphStore
 
 _UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -44,3 +52,76 @@ class CommandInput(LoomModel):
             if info.alias == field:
                 return name in self.model_fields_set
         return False
+
+
+# =============================================================================
+# Name-first addressing
+# =============================================================================
+
+_FILE_PATH_PREFIX = "file path:"
+_MAX_CANDIDATES = 25
+
+
+def _file_path_hint(entity: Entity) -> str:
+    """The entity's File path observation, if it has one — the cheapest
+    disambiguator for code symbols, which collide by name constantly."""
+    for observation in entity.observations:
+        text = str(observation)
+        if text.lower().startswith(_FILE_PATH_PREFIX):
+            return f" {text}"
+    return ""
+
+
+def _candidate_line(entity: Entity) -> str:
+    return f"{entity.name} [{entity.entity_type.value}] id={entity.id}{_file_path_hint(entity)}"
+
+
+def _ambiguous(name: str, candidates: list[Entity]) -> ValidationError:
+    shown = candidates[:_MAX_CANDIDATES]
+    lines = "\n".join(_candidate_line(entity) for entity in shown)
+    suffix = ""
+    if len(candidates) > len(shown):
+        suffix = f"\n… and {len(candidates) - len(shown)} more."
+    return ValidationError(
+        f"Ambiguous entity name '{name}': {len(candidates)} entities match. "
+        f"Retry with one of these ids:\n{lines}{suffix}"
+    )
+
+
+def resolve_entity_ref(
+    store: FalkorGraphStore,
+    *,
+    entity_id: str | None,
+    name: str | None,
+    id_field: str = "id",
+    name_field: str = "name",
+) -> str:
+    """Resolve an entity reference to an id. Exactly one of ``entity_id`` /
+    ``name`` must be supplied.
+
+    A name resolves by exact (case-insensitive) match first; failing that, by
+    case-insensitive substring. Either way more than one match is refused with
+    a candidate listing rather than guessed, and no match is NOT_FOUND.
+    """
+    if (entity_id is None) == (name is None):
+        raise ValidationError(
+            f"Provide exactly one of '{id_field}' or '{name_field}' "
+            "(an entity id, or a name to resolve)."
+        )
+    if entity_id is not None:
+        return entity_id
+    assert name is not None
+
+    # EntityFilter.name is a case-insensitive substring match pushed down into
+    # Cypher, so the exact-match pool is always a subset of this window.
+    candidates = store.list_entities(EntityFilter.model_validate({"name": name}))
+    lowered = name.lower()
+    exact = [entity for entity in candidates if entity.name.lower() == lowered]
+    pool = exact or candidates
+    if len(pool) == 1:
+        return pool[0].id
+    if not pool:
+        raise NotFoundError(
+            f"Entity not found with name: '{name}'. Use list-entities to see available entities."
+        )
+    raise _ambiguous(name, pool)

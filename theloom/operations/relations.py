@@ -31,7 +31,7 @@ from theloom.model import (
     RelationType,
     Strength,
 )
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.operations.entity import compact_entity_doc
 from theloom.store.multigraph import MultiGraph
 from theloom.verification.guards import non_causal_polarity_error, relation_gate_errors
@@ -108,7 +108,10 @@ class ListRelationsInput(CommandInput):
 
 
 class GetRelationsInput(CommandInput):
-    entity_id: UuidStr = Field(alias="entityId")
+    """Addressed by ``entityId`` or by ``name`` — exactly one."""
+
+    entity_id: UuidStr | None = Field(default=None, alias="entityId")
+    name: str | None = None
     direction: str | None = None
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     graph: str | None = None
@@ -117,7 +120,10 @@ class GetRelationsInput(CommandInput):
 
 
 class GetNeighborsInput(CommandInput):
-    entity_id: UuidStr = Field(alias="entityId")
+    """Addressed by ``entityId`` or by ``name`` — exactly one."""
+
+    entity_id: UuidStr | None = Field(default=None, alias="entityId")
+    name: str | None = None
     direction: str | None = None
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     graph: str | None = None
@@ -354,11 +360,14 @@ def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
-    relations = store.get_relations(params.entity_id, direction, relation_type)  # type: ignore[arg-type]
+    entity_id = resolve_entity_ref(
+        store, entity_id=params.entity_id, name=params.name, id_field="entityId"
+    )
+    relations = store.get_relations(entity_id, direction, relation_type)  # type: ignore[arg-type]
     results = [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
 
-    for bridge in multi.bridges.list_bridges({"entity_id": params.entity_id}):
-        if not _bridge_matches(bridge, params.entity_id, direction, relation_type):
+    for bridge in multi.bridges.list_bridges({"entity_id": entity_id}):
+        if not _bridge_matches(bridge, entity_id, direction, relation_type):
             continue
         row = dict(bridge)
         if params.follow_bridges:
@@ -380,7 +389,10 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
-    relations = store.get_relations(params.entity_id, direction, relation_type)  # type: ignore[arg-type]
+    entity_id = resolve_entity_ref(
+        store, entity_id=params.entity_id, name=params.name, id_field="entityId"
+    )
+    relations = store.get_relations(entity_id, direction, relation_type)  # type: ignore[arg-type]
 
     # One (relationType, direction) per unique neighbor id, first-seen — the
     # same neighbor set/order the store's own dedup (filters.extract_neighbor_ids)
@@ -392,7 +404,7 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
             neighbor_id, edge_direction = relation.to, "out"
         elif direction == "incoming":
             neighbor_id, edge_direction = relation.from_, "in"
-        elif relation.from_ == params.entity_id:
+        elif relation.from_ == entity_id:
             neighbor_id, edge_direction = relation.to, "out"
         else:
             neighbor_id, edge_direction = relation.from_, "in"
@@ -414,10 +426,10 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
         results.append(doc)
 
     seen_cross_graph: set[str] = set()
-    for bridge in multi.bridges.list_bridges({"entity_id": params.entity_id}):
-        if not _bridge_matches(bridge, params.entity_id, direction, relation_type):
+    for bridge in multi.bridges.list_bridges({"entity_id": entity_id}):
+        if not _bridge_matches(bridge, entity_id, direction, relation_type):
             continue
-        if bridge["from"] == params.entity_id:
+        if bridge["from"] == entity_id:
             neighbor_id, neighbor_graph, edge_direction = bridge["to"], bridge["to_graph"], "out"
         else:
             neighbor_id, neighbor_graph, edge_direction = bridge["from"], bridge["from_graph"], "in"

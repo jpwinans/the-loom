@@ -26,7 +26,7 @@ from theloom.operations.analysis import (
     analyze_centrality,
     detect_loops,
 )
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.operations.entity import _entity_doc
 from theloom.operations.relations import (
     GetNeighborsInput,
@@ -39,7 +39,10 @@ from theloom.store.multigraph import MultiGraph
 
 
 class EntityDeepDiveInput(CommandInput):
-    entity_id: UuidStr = Field(alias="entityId")
+    """Addressed by ``entityId`` or by ``name`` — exactly one."""
+
+    entity_id: UuidStr | None = Field(default=None, alias="entityId")
+    name: str | None = None
     graph: str | None = None
     full: bool | None = None
 
@@ -96,7 +99,9 @@ def _relation_line(
 def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str, Any]:
     start = time.perf_counter()
     graph = params.graph
-    entity_id = params.entity_id
+    entity_id = resolve_entity_ref(
+        multi.get_store(graph), entity_id=params.entity_id, name=params.name, id_field="entityId"
+    )
 
     def _entity() -> dict[str, Any]:
         doc = _entity_doc(multi.get_store(graph), entity_id)

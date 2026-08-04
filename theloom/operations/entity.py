@@ -28,7 +28,7 @@ from theloom.model import (
     MemoryType,
     is_valid_transition,
 )
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -87,7 +87,10 @@ class CreateEntityInput(CommandInput):
 
 
 class ReadEntityInput(CommandInput):
-    id: UuidStr
+    """Addressed by ``id`` or by ``name`` — exactly one."""
+
+    id: UuidStr | None = None
+    name: str | None = None
     graph: str | None = None
     compact: bool | None = None
 
@@ -218,10 +221,12 @@ def create_entity(params: CreateEntityInput, multi: MultiGraph) -> dict[str, Any
 
 
 def read_entity(params: ReadEntityInput, multi: MultiGraph) -> dict[str, Any]:
-    doc = _entity_doc(multi.get_store(params.graph), params.id)
+    store = multi.get_store(params.graph)
+    entity_id = resolve_entity_ref(store, entity_id=params.id, name=params.name)
+    doc = _entity_doc(store, entity_id)
     if doc is None:
         raise NotFoundError(
-            f"Entity not found with ID: {params.id}. Use list_entities to see available entities."
+            f"Entity not found with ID: {entity_id}. Use list_entities to see available entities."
         )
     return compact_entity_doc(doc) if params.compact else doc
 

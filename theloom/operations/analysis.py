@@ -46,7 +46,7 @@ from theloom.model import (
     RelationFilter,
     RelationType,
 )
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
@@ -132,8 +132,12 @@ class LeveragePointDetailsInput(CommandInput):
 
 
 class FindShortestPathInput(CommandInput):
-    source: UuidStr
-    target: UuidStr
+    """Each endpoint is addressed by its id or its name — exactly one per end."""
+
+    source: UuidStr | None = None
+    target: UuidStr | None = None
+    source_name: str | None = Field(default=None, alias="sourceName")
+    target_name: str | None = Field(default=None, alias="targetName")
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     graph: str | None = None
 
@@ -450,9 +454,24 @@ def _require_endpoints(graph: LoomGraph, source: str, target: str) -> None:
 
 
 def find_shortest_path(params: FindShortestPathInput, multi: MultiGraph) -> dict[str, Any]:
+    store = multi.get_store(params.graph)
+    source = resolve_entity_ref(
+        store,
+        entity_id=params.source,
+        name=params.source_name,
+        id_field="source",
+        name_field="sourceName",
+    )
+    target = resolve_entity_ref(
+        store,
+        entity_id=params.target,
+        name=params.target_name,
+        id_field="target",
+        name_field="targetName",
+    )
     graph = _path_graph(multi, params.graph, params.relation_type)
-    _require_endpoints(graph, params.source, params.target)
-    return {"path": bidirectional(graph, params.source, params.target)}
+    _require_endpoints(graph, source, target)
+    return {"path": bidirectional(graph, source, target)}
 
 
 def find_all_paths(params: FindAllPathsInput, multi: MultiGraph) -> dict[str, Any]:
