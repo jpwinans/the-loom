@@ -241,9 +241,9 @@ def simulate_change(params: SimulateChangeInput, multi: MultiGraph) -> dict[str,
     start = time.perf_counter()
     temp_name: str | None = None
     try:
-        # Before snapshot uses the DEFAULT store (no graph arg), while the
-        # clone reads params.graph.
-        before = _capture_snapshot(multi, None)
+        # Before/after must read the same graph, or the diff compares two
+        # unrelated states.
+        before = _capture_snapshot(multi, params.graph)
         temp_name = _clone_to_temp(multi, params.graph)
         created_ids = _apply_mutations(params.mutations, multi.get_store(temp_name))
         after = _capture_snapshot(multi, temp_name)

@@ -130,6 +130,11 @@ def test_create_self_loop_blocked_by_gate(multi: MultiGraph) -> None:
     with pytest.raises(OperationError) as excinfo:
         create_relation(CreateRelationInput.model_validate(rel_input(a, a)), multi)
     assert "verification gate" in str(excinfo.value)
+    # A self-loop is a validation failure, not a missing entity — the
+    # "verify both entities exist" hint must not be appended. This is decided
+    # by reading the store directly (both endpoints exist here), not by
+    # pattern-matching the gate's own error prose.
+    assert "Use list_entities to verify both entities exist" not in str(excinfo.value)
 
 
 def test_create_missing_endpoint_blocked_by_gate(multi: MultiGraph) -> None:
@@ -137,6 +142,7 @@ def test_create_missing_endpoint_blocked_by_gate(multi: MultiGraph) -> None:
     with pytest.raises(OperationError) as excinfo:
         create_relation(CreateRelationInput.model_validate(rel_input(a, MISSING)), multi)
     assert "does not exist" in str(excinfo.value)
+    assert "Use list_entities to verify both entities exist" in str(excinfo.value)
 
 
 def test_create_cross_graph_blocked_by_gate_like_reference(multi: MultiGraph) -> None:

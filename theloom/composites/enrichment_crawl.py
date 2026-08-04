@@ -1,10 +1,17 @@
 """Enrichment Crawl composite.
 
 Crawls high-priority frontier nodes and proposes enrichment relations via CISC
-N-sample LLM voting (``numSamples`` is a spend multiplier). The full crawl runs
-only with an LLM configured; in template mode (no LLM) it returns a
-deterministic three-failed-section envelope, so the command is testable without
-exercising the enrichment modules.
+N-sample LLM voting (``numSamples`` is a spend multiplier). In template mode
+(no LLM configured) it returns a deterministic three-failed-section envelope,
+so the command is testable without exercising the enrichment modules.
+
+The CISC-voting crawl itself (prioritize -> N-sample LLM crawl -> summarize)
+is not built — it would live in a new ``theloom.enrichment`` package that
+doesn't exist yet. Rather than silently no-op or raise a bare
+``NotImplementedError``, an LLM-configured call raises a typed
+``OperationError`` that says exactly that, so the command fails loudly and
+CLI callers get the CLI's structured ``{error, code}`` contract instead of an
+unclassified crash.
 """
 
 from __future__ import annotations
@@ -15,6 +22,7 @@ from typing import Any
 from pydantic import Field
 
 from theloom.composites.framework import build_composite_result, failed_section
+from theloom.errors import OperationError
 from theloom.operations.common import CommandInput
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis.llm import create_synthesis_client
@@ -22,6 +30,14 @@ from theloom.synthesis.llm import create_synthesis_client
 # Fixed message; the envelope text is the contract (the config-routed client
 # also supports local providers).
 _NO_LLM_MESSAGE = "ANTHROPIC_API_KEY not set — cannot run enrichment crawl"
+
+# The LLM-mode crawl (CISC voting) has no implementation to run yet.
+_CRAWL_UNAVAILABLE_MESSAGE = (
+    "enrichment-crawl's LLM path (CISC N-sample voting) is not implemented — "
+    "only the no-LLM template-mode envelope is available. An LLM is "
+    "configured, so template mode did not apply either; this command is "
+    "currently unavailable."
+)
 
 
 class EnrichmentCrawlInput(CommandInput):
@@ -50,9 +66,7 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
         return build_composite_result(sections, total_ms)
 
     # LLM-mode crawl (prioritize → CISC crawl → summarize) is out of scope here
-    # (LLM env stripped); it would live in a theloom/enrichment/ package.
-    # Raising here keeps the contract explicit rather than silently empty.
-    raise NotImplementedError(
-        "enrichment-crawl LLM path (CISC voting) is not built; only the template-mode "
-        "no-LLM envelope is supported."
-    )
+    # (LLM env stripped); it would live in a theloom/enrichment/ package. A
+    # typed OPERATION_ERROR keeps the contract explicit and CLI-classified,
+    # rather than a silent no-op or a bare, untyped NotImplementedError.
+    raise OperationError(_CRAWL_UNAVAILABLE_MESSAGE)

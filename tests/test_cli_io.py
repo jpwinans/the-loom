@@ -13,6 +13,7 @@ import json
 import pytest
 
 from theloom.cli.io import format_error, parse_json_input
+from theloom.config import LoomConfigError
 from theloom.errors import InputRequiredError, LoomError, ParseError, ValidationError
 
 
@@ -71,4 +72,14 @@ def test_format_error_uses_typed_codes() -> None:
     assert json.loads(format_error(RuntimeError("boom"))) == {
         "error": "boom",
         "code": "OPERATION_ERROR",
+    }
+
+
+def test_format_error_routes_config_errors_through_the_typed_hierarchy() -> None:
+    # LoomConfigError must be a LoomError subclass, not a duck-typed lookalike
+    # with a matching `.code` attribute — otherwise it falls through
+    # format_error's isinstance check into the untyped OPERATION_ERROR default.
+    assert json.loads(format_error(LoomConfigError("bad port"))) == {
+        "error": "bad port",
+        "code": "CONFIG_ERROR",
     }

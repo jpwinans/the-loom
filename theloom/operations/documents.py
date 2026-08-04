@@ -15,8 +15,13 @@ from typing import Annotated, Any
 
 from pydantic import AfterValidator, Field, StringConstraints
 
-from theloom.documents.ingestion import DocumentIngestion, IngestionError
-from theloom.errors import OperationError, ValidationError
+from theloom.documents.ingestion import (
+    DocumentIngestion,
+    IngestionError,
+    IngestionNotFoundError,
+    IngestionValidationError,
+)
+from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.operations.common import CommandInput
 from theloom.store.multigraph import MultiGraph
 
@@ -147,13 +152,12 @@ class AnalyzeCategoryInput(CommandInput):
 
 
 def _translate(exc: IngestionError) -> Exception:
+    """Map an ingestion failure to its typed CLI error, by the exception's
+    class — never by pattern-matching its message text."""
     message = str(exc)
-    lowered = message.lower()
-    if "not found" in lowered:
-        from theloom.errors import NotFoundError
-
+    if isinstance(exc, IngestionNotFoundError):
         return NotFoundError(message)
-    if "invalid" in lowered or "required" in lowered or "must be" in lowered:
+    if isinstance(exc, IngestionValidationError):
         return ValidationError(message)
     return OperationError(message)
 

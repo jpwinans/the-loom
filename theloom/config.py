@@ -47,6 +47,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from theloom.errors import ConfigError
+
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 6379
 DEFAULT_GRAPH = "default"
@@ -56,10 +58,14 @@ def _default_model_cache_dir() -> str:
     return str(Path.home() / ".loom" / "models")
 
 
-class LoomConfigError(Exception):
-    """A configuration error, carrying the CLI's typed error code."""
+class LoomConfigError(ConfigError):
+    """A configuration error, carrying the CLI's typed error code.
 
-    code = "CONFIG_ERROR"
+    Routes through the shared typed-error hierarchy (``theloom.errors.LoomError``)
+    so the CLI's ``format_error`` recognizes it via ``isinstance`` and emits
+    ``CONFIG_ERROR`` instead of falling back to the untyped-exception default of
+    ``OPERATION_ERROR``.
+    """
 
 
 LLM_PROVIDERS = ("anthropic", "openai", "ollama", "mlx")

@@ -17,10 +17,12 @@ Four sections, each inside :func:`time_section`:
 
 Template mode (this composite takes ``(params, multi)`` with no embedding
 pipeline): semantic consistency degrades to ``{score: 0, status: "skipped"}``
-and the interestingness score is always ``0`` (multiplicative ``SI * C * S``
-with neutral simulation data forces ``C = S = 0``). That makes the whole command
-deterministic. Threshold gating is therefore effectively disabled (semantic
-consistency never passes); use ``autoCreate: true`` for ungated creation.
+(not evaluated, not failed — it never blocks a commit on its own) and the
+interestingness score is always ``0`` (multiplicative ``SI * C * S`` with
+neutral simulation data forces ``C = S = 0``). That makes the whole command
+deterministic. A commit therefore requires ``commitThreshold <= 0`` (the
+only threshold the always-``0`` interestingness score can clear) plus a
+passing structural gate; ``autoCreate: true`` remains the ungated path.
 
 After :func:`build_composite_result`, the aggregate metadata is extended with
 ``committed`` / ``skipped`` commitment counts.
@@ -228,8 +230,12 @@ def gap_fill_cycle(params: GapFillCycleInput, multi: MultiGraph) -> dict[str, An
 
             if commit_threshold is not None:
                 meets_threshold = interestingness_score >= commit_threshold
-                consistency_passes = semantic_consistency["status"] == "pass"
-                if structural_pass and meets_threshold and consistency_passes:
+                # "skipped" means "not evaluated" (no embedding pipeline in
+                # this composite), not "failed" — it must not veto a commit
+                # that otherwise clears the structural gate and the
+                # threshold. Only an explicit "fail" blocks.
+                consistency_blocks = semantic_consistency["status"] == "fail"
+                if structural_pass and meets_threshold and not consistency_blocks:
                     created = _try_create(suggestion, relation_type)
                     counters["committed" if created else "skipped"] += 1
                 else:

@@ -145,9 +145,19 @@ def _effective_polarity(item: RelationItem) -> str | None:
 def _gate_or_raise(item: RelationItem, multi: MultiGraph, polarity: str | None) -> None:
     store = multi.get_store(item.graph)
     errors = relation_gate_errors(store, item.from_, item.to, item.relation_type.value, polarity)
-    if errors:
-        message = f"Relation creation blocked by verification gate: {'; '.join(errors)}"
-        raise OperationError(message)
+    if not errors:
+        return
+    message = f"Relation creation blocked by verification gate: {'; '.join(errors)}"
+    # Whether to append the "verify both entities exist" hint is decided from
+    # the store directly — never by pattern-matching the gate's own prose,
+    # which could misfire on unrelated wording.
+    missing_endpoint = store.read_entity(item.from_) is None or store.read_entity(item.to) is None
+    if missing_endpoint:
+        raise OperationError(
+            f"Failed to create relation from {item.from_} to {item.to}: "
+            f"{message}. Use list_entities to verify both entities exist."
+        )
+    raise OperationError(f"Error creating relation: {message}")
 
 
 def _spec(item: RelationItem, polarity: str | None) -> RelationCreate:
@@ -166,16 +176,7 @@ def _spec(item: RelationItem, polarity: str | None) -> RelationCreate:
 
 def create_relation(params: CreateRelationInput, multi: MultiGraph) -> dict[str, Any]:
     polarity = _effective_polarity(params)
-    try:
-        _gate_or_raise(params, multi, polarity)
-    except OperationError as error:
-        message = str(error)
-        if "not found" in message or "exist" in message:
-            raise OperationError(
-                f"Failed to create relation from {params.from_} to {params.to}: "
-                f"{message}. Use list_entities to verify both entities exist."
-            ) from None
-        raise OperationError(f"Error creating relation: {message}") from None
+    _gate_or_raise(params, multi, polarity)
 
     # Gate passed → both endpoints exist in the resolved store, so this is a
     # same-graph relation; the bridge branch is unreachable with the gate on
