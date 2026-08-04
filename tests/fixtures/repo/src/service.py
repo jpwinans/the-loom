@@ -12,3 +12,6 @@ def onboard(name: str) -> Account:
     account = open_account(name)
     account.deposit(10.0)
     return account
+
+
+# NOTE: transfers are not atomic yet; the fix is tracked in ADR-0011.

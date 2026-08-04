@@ -16,6 +16,20 @@ written, not where the callee is defined — a reader following an edge is
 reading the caller. The format is fixed so it can be parsed. ``related_to`` is
 never emitted here; it belongs to the semantic enrichment layer.
 
+A symbol entity carries more than its coordinates: the **signature** and the
+**docstring** are already in the parse tree, and a rationale comment
+(``NOTE:``/``WHY:``/``HACK:``/``IMPORTANT:``/``TODO:``/``FIXME:``) is the only
+record of why a line exists. Both are attached to the symbol they describe
+rather than becoming nodes of their own — a separate docstring node inflates
+the graph without making anything reachable that the symbol did not already
+reach, and leaves the symbol with nothing to embed. Rationale attaches to the
+innermost enclosing symbol, or to the file entity at module level; ADR/RFC
+identifiers mentioned in a comment are recorded separately as ``cites:``.
+
+Non-code text files (stylesheets, config, docs — see ``TEXT_EXTENSIONS``) get a
+file entity too, with no edges, so an invariant anchored in e.g. a design-token
+stylesheet has something to point at.
+
 Files are traversed in SORTED order so output is deterministic (an unsorted
 directory walk would be machine-dependent).
 """
@@ -23,6 +37,7 @@ directory walk would be machine-dependent).
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 from theloom.extraction import resolution
@@ -40,6 +55,16 @@ EXTENSION_MAP = {
     ".go": "go",
     ".rs": "rust",
 }
+
+# Non-code files that still carry meaning a graph should be able to point at.
+TEXT_EXTENSIONS = {"css", "json", "yaml", "yml", "toml", "md", "lock", "cfg", "ini"}
+
+# A non-code file past this size is data, not documentation; parsing it buys
+# nothing and reading it is the only cost extraction can't amortise.
+MAX_TEXT_FILE_BYTES = 1024 * 1024
+
+DOCSTRING_MAX_CHARS = 300
+RATIONALE_MAX_CHARS = 200
 
 SKIP_DIRS = {
     "node_modules",
@@ -63,6 +88,17 @@ _VARIABLE_KINDS = {"variable", "constant"}
 def detect_language(relative_path: str) -> str | None:
     _, ext = os.path.splitext(relative_path.lower())
     return EXTENSION_MAP.get(ext)
+
+
+def detect_text_kind(relative_path: str) -> str | None:
+    """The recognised non-code text kind of a path (``css``, ``toml``, ...).
+
+    Deliberately separate from ``detect_language``: these files are never
+    parsed, they only become root file entities.
+    """
+    _, ext = os.path.splitext(relative_path.lower())
+    kind = ext[1:] if ext else ""
+    return kind if kind in TEXT_EXTENSIONS else None
 
 
 def kind_to_entity_type(kind: str) -> str:
@@ -126,6 +162,153 @@ def _field(node: Any, name: str) -> Any:
 
 def _named(node: Any) -> list[Any]:
     return [c for c in node.children if c.is_named]
+
+
+# =============================================================================
+# Signatures, docstrings and rationale comments
+# =============================================================================
+
+_STRING_PREFIX_RE = re.compile(r"^[rubfRUBF]{0,3}('''|\"\"\"|'|\")")
+_COMMENT_MARKER_RE = re.compile(r"^\s*(?:#+|//+|/\*+|\*+)\s?")
+_COMMENT_TAIL_RE = re.compile(r"\s*\*+/\s*$")
+_RATIONALE_RE = re.compile(r"^(NOTE|HACK|WHY|IMPORTANT|TODO|FIXME)\s*:\s*(.*)$")
+_CITATION_RE = re.compile(r"\b(?:ADR|RFC)-\d+\b")
+
+
+def _collapse(text: str) -> str:
+    """One line, single-spaced — an observation is a line, not a paragraph."""
+    return " ".join(text.split())
+
+
+def _one_line(text: str, limit: int) -> str | None:
+    collapsed = _collapse(text)[:limit]
+    return collapsed or None
+
+
+def _clean_python_docstring(raw: str) -> str | None:
+    match = _STRING_PREFIX_RE.match(raw)
+    if match is None:
+        return None
+    quote = match.group(1)
+    body = raw[match.end() :]
+    if body.endswith(quote):
+        body = body[: -len(quote)]
+    return _one_line(body, DOCSTRING_MAX_CHARS)
+
+
+def _clean_block_comment(raw: str) -> str | None:
+    body = raw
+    if body.startswith("/*"):
+        body = body[2:]
+    if body.endswith("*/"):
+        body = body[:-2]
+    lines = [line.strip().lstrip("*").strip() for line in body.splitlines()]
+    return _one_line(" ".join(lines), DOCSTRING_MAX_CHARS)
+
+
+def _python_docstring(container: Any, source: bytes) -> str | None:
+    """The leading string literal of a module, class body or function body."""
+    children = _named(container)
+    if not children:
+        return None
+    first = children[0]
+    if first.type != "expression_statement":
+        return None
+    inner = _named(first)
+    if not inner or inner[0].type != "string":
+        return None
+    return _clean_python_docstring(_text(inner[0], source))
+
+
+def _python_signature(node: Any, name: str, source: bytes) -> str | None:
+    params = _field(node, "parameters")
+    if params is None:
+        return None
+    signature = f"{name}{_collapse(_text(params, source))}"
+    returns = _field(node, "return_type")
+    if returns is not None:
+        signature += f" -> {_collapse(_text(returns, source))}"
+    return signature
+
+
+def _ts_signature(node: Any, name: str, source: bytes) -> str | None:
+    params = _field(node, "parameters")
+    if params is None:
+        return None
+    signature = f"{name}{_collapse(_text(params, source))}"
+    returns = _field(node, "return_type")
+    if returns is not None:
+        annotation = _collapse(_text(returns, source))
+        signature += annotation if annotation.startswith(":") else f": {annotation}"
+    return signature
+
+
+def _leading_block_comment(node: Any, source: bytes) -> str | None:
+    """The ``/** ... */`` immediately above a declaration.
+
+    An exported declaration is wrapped in ``export_statement``, so the comment
+    is the wrapper's sibling, not the declaration's.
+    """
+    current = node
+    while current.parent is not None and current.parent.type == "export_statement":
+        current = current.parent
+    previous = current.prev_named_sibling
+    if previous is None or not previous.type.endswith("comment"):
+        return None
+    raw = _text(previous, source)
+    return _clean_block_comment(raw) if raw.startswith("/*") else None
+
+
+def _leading_module_comment(root: Any, source: bytes) -> str | None:
+    """A file header comment — but only when it documents the file.
+
+    A block comment sitting directly above the first declaration documents
+    *that declaration*; taking it as the module's too would duplicate it.
+    """
+    children = root.children
+    if not children:
+        return None
+    first = children[0]
+    raw = _text(first, source)
+    if not first.type.endswith("comment") or not raw.startswith("/*"):
+        return None
+    if len(children) > 1 and children[1].start_point[0] <= first.end_point[0] + 1:
+        return None
+    return _clean_block_comment(raw)
+
+
+def _comment_notes(node: Any, source: bytes, notes: list[Doc]) -> None:
+    """Rationale tags and ADR/RFC citations, each anchored at its own line."""
+    if node.type.endswith("comment"):
+        raw = _text(node, source)
+        for offset, line in enumerate(raw.splitlines()):
+            line_index = node.start_point[0] + offset
+            stripped = _COMMENT_TAIL_RE.sub("", _COMMENT_MARKER_RE.sub("", line)).strip()
+            if not stripped:
+                continue
+            match = _RATIONALE_RE.match(stripped)
+            if match is not None:
+                body = _one_line(match.group(2), RATIONALE_MAX_CHARS)
+                if body is not None:
+                    notes.append(
+                        {
+                            "line": line_index,
+                            "observation": (
+                                f"rationale: [{match.group(1)}] {body} (line {line_index + 1})"
+                            ),
+                        }
+                    )
+            seen: set[str] = set()
+            for ref in _CITATION_RE.findall(stripped):
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                notes.append(
+                    {"line": line_index, "observation": f"cites: {ref} (line {line_index + 1})"}
+                )
+        return
+    for child in node.children:
+        _comment_notes(child, source, notes)
 
 
 # =============================================================================
@@ -205,6 +388,10 @@ def _extract_python(root: Any, source: bytes) -> Doc:
             name = _field(node, "name")
             if name is not None:
                 class_name = _text(name, source)
+                class_body = _field(node, "body")
+                class_doc = None
+                if class_body is not None:
+                    class_doc = _python_docstring(class_body, source)
                 symbols.append(
                     {
                         "name": class_name,
@@ -212,6 +399,8 @@ def _extract_python(root: Any, source: bytes) -> Doc:
                         "startLine": node.start_point[0],
                         "endLine": node.end_point[0],
                         "enclosingName": enclosing_class,
+                        "signature": None,
+                        "docstring": class_doc,
                     }
                 )
                 superclasses = _field(node, "superclasses")
@@ -230,6 +419,7 @@ def _extract_python(root: Any, source: bytes) -> Doc:
             name = _field(node, "name")
             if name is not None:
                 func_name = _text(name, source)
+                body = _field(node, "body")
                 symbols.append(
                     {
                         "name": func_name,
@@ -237,9 +427,12 @@ def _extract_python(root: Any, source: bytes) -> Doc:
                         "startLine": node.start_point[0],
                         "endLine": node.end_point[0],
                         "enclosingName": enclosing_class,
+                        "signature": _python_signature(node, func_name, source),
+                        "docstring": (
+                            _python_docstring(body, source) if body is not None else None
+                        ),
                     }
                 )
-                body = _field(node, "body")
                 if body is not None:
                     caller_key = f"{enclosing_class}.{func_name}" if enclosing_class else func_name
                     _extract_calls(body, caller_key, source, calls)
@@ -270,7 +463,13 @@ def _extract_python(root: Any, source: bytes) -> Doc:
             walk(child, enclosing_class, enclosing_func)
 
     walk(root, None, None)
-    return {"symbols": symbols, "imports": imports, "inheritances": inheritances, "calls": calls}
+    return {
+        "symbols": symbols,
+        "imports": imports,
+        "inheritances": inheritances,
+        "calls": calls,
+        "moduleDocstring": _python_docstring(root, source),
+    }
 
 
 def _find_identifier(node: Any, source: bytes) -> str | None:
@@ -360,7 +559,16 @@ def _extract_typescript(root: Any, source: bytes) -> Doc:
             name = _field(node, "name")
             if name is not None and enclosing_class:
                 method_name = _text(name, source)
-                symbols.append(_symbol(name, "method", node, source, enclosing_class))
+                symbols.append(
+                    _symbol(
+                        name,
+                        "method",
+                        node,
+                        source,
+                        enclosing_class,
+                        signature=_ts_signature(node, method_name, source),
+                    )
+                )
                 body = _field(node, "body")
                 if body is not None:
                     caller_key = (
@@ -371,7 +579,16 @@ def _extract_typescript(root: Any, source: bytes) -> Doc:
             name = _field(node, "name")
             if name is not None:
                 func_name = _text(name, source)
-                symbols.append(_symbol(name, "function", node, source, None))
+                symbols.append(
+                    _symbol(
+                        name,
+                        "function",
+                        node,
+                        source,
+                        None,
+                        signature=_ts_signature(node, func_name, source),
+                    )
+                )
                 body = _field(node, "body")
                 if body is not None:
                     _extract_calls(body, func_name, source, calls)
@@ -399,7 +616,13 @@ def _extract_typescript(root: Any, source: bytes) -> Doc:
             walk(child, enclosing_class)
 
     walk(root, None)
-    return {"symbols": symbols, "imports": imports, "inheritances": inheritances, "calls": calls}
+    return {
+        "symbols": symbols,
+        "imports": imports,
+        "inheritances": inheritances,
+        "calls": calls,
+        "moduleDocstring": _leading_module_comment(root, source),
+    }
 
 
 def _extract_require_calls(node: Any, source: bytes, imports: list[Doc]) -> None:
@@ -466,7 +689,16 @@ def _extract_javascript(root: Any, source: bytes) -> Doc:
             name = _field(node, "name")
             if name is not None and enclosing_class:
                 method_name = _text(name, source)
-                symbols.append(_symbol(name, "method", node, source, enclosing_class))
+                symbols.append(
+                    _symbol(
+                        name,
+                        "method",
+                        node,
+                        source,
+                        enclosing_class,
+                        signature=_ts_signature(node, method_name, source),
+                    )
+                )
                 body = _field(node, "body")
                 if body is not None:
                     caller_key = (
@@ -477,7 +709,16 @@ def _extract_javascript(root: Any, source: bytes) -> Doc:
             name = _field(node, "name")
             if name is not None:
                 func_name = _text(name, source)
-                symbols.append(_symbol(name, "function", node, source, None))
+                symbols.append(
+                    _symbol(
+                        name,
+                        "function",
+                        node,
+                        source,
+                        None,
+                        signature=_ts_signature(node, func_name, source),
+                    )
+                )
                 body = _field(node, "body")
                 if body is not None:
                     _extract_calls(body, func_name, source, calls)
@@ -485,16 +726,32 @@ def _extract_javascript(root: Any, source: bytes) -> Doc:
             walk(child, enclosing_class)
 
     walk(root, None)
-    return {"symbols": symbols, "imports": imports, "inheritances": inheritances, "calls": calls}
+    return {
+        "symbols": symbols,
+        "imports": imports,
+        "inheritances": inheritances,
+        "calls": calls,
+        "moduleDocstring": _leading_module_comment(root, source),
+    }
 
 
-def _symbol(name_node: Any, kind: str, node: Any, source: bytes, enclosing: str | None) -> Doc:
+def _symbol(
+    name_node: Any,
+    kind: str,
+    node: Any,
+    source: bytes,
+    enclosing: str | None,
+    *,
+    signature: str | None = None,
+) -> Doc:
     return {
         "name": _text(name_node, source),
         "kind": kind,
         "startLine": node.start_point[0],
         "endLine": node.end_point[0],
         "enclosingName": enclosing,
+        "signature": signature,
+        "docstring": _leading_block_comment(node, source),
     }
 
 
@@ -533,6 +790,30 @@ def _confidence() -> Doc:
     return {"score": 1.0, "basis": "direct_observation"}
 
 
+def _attach_notes(
+    root: Any,
+    source: bytes,
+    file_entity: Doc,
+    symbol_spans: list[tuple[int, int, Doc]],
+) -> None:
+    """Give every rationale/citation note to the innermost symbol around it.
+
+    A note on a line inside a method belongs to the method, not to its class
+    and not to the file; only a note outside every symbol is the file's.
+    """
+    notes: list[Doc] = []
+    _comment_notes(root, source, notes)
+    for note in sorted(notes, key=lambda n: n["line"]):
+        target = file_entity
+        best_span: int | None = None
+        for start, end, entity in symbol_spans:
+            if start <= note["line"] <= end and (best_span is None or end - start < best_span):
+                best_span = end - start
+                target = entity
+        if note["observation"] not in target["observations"]:
+            target["observations"].append(note["observation"])
+
+
 def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
     parser = _get_parser(lang)
     source = source_code.encode("utf-8")
@@ -545,15 +826,22 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
 
     file_entity_name = f"file:{file_path}"
     entity_names.add(file_entity_name)
-    entities.append(
-        {
-            "name": file_entity_name,
-            "entityType": "system",
-            "observations": [f"File path: {file_path}", f"Language: {lang}", "Symbol kind: File"],
-            "provenance": _provenance(file_path, 0),
-            "confidence": _confidence(),
-        }
-    )
+    file_observations = [f"File path: {file_path}", f"Language: {lang}", "Symbol kind: File"]
+    module_docstring = extraction.get("moduleDocstring")
+    if module_docstring:
+        file_observations.append(f"docstring: {module_docstring}")
+    file_entity = {
+        "name": file_entity_name,
+        "entityType": "system",
+        "observations": file_observations,
+        "provenance": _provenance(file_path, 0),
+        "confidence": _confidence(),
+    }
+    entities.append(file_entity)
+
+    # (startLine, endLine, entity) per symbol, for attaching rationale comments
+    # to the innermost symbol that encloses them.
+    symbol_spans: list[tuple[int, int, Doc]] = []
 
     symbol_name_map: dict[str, str] = {}
     for sym in extraction["symbols"]:
@@ -566,19 +854,24 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
         else:
             symbol_name_map[sym["name"]] = entity_name
 
-        entities.append(
-            {
-                "name": entity_name,
-                "entityType": kind_to_entity_type(sym["kind"]),
-                "observations": [
-                    f"File path: {file_path}",
-                    f"Line range: {sym['startLine'] + 1}-{sym['endLine'] + 1}",
-                    f"Symbol kind: {sym['kind']}",
-                ],
-                "provenance": _provenance(file_path, sym["startLine"]),
-                "confidence": _confidence(),
-            }
-        )
+        observations = [
+            f"File path: {file_path}",
+            f"Line range: {sym['startLine'] + 1}-{sym['endLine'] + 1}",
+            f"Symbol kind: {sym['kind']}",
+        ]
+        if sym.get("signature"):
+            observations.append(f"signature: {sym['signature']}")
+        if sym.get("docstring"):
+            observations.append(f"docstring: {sym['docstring']}")
+        symbol_entity = {
+            "name": entity_name,
+            "entityType": kind_to_entity_type(sym["kind"]),
+            "observations": observations,
+            "provenance": _provenance(file_path, sym["startLine"]),
+            "confidence": _confidence(),
+        }
+        entities.append(symbol_entity)
+        symbol_spans.append((sym["startLine"], sym["endLine"], symbol_entity))
         relations.append(
             {
                 "from": entity_name,
@@ -649,6 +942,8 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
                 {"caller": caller_name, "callee": call["callee"], "line": call["line"]}
             )
 
+    _attach_notes(tree.root_node, source, file_entity, symbol_spans)
+
     return {
         "entities": entities,
         "relations": relations,
@@ -669,7 +964,12 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
 
 def collect_source_files(project_path: str, include_tests: bool = True) -> list[Doc]:
     """Sorted list of {relativePath, content} for supported files (sorted so
-    the walk is deterministic)."""
+    the walk is deterministic).
+
+    Recognised non-code text files come along too — they become root file
+    entities. A binary (which fails to decode) or an oversized data file is
+    skipped.
+    """
     files: list[Doc] = []
     root = os.path.abspath(project_path)
     for dirpath, dirnames, filenames in os.walk(root):
@@ -679,8 +979,15 @@ def collect_source_files(project_path: str, include_tests: bool = True) -> list[
             if os.path.islink(full):
                 continue
             rel = os.path.relpath(full, root)
-            if detect_language(rel) is None:
-                continue
+            lang = detect_language(rel)
+            if lang is None:
+                if detect_text_kind(rel) is None:
+                    continue
+                try:
+                    if os.path.getsize(full) > MAX_TEXT_FILE_BYTES:
+                        continue
+                except OSError:
+                    continue
             if not include_tests and _is_test_file(rel):
                 continue
             try:
@@ -690,6 +997,28 @@ def collect_source_files(project_path: str, include_tests: bool = True) -> list[
                 continue
             files.append({"relativePath": rel, "content": content})
     return sorted(files, key=lambda f: f["relativePath"])
+
+
+def _text_file_entity(path: str, kind: str) -> Doc:
+    """A root entity for a non-code file — no parse, so no symbols and no edges.
+
+    Its provenance says ``automated``/``file-scan`` rather than ``tree-sitter``:
+    nothing parsed it, and claiming otherwise would misreport how the record
+    was obtained.
+    """
+    return {
+        "name": f"file:{path}",
+        "entityType": "system",
+        "observations": [f"File path: {path}", f"Language: {kind}", "Symbol kind: File"],
+        "provenance": {
+            "sourceType": "observation",
+            "sourceId": None,
+            "externalRef": f"{path}:1",
+            "extractor": "file-scan",
+            "extractionMethod": "automated",
+        },
+        "confidence": _confidence(),
+    }
 
 
 def _is_test_file(rel: str) -> bool:
@@ -710,9 +1039,16 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
     per_file: list[Doc] = []
     for file in files:
         lang = detect_language(file["relativePath"])
-        if lang is None:
-            continue
         path = resolution.normalise_path(file["relativePath"])
+        if lang is None:
+            kind = detect_text_kind(file["relativePath"])
+            if kind is None:
+                continue
+            entity = _text_file_entity(path, kind)
+            if entity["name"] not in entity_names:
+                entity_names.add(entity["name"])
+                all_entities.append(entity)
+            continue
         result = extract_from_source(file["content"], path, lang)
         for entity in result["entities"]:
             if entity["name"] not in entity_names:
