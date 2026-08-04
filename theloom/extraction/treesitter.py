@@ -5,10 +5,16 @@ system, class/interface/struct/trait/type_alias/enum -> concept,
 function/method -> procedure, variable/constant -> variable; entity name
 ``qualified (fileBaseName)``; symbol part_of file (+ enclosing), imports ->
 requires (resolved to the target file entity, or a ``pkg:`` node for a
-third-party package), inheritance -> instance_of, calls -> related_to
-(intra-file directly, cross-file via ``theloom.extraction.resolution``).
+third-party package), inheritance -> instance_of, calls -> calls (intra-file
+directly, cross-file via ``theloom.extraction.resolution``).
 Grammar-version differences can shift a symbol across tree-sitter releases; the
 entity/relation semantics are the contract.
+
+A call edge is anchored at its **call site**: the evidence reads
+``<caller> calls <callee> at <file>:<line>`` where the line is where the call is
+written, not where the callee is defined — a reader following an edge is
+reading the caller. The format is fixed so it can be parsed. ``related_to`` is
+never emitted here; it belongs to the semantic enrichment layer.
 
 Files are traversed in SORTED order so output is deterministic (an unsorted
 directory walk would be machine-dependent).
@@ -131,7 +137,15 @@ def _extract_calls(node: Any, caller: str, source: bytes, calls: list[Doc]) -> N
     if node.type in ("call", "call_expression"):
         func = _field(node, "function")
         if func is not None and func.type == "identifier":
-            calls.append({"caller": caller, "callee": _text(func, source)})
+            # ``line`` is the 0-based call site, matching the symbol convention;
+            # it becomes the anchor in the edge's evidence.
+            calls.append(
+                {
+                    "caller": caller,
+                    "callee": _text(func, source),
+                    "line": node.start_point[0],
+                }
+            )
     for child in _named(node):
         _extract_calls(child, caller, source, calls)
 
@@ -620,15 +634,20 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
                 {
                     "from": caller_name,
                     "to": callee_name,
-                    "relationType": "related_to",
+                    "relationType": "calls",
                     "polarity": None,
                     "strength": "moderate",
-                    "evidence": f"{call['caller']} calls {call['callee']}",
+                    "evidence": resolution.call_evidence(
+                        caller_name, call["callee"], file_path, call["line"]
+                    ),
                 }
             )
         elif caller_name:
-            # Callee is not defined in this file; the cross-file pass may find it.
-            unresolved_calls.append({"caller": caller_name, "callee": call["callee"]})
+            # Callee is not defined in this file; the cross-file pass may find
+            # it, and needs the call site to anchor the edge it emits.
+            unresolved_calls.append(
+                {"caller": caller_name, "callee": call["callee"], "line": call["line"]}
+            )
 
     return {
         "entities": entities,

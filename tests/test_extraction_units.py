@@ -52,11 +52,28 @@ class TestExtractFromSource:
         assert names["Account (models)"] == "concept"
         assert names["Account.deposit (models)"] == "procedure"
         assert names["open_account (models)"] == "procedure"
-        # open_account calls Account (both resolve) -> related_to
-        related = [r for r in result["relations"] if r["relationType"] == "related_to"]
+        # open_account calls Account (both resolve) -> calls
+        calls = [r for r in result["relations"] if r["relationType"] == "calls"]
         assert any(
-            r["from"] == "open_account (models)" and r["to"] == "Account (models)" for r in related
+            r["from"] == "open_account (models)" and r["to"] == "Account (models)" for r in calls
         )
+        # related_to is reserved for the semantic layer; no code edge uses it.
+        assert [r for r in result["relations"] if r["relationType"] == "related_to"] == []
+
+    def test_a_same_file_call_is_anchored_at_its_call_site(self) -> None:
+        """The evidence names the line the call is written on, not the line the
+        callee is defined on — a reader follows the caller, not the target."""
+        source = "def helper():\n    pass\n\n\ndef caller():\n    helper()\n"
+        result = treesitter.extract_from_source(source, "src/mod.py", "python")
+        calls = [r for r in result["relations"] if r["relationType"] == "calls"]
+        assert [(r["from"], r["to"], r["evidence"]) for r in calls] == [
+            (
+                "caller (mod)",
+                "helper (mod)",
+                "caller (mod) calls helper at src/mod.py:6",
+            )
+        ]
+        assert calls[0]["polarity"] is None
 
     def test_symbol_part_of_file_and_enclosing(self) -> None:
         source = "class C:\n    def m(self):\n        pass\n"
@@ -122,7 +139,9 @@ class TestExtractFromSource:
         inside a method was discarded."""
         source = "class C:\n    def m(self):\n        helper()\n"
         result = treesitter.extract_from_source(source, "c.py", "python")
-        assert result["unresolvedCalls"] == [{"caller": "C.m (c)", "callee": "helper"}]
+        # The call site travels with the call so the cross-file pass can anchor
+        # its evidence at the line the call is written on.
+        assert result["unresolvedCalls"] == [{"caller": "C.m (c)", "callee": "helper", "line": 2}]
 
 
 class TestExtractCodebaseDeterminism:
@@ -137,7 +156,9 @@ class TestExtractCodebaseDeterminism:
             # 19 + the two cross-file calls resolution now recovers
             "totalRelations": 21,
             "entityBreakdown": {"system": 5, "procedure": 9, "concept": 3},
-            "relationBreakdown": {"part_of": 15, "related_to": 3, "requires": 3},
+            # Call edges are typed `calls`; `related_to` now means only a
+            # semantic link, which structural extraction never emits.
+            "relationBreakdown": {"part_of": 15, "calls": 3, "requires": 3},
         }
 
     def test_deterministic_across_runs(self) -> None:

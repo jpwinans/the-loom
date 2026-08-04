@@ -90,6 +90,16 @@ class ExtractionRollbackInput(CommandInput):
 
 
 def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
+    """Extract a codebase into a graph via tree-sitter.
+
+    Call edges are typed ``calls`` and anchored at their call site
+    (``<caller> calls <callee> at <file>:<line>``). Graphs extracted before that
+    change carry their call edges as ``related_to``, indistinguishable from the
+    semantic layer's grounding links; there is no migration command — re-run
+    this command over the project to refresh them (structural re-extraction of a
+    repo this size takes about two minutes). After a re-extract, ``related_to``
+    means a semantic link and nothing else.
+    """
     # The tool handler wraps failures as
     # "Error in codebase extraction: <msg>"; "does not exist" then classifies
     # as OPERATION_ERROR (not NOT_FOUND).

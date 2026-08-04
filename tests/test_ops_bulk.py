@@ -140,6 +140,28 @@ def test_code_relation_types_round_trip(multi: MultiGraph) -> None:
     assert references[0].polarity is None
 
 
+def test_codebase_extraction_imports_every_call_edge(multi: MultiGraph) -> None:
+    """A relation whose endpoint was never created is dropped with a per-item
+    error, not a failure — 1,270 call edges vanished that way. Importing the
+    fixture repo end to end is what catches it, and `calls` is now the type
+    carrying them.
+    """
+    from theloom.extraction import treesitter
+
+    extraction = treesitter.extract_codebase("tests/fixtures/repo")
+    result = run(multi, entities=extraction["entities"], relations=extraction["relations"])
+    assert result["errors"] == []
+    assert result["relationsCreated"] == len(extraction["relations"])
+    call_edges = [r for r in extraction["relations"] if r["relationType"] == "calls"]
+    assert call_edges
+    store = multi.get_store("default")
+    for edge in call_edges:
+        from_id, to_id = result["mapping"][edge["from"]], result["mapping"][edge["to"]]
+        stored = store.read_relations(from_id, to_id, "calls")
+        assert [r.relation_type.value for r in stored] == ["calls"]
+        assert stored[0].evidence == edge["evidence"]
+
+
 def test_relations_resolve_against_existing_graph_entities(multi: MultiGraph) -> None:
     existing = create_entity(
         CreateEntityInput.model_validate(
