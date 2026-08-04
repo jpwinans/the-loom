@@ -1,0 +1,43 @@
+{
+  "graphName": "codebase-the-loom",
+  "projectPath": "/Users/jameswinans/Dropbox/Development/the-loom",
+  "commit": "8e7eedb8889da29219dc4739feb47bcdd193461c",
+  "mode": "full",
+  "timestamp": "2026-08-04T02:28:51Z",
+  "groups": [
+    "scripts",
+    "tapestry",
+    "tapestry/e2e",
+    "tapestry/src",
+    "tapestry/src/lib",
+    "tapestry/src/state",
+    "tapestry/src/views/chronicle",
+    "tapestry/src/views/explorer",
+    "tapestry/src/views/overview",
+    "tapestry/src/views/semantic",
+    "tapestry/src/views/systems",
+    "tests (part 1/2)",
+    "tests (part 2/2)",
+    "tests/fixtures",
+    "theloom",
+    "theloom/algebra",
+    "theloom/analysis",
+    "theloom/cli",
+    "theloom/composites",
+    "theloom/documents",
+    "theloom/exploration",
+    "theloom/extraction",
+    "theloom/graph",
+    "theloom/operations",
+    "theloom/semantic",
+    "theloom/store",
+    "theloom/synthesis",
+    "theloom/verification",
+    "theloom/viz"
+  ],
+  "outputs": {
+    "map": "ARCHITECTURE-MAP.md",
+    "viz": "codebase-map.html",
+    "manifest": "map-manifest.json"
+  }
+}

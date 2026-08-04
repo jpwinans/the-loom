@@ -121,16 +121,25 @@ Failed create → retry once → record in `failedCreations` and continue.
 
 ## Constraints
 
-1. **Only semantic-layer entities** (`concept`/`pattern`/`claim`/`tension` stamped
+1. **Never call `delete-entity` or `delete-relation` — not even on entities you created
+   moments ago.** The Loom is event-sourced: updates invalidate, they never overwrite,
+   and history is queryable state. If you create something wrong — a duplicate, a
+   malformed observation, an entity you've thought better of — retire it the same way
+   you retire a previous run's work: `update-entity` with `status: "superseded"` and a
+   `statusReason` (e.g. `"duplicate"`, `"corrected"`). Superseded entities drop out of
+   active queries, so the cartographer will not print them, and the correction stays
+   auditable. A hard delete is irreversible, breaks the architecture invariant, and
+   destroys the record of what the map once claimed.
+2. **Only semantic-layer entities** (`concept`/`pattern`/`claim`/`tension` stamped
    `map_layer: semantic`). Structural entities belong to the extractor — modifying
    them corrupts `update-codebase`'s incremental diffs.
-2. **Supersede only entities stamped `extractor: map-codebase`** and matching this
+3. **Supersede only entities stamped `extractor: map-codebase`** and matching this
    group — never another group's work, never structural entities.
-3. **Every claim cites an anchor** (`file:line`). An uncited invariant is opinion, and
+4. **Every claim cites an anchor** (`file:line`). An uncited invariant is opinion, and
    the cartographer will print it as fact.
-4. **Stay inside GROUP.paths.** Cross-group observations belong to the group that owns
+5. **Stay inside GROUP.paths.** Cross-group observations belong to the group that owns
    those files; note them in a tension only if the evidence is in your own files.
-5. **Verify every creation; operate autonomously; never spawn agents or ask the user
+6. **Verify every creation; operate autonomously; never spawn agents or ask the user
    questions.**
 
 ## Structured Output Contract
