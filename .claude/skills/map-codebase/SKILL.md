@@ -14,11 +14,10 @@ module group via the `codebase-enricher` agent, then analysis + deliverables via
 ## Invoke
 
 1. Parse `$ARGUMENTS`: **PATH** = first non-flag token (default `.`). Optional flags:
-   `--graph NAME`, `--output DIR`, `--full`, `--include GLOB` (repeatable),
-   `--no-tests`.
+   `--graph NAME`, `--output DIR`, `--full`, `--no-tests`.
 2. Call the Workflow tool — this is the valid opt-in (a skill instructing a Workflow run):
    ```
-   Workflow({ name: "map-codebase", args: { path: <PATH>, graph: <NAME or omit>, output: <DIR or omit>, full: <true if --full>, include: <[globs] or omit>, noTests: <true if --no-tests> } })
+   Workflow({ name: "map-codebase", args: { path: <PATH>, graph: <NAME or omit>, output: <DIR or omit>, full: <true if --full>, noTests: <true if --no-tests> } })
    ```
 3. It runs in the background and notifies on completion. Report: `graphName`, `mode`,
    `groupsEnriched`/`groupsTotal`, `mapPath`, `vizPath`, and the `keyFindings`.

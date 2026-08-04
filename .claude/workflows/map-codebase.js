@@ -14,7 +14,6 @@ const PATH = A.path || '.'
 const GRAPH = A.graph || null          // null → setup derives codebase-{slug}
 const OUTPUT = A.output || null        // null → {PATH}/docs/architecture/
 const FULL = !!A.full
-const INCLUDE = A.include || null      // array of globs or null
 const NO_TESTS = !!A.noTests
 // Loom access is CLI-only. LOOM is the instruction string injected into agent prompts.
 const LOOM = 'run the Loom CLI over Bash as `loom <command> \'<json>\'` — kebab-case commands, camelCase JSON fields plus a `graph` field on every call. Two CLI-enforced invariants: create-relation REQUIRES polarity ("+"/"-" for causal types, null otherwise), strength (weak|moderate|strong|foundational), and evidence (string or null); and embedding is a separate step — run `loom embed-entities \'{"graph": "<GRAPH_NAME>"}\'` after each creation batch. If `loom` is not on PATH, prefix each call with `uv run --directory "$LOOM_DIR"`, where LOOM_DIR is the Loom checkout (default ~/Dropbox/Development/the-loom). There is no MCP server — do not look for the-loom MCP tools'
@@ -49,9 +48,9 @@ phase('Setup')
 const setup = await agent(`Initialize a map-codebase run. Loom access: ${LOOM}.
 1. Resolve TARGET PATH "${PATH}" to an absolute path (pwd-relative if not absolute); derive slug from its dirname; GRAPH_NAME = ${GRAPH ? `"${GRAPH}"` : '"codebase-{slug}"'}; OUTPUT_DIR = ${OUTPUT ? `"${OUTPUT}"` : '"{abs path}/docs/architecture/"'} (mkdir -p it). Record \`git -C <path> rev-parse HEAD\` and whether \`git -C <path> status --porcelain\` is non-empty (dirtyTree).
 2. Fail fast: \`loom graph-stats '{}'\` must succeed — if it errors on connection, throw with the remediation line "docker compose up -d falkordb".
-3. Mode: if OUTPUT_DIR/map-manifest.json exists AND its graphName's graph exists AND ${FULL} is false → mode "incremental": run loom update-codebase '{"projectPath": "<abs>", "graphName": "<GRAPH_NAME>", "gitRef": "<manifest.commit>"${NO_TESTS ? ', "includeTests": false' : ''}}'. Otherwise mode "full": loom create-graph '{"name": "<GRAPH_NAME>"}' (ignore already-exists), then loom extract-codebase '{"projectPath": "<abs>", "graph": "<GRAPH_NAME>"${NO_TESTS ? ', "includeTests": false' : ''}${INCLUDE ? `, "include": ${JSON.stringify(INCLUDE)}` : ''}}'. Note skipped-file count from the output.
-4. loom embed-entities '{"graph": "<GRAPH_NAME>"}'.
-5. Module groups: loom list-entities '{"entityType": "system", "graph": "<GRAPH_NAME>"}' → group file paths by top-level directory; cap 25 files per group (split oversized dirs by subdirectory, then alphabetical chunks); fold dirs with <3 files into their parent. Group id = kebab slug of the dir path. In incremental mode, keep ONLY groups containing files changed in the update-codebase diff.
+3. Mode: if OUTPUT_DIR/map-manifest.json exists AND its graphName equals GRAPH_NAME AND that graph exists AND ${FULL} is false → mode "incremental" (on a graphName mismatch, fall back to mode "full"): run loom update-codebase '{"projectPath": "<abs>", "graphName": "<GRAPH_NAME>", "gitRef": "<manifest.commit>"${NO_TESTS ? ', "includeTests": false' : ''}}'. Otherwise mode "full": loom create-graph '{"name": "<GRAPH_NAME>"}' (ignore already-exists), then loom extract-codebase '{"projectPath": "<abs>", "graph": "<GRAPH_NAME>"${NO_TESTS ? ', "includeTests": false' : ''}}'. After extraction, compute skippedFiles = (\`git -C <path> ls-files | wc -l\`) minus stats.totalFiles — the repo files not parsed (unsupported types, config, docs).
+4. loom embed-entities '{"graph": "<GRAPH_NAME>"}' — embed-entities can take several minutes on a first run (one-time embedder model download plus one embedding per entity); run it with a long Bash timeout (600000 ms), never the default.
+5. Module groups: loom list-entities '{"entityType": "system", "graph": "<GRAPH_NAME>"}' → group file paths by top-level directory; cap 25 files per group (split oversized dirs by subdirectory, then alphabetical chunks); fold dirs with <3 files into their parent. Group id = kebab slug of the dir path. Each group's \`paths\` are FILE paths (relative to the project root), not directories. In incremental mode, keep ONLY groups containing files changed in the update-codebase diff.
 Return the Setup contract object.`,
   { label: 'setup', phase: 'Setup', schema: SETUP })
 log(`map-codebase ${setup.mode} → graph ${setup.graphName}, ${setup.moduleGroups.length} groups @ ${setup.headCommit.slice(0, 8)}`)
@@ -82,7 +81,7 @@ PROJECT_PATH: ${setup.projectPath}
 OUTPUT_DIR: ${OUTPUT || `${setup.projectPath}/docs/architecture/`}
 HEAD_COMMIT: ${setup.headCommit}
 MODE: ${setup.mode}
-GROUPS_ENRICHED: ${JSON.stringify(enriched.map((r) => r.groupId))}
+GROUPS_ENRICHED: ${JSON.stringify(enriched.map((r) => (setup.moduleGroups.find((g) => g.id === r.groupId) || {}).label || r.groupId))}
 GROUPS_UNENRICHED: ${JSON.stringify(unenriched.map((g) => g.label))}
 DIRTY_TREE: ${!!setup.dirtyTree}
 SKIPPED_FILES: ${setup.skippedFiles || 0}

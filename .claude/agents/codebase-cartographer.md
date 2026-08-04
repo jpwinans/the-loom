@@ -37,14 +37,24 @@ extraction and enrichment found; inventing structure here would bypass both.
 
 ### 1. Analysis (run concurrently — all read-only)
 
+`find-clusters` and `semantic-gaps` embed on a cold cache just like `embed-entities` —
+give these calls a long Bash timeout (600000 ms), never the default.
+
 ```bash
 loom graph-stats '{"graph": "GRAPH_NAME"}'
 loom analyze-centrality '{"metric": "degree", "limit": 15, "graph": "GRAPH_NAME"}'
 loom analyze-centrality '{"metric": "betweenness", "limit": 15, "graph": "GRAPH_NAME"}'
-loom detect-cycles '{"graph": "GRAPH_NAME"}'
-loom find-clusters '{"graph": "GRAPH_NAME"}'
+loom detect-cycles '{"includePaths": true, "graph": "GRAPH_NAME"}'
+loom find-clusters '{"maxEntities": 500, "graph": "GRAPH_NAME"}'
 loom detect-components '{"graph": "GRAPH_NAME"}'
-loom semantic-gaps '{"graph": "GRAPH_NAME"}'
+loom semantic-gaps '{"maxEntities": 500, "graph": "GRAPH_NAME"}'
+```
+
+Also gather the structural layer's `system` entities — their observations carry
+`Language:` per file, the source for the stats table's language mix:
+
+```bash
+loom list-entities '{"entityType": "system", "graph": "GRAPH_NAME"}'
 ```
 
 Gather the semantic layer for the walkthrough (filter client-side to observations
@@ -69,7 +79,8 @@ Front-matter: `repo`, `commit: HEAD_COMMIT`, `graph: GRAPH_NAME`, `generated` (I
 date), `mode`. Then, in order:
 
 1. **Executive overview** — the system in one paragraph; stats table (files, symbols,
-   relations, language mix, skipped files; dirty-tree warning if DIRTY_TREE).
+   relations, language mix, files not parsed (SKIPPED_FILES); dirty-tree warning if
+   DIRTY_TREE).
 2. **Subsystem walkthrough** — one subsection per enriched group: its purpose concept,
    key files, patterns, invariant claims (with their `anchor:` citations).
 3. **Load-bearing modules** — top centrality entries with one line each on *why* it is
@@ -89,8 +100,11 @@ the walkthrough sections; those words describe the tool, not the codebase.
 
 ### 3. Render the visualization
 
+The semantic bundle re-runs whole-graph clustering and can stall on a cold embedder
+cache; the map document already carries the cluster analysis, so exclude it here:
+
 ```bash
-loom visualize '{"graph": "GRAPH_NAME", "scope": {"mode": "full"}, "maxEntities": 400, "title": "<repo> architecture map", "output": "<OUTPUT_DIR>/codebase-map.html"}'
+loom visualize '{"graph": "GRAPH_NAME", "scope": {"mode": "full"}, "include": {"semantic": false}, "maxEntities": 400, "title": "<repo> architecture map", "output": "<OUTPUT_DIR>/codebase-map.html"}'
 ```
 
 On failure, halve `maxEntities` and retry (400 → 200 → 100). If it still fails, ship
@@ -103,12 +117,15 @@ the map without the HTML, note it in Coverage, and return `vizPath: ""`.
   "graphName": "GRAPH_NAME",
   "projectPath": "PROJECT_PATH",
   "commit": "HEAD_COMMIT",
-  "mode": "full",
+  "mode": "MODE",
   "timestamp": "<ISO>",
   "groups": ["<group ids>"],
   "outputs": {"map": "ARCHITECTURE-MAP.md", "viz": "codebase-map.html", "manifest": "map-manifest.json"}
 }
 ```
+
+In incremental mode, merge the prior manifest's `groups` list with this run's groups so
+the manifest always reflects full coverage.
 
 This file is the incremental anchor — the next run reads `commit` as its `gitRef`.
 

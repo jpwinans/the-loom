@@ -38,25 +38,27 @@ an unenriched group is a blank page in the walkthrough.
 
 ## Execution
 
-### 1. (incremental only) Supersede this group's prior semantic entities
+### 1. Supersede this group's prior semantic entities (always)
 
-Re-maps never overwrite history — supersession keeps the old reading queryable so
-`session-changelog` can answer "how did the architecture change since <date>". For each
-of `concept`, `pattern`, `claim`, `tension`:
+Run this step regardless of MODE — a repeated `--full` run must not duplicate the
+semantic layer. Re-maps never overwrite history — supersession keeps the old reading
+queryable so `session-changelog` can answer "how did the architecture change since
+<date>". For each of `concept`, `pattern`, `claim`, `tension`:
 
 ```bash
 loom list-entities '{"entityType": "<type>", "graph": "GRAPH_NAME"}'
 ```
 
 Keep entities whose observations include BOTH `map_layer: semantic` and
-`module_group: <GROUP.id>`, then supersede each:
+`module_group: <GROUP.id>` and whose provenance is `extractor: "map-codebase"`, then
+supersede each:
 
 ```bash
 loom update-entity '{"id": "<entity_id>", "status": "superseded", "statusReason": "remapped", "graph": "GRAPH_NAME"}'
 ```
 
-Report the count as `supersededCount`. In `full` mode, skip this step
-(`supersededCount: 0`).
+Report the count as `supersededCount` — `0` when none are found, the normal outcome on
+a first run.
 
 ### 2. Read the source
 
@@ -71,7 +73,7 @@ files.
 Semantic entities must link to real structural entities, not names. Per file:
 
 ```bash
-loom list-entities '{"query": "<file path>", "graph": "GRAPH_NAME"}'
+loom list-entities '{"query": "<file path>", "entityType": "system", "graph": "GRAPH_NAME"}'
 ```
 
 Collect the `system` entity id for each file (these are the link targets).
@@ -106,7 +108,9 @@ from step 4 — never placeholder ids):
 loom create-relation '{"from": "<semantic_entity_id>", "to": "<system_entity_id>", "relationType": "related_to", "polarity": null, "strength": "moderate", "evidence": "<one line: why this file grounds the entity>", "graph": "GRAPH_NAME"}'
 ```
 
-Then:
+Then (`embed-entities` can take several minutes on a first run — one-time embedder
+model download plus one embedding per entity — run it with a long Bash timeout
+(600000 ms), never the default):
 
 ```bash
 loom embed-entities '{"graph": "GRAPH_NAME"}'

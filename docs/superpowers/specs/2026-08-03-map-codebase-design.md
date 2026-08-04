@@ -34,11 +34,14 @@ by no existing skill.
   creation batches).
 - Provenance for code-derived semantic entities: `sourceType: "observation"`,
   confidence basis `direct_observation`.
+- `extract-codebase`/`update-codebase` accept `include`/`exclude` glob parameters, but
+  the current extractor ignores them (no filtering is applied) — that's why
+  `/map-codebase` does not expose an `--include` flag.
 
 ## Invocation
 
 ```
-/map-codebase [PATH] [--graph NAME] [--output DIR] [--full] [--include GLOB]... [--no-tests]
+/map-codebase [PATH] [--graph NAME] [--output DIR] [--full] [--no-tests]
 ```
 
 | Argument | Default | Meaning |
@@ -47,7 +50,6 @@ by no existing skill.
 | `--graph` | `codebase-{repo-dirname-slug}` | Loom graph name |
 | `--output` | `{PATH}/docs/architecture/` | receives the three output files |
 | `--full` | off | force fresh extraction even when a manifest exists |
-| `--include` | extractor default | passthrough include globs |
 | `--no-tests` | off (tests included) | passthrough `includeTests: false` |
 
 The skill lives in the-loom repo and is invoked from the repo root (same
@@ -97,8 +99,8 @@ Returns **Setup**: `{graphName, projectPath, mode, headCommit, moduleGroups:
 
 Each enricher, for its one group:
 
-1. **Incremental first step:** supersede its group's prior semantic entities
-   (`update-entity` `status: "superseded"`, `statusReason: "remapped"`) — re-maps
+1. **Always supersede this group's prior semantic entities** (none exist on a first
+   run) (`update-entity` `status: "superseded"`, `statusReason: "remapped"`) — re-maps
    never overwrite history, so `session-changelog` can answer "how did the
    architecture change since \<date\>".
 2. Read the group's actual source files plus its extracted entities
@@ -125,11 +127,13 @@ verification{entitiesAttempted, entitiesVerified, failedCreations}}`.
    `detect-cycles`, `find-clusters`, `detect-components`, `semantic-gaps`,
    `graph-stats`.
 2. Write `ARCHITECTURE-MAP.md` (structure below).
-3. Render `codebase-map.html`: `loom visualize` with `scope: {"mode": "full"}` and
-   `maxEntities: 400` (halved per retry on render failure). Note: `visualize`'s
-   `include` field is `{analytics, temporal, semantic}` booleans — bundle features,
-   not an entity-type filter — and `scope.entityType` is singular; density is
-   managed by the `maxEntities` cap.
+3. Render `codebase-map.html`: `loom visualize` with `scope: {"mode": "full"}`,
+   `include: {"semantic": false}`, and `maxEntities: 400` (halved per retry on render
+   failure). The semantic bundle re-runs whole-graph clustering and can stall on a
+   cold embedder cache; the map document already carries the cluster analysis, so it
+   is excluded from the viz. Note: `visualize`'s `include` field is `{analytics,
+   temporal, semantic}` booleans — bundle features, not an entity-type filter — and
+   `scope.entityType` is singular; density is managed by the `maxEntities` cap.
 4. Write `map-manifest.json`: `{graphName, projectPath, commit, mode, timestamp,
    groups, outputs}`.
 
@@ -173,9 +177,9 @@ semantic layer; `update-codebase` owns structural churn.
 | FalkorDB down | Setup fails fast with remediation; nothing half-extracted |
 | Enricher agent fails | `pipeline()` drops the group to null; run continues; Coverage section names unenriched groups |
 | Verification invariant (`attempted > 0, verified == 0`) | Halt — Loom write path failing (same rule as research) |
-| Viz too dense | Retry at lower `maxEntities`; else ship map without HTML + note |
+| Viz too dense / embedder cold cache | Retry at lower `maxEntities`; the semantic bundle is excluded (`include.semantic: false`) so viz doesn't stall on a cold embedder cache; else ship map without HTML + note |
 | Dirty working tree | Map at `HEAD` with a warning; not fatal |
-| Unsupported languages | Skipped, counted, reported; never fatal |
+| Unsupported languages | Not parsed; setup computes the count as tracked-files minus extracted-files; reported in the map's stats and Coverage |
 
 ## Testing
 
