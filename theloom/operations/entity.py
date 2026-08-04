@@ -89,6 +89,7 @@ class CreateEntityInput(CommandInput):
 class ReadEntityInput(CommandInput):
     id: UuidStr
     graph: str | None = None
+    compact: bool | None = None
 
 
 class UpdateEntityInput(CommandInput):
@@ -126,6 +127,7 @@ class ListEntitiesInput(CommandInput):
     session: str | None = None
     limit: int | None = Field(default=None, ge=1)
     graph: str | None = None
+    compact: bool | None = None
 
 
 class ReadEntitiesByNameInput(CommandInput):
@@ -141,6 +143,20 @@ class ReadEntitiesByNameInput(CommandInput):
 def _entity_doc(store: FalkorGraphStore, entity_id: str) -> dict[str, Any] | None:
     entity = store.read_entity(entity_id)
     return entity.model_dump(by_alias=True, exclude_unset=True) if entity else None
+
+
+def compact_entity_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """Agent-shaped entity projection — id/name/entityType/status/observations
+    only, dropping confidence/provenance/embedding metadata/timestamps. Shared
+    by every command that can embed entities in its output (read-entity,
+    list-entities, get-neighbors, get-relations' bridge rows, entity-deep-dive)."""
+    return {
+        "id": doc["id"],
+        "name": doc["name"],
+        "entityType": doc["entityType"],
+        "status": doc.get("status"),
+        "observations": doc["observations"],
+    }
 
 
 def _confidence_doc(confidence: ConfidenceArg) -> dict[str, Any]:
@@ -207,7 +223,7 @@ def read_entity(params: ReadEntityInput, multi: MultiGraph) -> dict[str, Any]:
         raise NotFoundError(
             f"Entity not found with ID: {params.id}. Use list_entities to see available entities."
         )
-    return doc
+    return compact_entity_doc(doc) if params.compact else doc
 
 
 def update_entity(params: UpdateEntityInput, multi: MultiGraph) -> dict[str, Any]:
@@ -361,6 +377,9 @@ def list_entities(
     else:
         entities, total = multi.get_store(params.graph).list_entities_page(entity_filter)
         results = [e.model_dump(by_alias=True, exclude_unset=True) for e in entities]
+
+    if params.compact:
+        results = [compact_entity_doc(doc) for doc in results]
 
     if params.limit is None:
         return results

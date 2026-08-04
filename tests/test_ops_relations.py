@@ -297,7 +297,13 @@ def test_get_neighbors_cross_graph_stub_and_follow(multi: MultiGraph) -> None:
     stubs = get_neighbors(GetNeighborsInput.model_validate({"entityId": a}), multi)
     assert {n.get("name", n.get("id")) for n in stubs} == {"B", remote}
     stub = next(n for n in stubs if n.get("stub"))
-    assert stub == {"id": remote, "graph": "research", "stub": True}
+    assert stub == {
+        "id": remote,
+        "graph": "research",
+        "stub": True,
+        "relationType": "supports",
+        "direction": "out",
+    }
 
     followed = get_neighbors(
         GetNeighborsInput.model_validate({"entityId": a, "follow_bridges": True}), multi
@@ -305,3 +311,67 @@ def test_get_neighbors_cross_graph_stub_and_follow(multi: MultiGraph) -> None:
     full = next(n for n in followed if n.get("graph") == "research")
     assert full["name"] == "Remote"
     assert full.get("stub") is None
+
+
+# =============================================================================
+# get-neighbors relationType/direction + compact
+# =============================================================================
+
+
+def test_get_neighbors_carries_relation_type_and_direction(multi: MultiGraph) -> None:
+    a, b, c = ent(multi, "A"), ent(multi, "B"), ent(multi, "C")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    create_relation(CreateRelationInput.model_validate(rel_input(c, a, "causes")), multi)
+
+    result = get_neighbors(GetNeighborsInput.model_validate({"entityId": a}), multi)
+    by_name = {r["name"]: r for r in result}
+    assert by_name["B"]["relationType"] == "supports"
+    assert by_name["B"]["direction"] == "out"
+    assert by_name["C"]["relationType"] == "causes"
+    assert by_name["C"]["direction"] == "in"
+
+
+def test_get_neighbors_compact_projects_entity_fields(multi: MultiGraph) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+
+    full = get_neighbors(GetNeighborsInput.model_validate({"entityId": a}), multi)
+    assert "created_at" in full[0]
+
+    compact = get_neighbors(
+        GetNeighborsInput.model_validate({"entityId": a, "compact": True}), multi
+    )
+    assert len(compact) == 1
+    entry = compact[0]
+    assert set(entry) == {
+        "id",
+        "name",
+        "entityType",
+        "status",
+        "observations",
+        "relationType",
+        "direction",
+    }
+    assert entry["name"] == "B"
+    assert entry["relationType"] == "supports"
+    assert entry["direction"] == "out"
+
+
+# =============================================================================
+# get-relations compact bridge rows
+# =============================================================================
+
+
+def test_get_relations_compact_projects_followed_bridge_entities(multi: MultiGraph) -> None:
+    multi.create_graph("research")
+    a = ent(multi, "A")
+    remote = ent(multi, "Remote", graph="research")
+    seed_bridge(multi, a, remote)
+
+    result = get_relations(
+        GetRelationsInput.model_validate({"entityId": a, "follow_bridges": True, "compact": True}),
+        multi,
+    )
+    bridge_row = next(r for r in result if r.get("to_graph"))
+    assert set(bridge_row["to_entity"]) == {"id", "name", "entityType", "status", "observations"}
+    assert bridge_row["to_entity"]["name"] == "Remote"

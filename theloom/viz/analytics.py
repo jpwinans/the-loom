@@ -60,10 +60,15 @@ def assemble_analytics(graph: str | None, multi: MultiGraph) -> AnalyticsSection
 
     algorithms = _ALGORITHMS if node_count <= BETWEENNESS_MAX_NODES else ("degree", "pagerank")
     centrality = {
-        algorithm: analyze_centrality(
-            AnalyzeCentralityInput(algorithm=algorithm, graph=graph, limit=CENTRALITY_SHIP_LIMIT),
-            multi,
-        )["scores"]
+        algorithm: {
+            entry["id"]: entry["score"]
+            for entry in analyze_centrality(
+                AnalyzeCentralityInput(
+                    algorithm=algorithm, graph=graph, limit=CENTRALITY_SHIP_LIMIT
+                ),
+                multi,
+            )["results"]
+        }
         for algorithm in algorithms
     }
     components = detect_components(DetectComponentsInput(graph=graph), multi)["components"]

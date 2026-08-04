@@ -126,6 +126,22 @@ def test_read_entity_not_found_raises(multi: MultiGraph) -> None:
         read_entity(ReadEntityInput.model_validate({"id": MISSING}), multi)
 
 
+def test_read_entity_compact_projects_to_five_fields(multi: MultiGraph) -> None:
+    entity = make(multi)
+    result = read_entity(
+        ReadEntityInput.model_validate({"id": entity["id"], "compact": True}), multi
+    )
+    assert set(result) == {"id", "name", "entityType", "status", "observations"}
+    assert result["id"] == entity["id"]
+    assert result["name"] == entity["name"]
+
+
+def test_read_entity_without_compact_is_unchanged(multi: MultiGraph) -> None:
+    entity = make(multi)
+    result = read_entity(ReadEntityInput.model_validate({"id": entity["id"]}), multi)
+    assert result == entity
+
+
 def test_delete_returns_entity_then_not_found(multi: MultiGraph) -> None:
     entity = make(multi)
     deleted = delete_entity(DeleteEntityInput.model_validate({"id": entity["id"]}), multi)
@@ -250,6 +266,26 @@ def test_list_wildcard_graph_annotates_graph(multi: MultiGraph) -> None:
     result = list_entities(ListEntitiesInput.model_validate({"graph": "*"}), multi)
     graphs = {e["name"]: e["graph"] for e in result}
     assert graphs == {"In Default": "default", "In Research": "research"}
+
+
+def test_list_compact_projects_each_entity_to_five_fields(multi: MultiGraph) -> None:
+    make(multi, "One")
+    make(multi, "Two")
+    result = list_entities(ListEntitiesInput.model_validate({"compact": True}), multi)
+    assert isinstance(result, list)
+    assert [e["name"] for e in result] == ["One", "Two"]
+    assert all(set(e) == {"id", "name", "entityType", "status", "observations"} for e in result)
+
+
+def test_list_compact_composes_with_limit(multi: MultiGraph) -> None:
+    for name in ("One", "Two", "Three"):
+        make(multi, name)
+    result = list_entities(ListEntitiesInput.model_validate({"compact": True, "limit": 2}), multi)
+    assert isinstance(result, dict)
+    assert [e["name"] for e in result["items"]] == ["One", "Two"]
+    fields = {"id", "name", "entityType", "status", "observations"}
+    assert all(set(e) == fields for e in result["items"])
+    assert result["truncated"]["total"] == 3
 
 
 def test_list_without_limit_keeps_the_bare_array_shape(multi: MultiGraph) -> None:

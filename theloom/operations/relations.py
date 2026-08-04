@@ -32,6 +32,7 @@ from theloom.model import (
     Strength,
 )
 from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.entity import compact_entity_doc
 from theloom.store.multigraph import MultiGraph
 from theloom.verification.guards import non_causal_polarity_error, relation_gate_errors
 
@@ -112,6 +113,7 @@ class GetRelationsInput(CommandInput):
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     graph: str | None = None
     follow_bridges: bool | None = None
+    compact: bool | None = None
 
 
 class GetNeighborsInput(CommandInput):
@@ -120,6 +122,7 @@ class GetNeighborsInput(CommandInput):
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     graph: str | None = None
     follow_bridges: bool | None = None
+    compact: bool | None = None
 
 
 # =============================================================================
@@ -362,11 +365,13 @@ def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str
             from_store = multi.get_store(bridge["from_graph"])
             from_entity = from_store.read_entity(bridge["from"])
             if from_entity is not None:
-                row["from_entity"] = from_entity.model_dump(by_alias=True, exclude_unset=True)
+                doc = from_entity.model_dump(by_alias=True, exclude_unset=True)
+                row["from_entity"] = compact_entity_doc(doc) if params.compact else doc
             to_store = multi.get_store(bridge["to_graph"])
             to_entity = to_store.read_entity(bridge["to"])
             if to_entity is not None:
-                row["to_entity"] = to_entity.model_dump(by_alias=True, exclude_unset=True)
+                doc = to_entity.model_dump(by_alias=True, exclude_unset=True)
+                row["to_entity"] = compact_entity_doc(doc) if params.compact else doc
         results.append(row)
     return results
 
@@ -375,17 +380,47 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
-    neighbors = store.get_neighbors(params.entity_id, direction, relation_type)  # type: ignore[arg-type]
-    results = [n.model_dump(by_alias=True, exclude_unset=True) for n in neighbors]
+    relations = store.get_relations(params.entity_id, direction, relation_type)  # type: ignore[arg-type]
+
+    # One (relationType, direction) per unique neighbor id, first-seen — the
+    # same neighbor set/order the store's own dedup (filters.extract_neighbor_ids)
+    # has always produced, now keeping which edge made the connection.
+    edges: dict[str, tuple[str, str]] = {}
+    order: list[str] = []
+    for relation in relations:
+        if direction == "outgoing":
+            neighbor_id, edge_direction = relation.to, "out"
+        elif direction == "incoming":
+            neighbor_id, edge_direction = relation.from_, "in"
+        elif relation.from_ == params.entity_id:
+            neighbor_id, edge_direction = relation.to, "out"
+        else:
+            neighbor_id, edge_direction = relation.from_, "in"
+        if neighbor_id not in edges:
+            edges[neighbor_id] = (relation.relation_type.value, edge_direction)
+            order.append(neighbor_id)
+
+    results: list[dict[str, Any]] = []
+    for neighbor_id in order:
+        entity = store.read_entity(neighbor_id)
+        if entity is None:
+            continue
+        doc = entity.model_dump(by_alias=True, exclude_unset=True)
+        if params.compact:
+            doc = compact_entity_doc(doc)
+        edge_relation_type, edge_direction = edges[neighbor_id]
+        doc["relationType"] = edge_relation_type
+        doc["direction"] = edge_direction
+        results.append(doc)
 
     seen_cross_graph: set[str] = set()
     for bridge in multi.bridges.list_bridges({"entity_id": params.entity_id}):
         if not _bridge_matches(bridge, params.entity_id, direction, relation_type):
             continue
         if bridge["from"] == params.entity_id:
-            neighbor_id, neighbor_graph = bridge["to"], bridge["to_graph"]
+            neighbor_id, neighbor_graph, edge_direction = bridge["to"], bridge["to_graph"], "out"
         else:
-            neighbor_id, neighbor_graph = bridge["from"], bridge["from_graph"]
+            neighbor_id, neighbor_graph, edge_direction = bridge["from"], bridge["from_graph"], "in"
         if neighbor_id in seen_cross_graph:
             continue
         seen_cross_graph.add(neighbor_id)
@@ -394,8 +429,20 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
             entity = multi.get_store(neighbor_graph).read_entity(neighbor_id)
             if entity is not None:
                 doc = entity.model_dump(by_alias=True, exclude_unset=True)
+                if params.compact:
+                    doc = compact_entity_doc(doc)
                 doc["graph"] = neighbor_graph
+                doc["relationType"] = bridge["relationType"]
+                doc["direction"] = edge_direction
                 results.append(doc)
                 continue
-        results.append({"id": neighbor_id, "graph": neighbor_graph, "stub": True})
+        results.append(
+            {
+                "id": neighbor_id,
+                "graph": neighbor_graph,
+                "stub": True,
+                "relationType": bridge["relationType"],
+                "direction": edge_direction,
+            }
+        )
     return results

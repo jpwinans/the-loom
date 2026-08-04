@@ -261,7 +261,19 @@ def analyze_centrality(params: AnalyzeCentralityInput, multi: MultiGraph) -> dic
     entries = sorted(scores.items(), key=lambda item: -item[1])
     if params.limit is not None:
         entries = entries[: params.limit]
-    response: dict[str, Any] = {"algorithm": algorithm, "scores": dict(entries)}
+    # Ranked [{id, name, entityType, score}] instead of a bare id->score map —
+    # the hub name is what a caller almost always needs next, so ship it
+    # inline instead of forcing a follow-up read per hub.
+    results = [
+        {
+            "id": entity_id,
+            "name": graph.node_docs.get(entity_id, {}).get("name", entity_id),
+            "entityType": graph.node_docs.get(entity_id, {}).get("entityType", "unknown"),
+            "score": score,
+        }
+        for entity_id, score in entries
+    ]
+    response: dict[str, Any] = {"algorithm": algorithm, "results": results}
     if params.limit is not None:
         response["limit"] = params.limit
     return response
