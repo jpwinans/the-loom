@@ -49,6 +49,82 @@ _PY_SUFFIXES = (".py", "/__init__.py")
 
 EXTERNAL_PREFIX = "pkg:"
 
+# Kinds a call or a base-class reference can legitimately land on.
+_CALLABLE_KINDS = frozenset({"procedure", "concept"})
+
+
+# Names that belong to a language runtime, not to any project symbol. A bare
+# call to one of these is never a dependency on a file in this repository —
+# and because such a name may coincide with a single project symbol, the
+# unique-name rule would otherwise weld hundreds of callers to it. (Observed:
+# 288 Python ``len()`` calls resolving to a lone TypeScript ``len`` constant,
+# making it the most-connected node in the graph.)
+_BUILTINS = frozenset(
+    {
+        # Python
+        "len",
+        "print",
+        "str",
+        "int",
+        "float",
+        "bool",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "type",
+        "range",
+        "enumerate",
+        "zip",
+        "map",
+        "filter",
+        "sorted",
+        "sum",
+        "min",
+        "max",
+        "abs",
+        "round",
+        "open",
+        "isinstance",
+        "issubclass",
+        "getattr",
+        "setattr",
+        "hasattr",
+        "repr",
+        "hash",
+        "id",
+        "iter",
+        "next",
+        "any",
+        "all",
+        "format",
+        "super",
+        "property",
+        "staticmethod",
+        "classmethod",
+        "bytes",
+        "frozenset",
+        "reversed",
+        "slice",
+        "vars",
+        "dir",
+        "callable",
+        # JS/TS
+        "require",
+        "fetch",
+        "parseInt",
+        "parseFloat",
+        "encodeURIComponent",
+        "decodeURIComponent",
+        "setTimeout",
+        "setInterval",
+        "clearTimeout",
+        "clearInterval",
+        "structuredClone",
+        "queueMicrotask",
+    }
+)
+
 
 def file_entity_name(path: str) -> str:
     """The entity name the extractor gives a file."""
@@ -277,14 +353,17 @@ def _resolve_symbol_edges(
     Calls and base classes differ only in the edge they produce, so both run
     through this one resolver.
     """
-    # (file, bare symbol name) -> entity name, and bare name -> all entity names
+    # (file, bare symbol name) -> entity name; and, for the unique-name rule,
+    # bare name -> every candidate with the language and kind needed to judge it.
     by_file: dict[tuple[str, str], str] = {}
-    by_name: dict[str, set[str]] = {}
+    by_name: dict[str, set[tuple[str, str, str]]] = {}
     for record in per_file:
         path = str(record["path"])
+        language = str(record.get("language", ""))
+        kinds = record.get("symbolKinds", {})
         for bare, entity_name in record.get("symbols", {}).items():
             by_file.setdefault((path, bare), entity_name)
-            by_name.setdefault(bare, set()).add(entity_name)
+            by_name.setdefault(bare, set()).add((entity_name, language, str(kinds.get(bare, ""))))
 
     relations: list[Doc] = []
     seen: set[tuple[str, str]] = set()
@@ -292,6 +371,7 @@ def _resolve_symbol_edges(
 
     for record in per_file:
         importer = str(record["path"])
+        language = str(record.get("language", ""))
         for call in record.get(field, []):
             caller_name = str(call.get("caller", ""))
             callee = str(call.get("callee", ""))
@@ -303,7 +383,19 @@ def _resolve_symbol_edges(
             proven = target is not None
 
             if target is None:
-                candidates = by_name.get(callee, set())
+                if callee in _BUILTINS:
+                    # A language builtin, not a project symbol.
+                    ambiguous += 1
+                    continue
+                # Only candidates the caller could actually reach: same
+                # language (a Python file cannot call a TypeScript symbol) and
+                # an entity kind that is callable or constructible. A local
+                # constant that merely shares the name is not a call target.
+                candidates = {
+                    name
+                    for name, lang, kind in by_name.get(callee, set())
+                    if lang == language and kind in _CALLABLE_KINDS
+                }
                 # Same-file candidates were already resolved by the per-file
                 # pass; anything left here is genuinely cross-file.
                 if len(candidates) == 1:
