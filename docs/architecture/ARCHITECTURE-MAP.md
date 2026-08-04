@@ -1,9 +1,9 @@
 ---
 repo: the-loom
-commit: 8e7eedb8889da29219dc4739feb47bcdd193461c
+commit: 8e33b4d1ab32146f4e979d9c4636e7e08a67d60d
 graph: codebase-the-loom
-generated: 2026-08-04T02:28:51Z
-mode: full
+generated: 2026-08-04T03:10:00Z
+mode: incremental
 ---
 
 # The Loom — Architecture Map
@@ -30,18 +30,21 @@ the project's stated architectural invariants stop being prose and become assert
 | | |
 |---|---|
 | Files mapped | 262 |
-| Symbols and findings recorded | 4,211 |
+| Symbols and findings recorded | 4,211 (4,194 current, 17 superseded prior versions) |
 | Recorded connections | 6,251 |
 | Language mix | Python 187 files, TypeScript 73, JavaScript 2 |
-| Files not parsed | 77 |
+| Files not parsed | 80 |
 | Working tree at extraction | clean (no uncommitted changes) |
 | Module groups described | 29 of 29 |
+| Groups re-described this run | 0 (see §8) |
 
-The 77 unparsed files are everything tree-sitter has no grammar for in this tree —
-Markdown, JSON, CSS, YAML, TOML, HTML and lockfiles. Two of those are load-bearing and
-described here only through the prose findings that cite them: `tapestry/src/design/tokens.css`
-(the colour token layer the whole SPA resolves against) and
-`theloom/viz/static/tapestry.html` (the committed build artifact).
+The 80 unparsed files are everything tree-sitter has no grammar for in this tree —
+Markdown, JSON, CSS, YAML, TOML, HTML and lockfiles. The count rose by three since the
+previous map because this map, its visualization and its manifest are themselves now
+committed files. Two unparsed files are load-bearing and described here only through the
+prose findings that cite them: `tapestry/src/design/tokens.css` (the colour token layer
+the whole SPA resolves against) and `theloom/viz/static/tapestry.html` (the committed
+build artifact).
 
 ## 2. Subsystem walkthrough
 
@@ -687,7 +690,8 @@ Invariants worth knowing:
 Two centrality measures were run over the mapped graph. Degree centrality ranks files
 by how much they carry — the symbols defined inside them plus the findings anchored to
 them. Betweenness ranks functions by how much of the within-file call structure routes
-through them.
+through them. Both rankings are unchanged from the previous map; the code they describe
+did not move.
 
 **Files by degree (top 15).** Each line notes why the file is a hub.
 
@@ -754,7 +758,7 @@ would be invisible to this map.**
 
 ## 5. Communities versus directories
 
-Community detection over the whole graph did not return within the analysis budget
+Community detection over the whole graph again did not return within the analysis budget
 (§8). Connected-component detection did, and its result is more informative than any
 clustering would have been:
 
@@ -775,7 +779,7 @@ group. Not a single component spans two directories.**
 | 138 | `tapestry/src/views/systems` | | 62 | `theloom/algebra` |
 | 131 | `tapestry/src/views/semantic` | | 57 | `tapestry/src` |
 | 131 | `theloom/store` | | 35 | `tapestry/src/state` |
-| 130 | `theloom` (root) | | 31 | `scripts` |
+| 130 | `theloom` (root, incl. `symbolic/` and `reification/`) | | 31 | `scripts` |
 | 116 | `tapestry/e2e` | | 28 | `tests/fixtures` |
 | | | | 22 | `tapestry` |
 
@@ -815,8 +819,8 @@ analysis:
 
 ## 6. Risks and tensions
 
-149 tensions were recorded, all of them named with a source citation. The following are
-the ones a reviewer should read first, ordered by the recorder's confidence.
+144 tensions are on record, each with a source citation. The following are the ones a
+reviewer should read first, ordered by the recorder's confidence.
 
 1. **Config errors bypass the typed error-code protocol they claim to honour** (0.85) —
    `theloom/config.py:49-52` versus `theloom/errors.py:52-53` and
@@ -891,6 +895,13 @@ the ones a reviewer should read first, ordered by the recorder's confidence.
 20. **The serve handler prints and blocks, breaking handler purity** (0.80) —
     `theloom/cli/registry.py:1445-1468`. A failure after the handshake emits a success
     document on stdout *and* an error document on stderr, then exits 1.
+21. **Batch relation creation can commit partially and then report a missing endpoint**
+    (0.80) — `theloom/store/falkor.py:348-364` against the contract at
+    `theloom/store/base.py:77-79`. The per-type loop appends before the count check, so a
+    caller that sees `NOT_FOUND` cannot assume nothing was written.
+22. **Test error assertions split between typed codes and matched prose** (0.80) —
+    `tests/test_ops_relations.py:92`, `:99` assert on message substrings rather than the
+    typed code, which is the practice §2.3 exists to forbid.
 
 Recurring themes across the full tension set, each with multiple citations: duplicated
 logic that must be kept identical by hand (fingerprints, cosine similarity in four
@@ -903,12 +914,13 @@ but drop the overlay channels that carry meaning redundantly.
 
 ## 7. Open seams
 
-The automated similar-but-unconnected pass over the whole graph did not return within
-the analysis budget (§8). A targeted pass was run instead: nearest-neighbour lookup in
-embedding space from one representative file per module group. Because *no* cross-file
-edge exists in this graph, every pair below is unconnected by construction — the
-interesting signal is which pairs the embeddings place closest across a directory
-boundary, since those are the couplings the folder layout does not express.
+The automated similar-but-unconnected pass over the whole graph again did not return
+within the analysis budget (§8). A targeted pass was run instead and re-verified for this
+map: nearest-neighbour lookup in embedding space from one representative file per module
+group. Because *no* cross-file edge exists in this graph, every pair below is unconnected
+by construction — the interesting signal is which pairs the embeddings place closest
+across a directory boundary, since those are the couplings the folder layout does not
+express.
 
 | Similarity | Pair |
 |---|---|
@@ -958,21 +970,27 @@ what the imports already say: `buildGraph.ts` and `layout.ts` belong in a shared
 
 ## 8. Coverage and methodology
 
-**Coverage.** 29 of 29 module groups were described in full. No group was skipped, so
-nothing in the walkthrough above is silent about a part of the tree. 77 files could not
+**Coverage.** 29 of 29 module groups are described in full; none is silent. This was an
+**incremental** run against the previous map's commit (`8e7eedb`), and **no group needed
+re-describing**: the only files that changed between that commit and `8e33b4d` are
+`.claude/agents/codebase-enricher.md` and the three map artifacts in
+`docs/architecture/`, none of which tree-sitter parses and none of which belongs to a
+source module group. Every subsystem description, invariant and tension in this document
+therefore still carries the confidence and citations recorded when its group was last
+read, and every one of them was re-read from the graph for this map. 80 files could not
 be parsed by tree-sitter — every Markdown, JSON, CSS, YAML, TOML, HTML and lockfile in
-the repository. Those files are represented in this map only where a prose finding cites
-them (notably `tapestry/src/design/tokens.css` and `theloom/viz/static/tapestry.html`,
-both of which are load-bearing and both of which are named in tensions about
-hand-maintained cross-language mirrors). The working tree was clean at extraction, so
-this map describes commit `8e7eedb` exactly.
+the repository, three more than last time because this map, its visualization and its
+manifest are now committed. Those files appear here only where a prose finding cites them
+(notably `tapestry/src/design/tokens.css` and `theloom/viz/static/tapestry.html`, both
+load-bearing, both named in tensions about hand-maintained cross-language mirrors). The
+working tree was clean at extraction, so this map describes commit `8e33b4d` exactly.
 
 **What the structural layer does and does not contain.** Symbols were extracted with
 tree-sitter: 262 files, 1,712 functions and methods, 1,281 variables and constants, 375
-classes and types. Containment (`part_of`) is complete. Call edges are recorded only
-between two symbols of the same file, and no import edge is present in this graph at
-all. Consequently: (a) file- and module-level dependency structure is **not** in the
-graph, (b) the ten detected cycles are all self-recursion and a module import cycle
+classes and types. Containment (`part_of`, 3,770 connections) is complete. Call edges are
+recorded only between two symbols of the same file, and no import edge is present in this
+graph at all. Consequently: (a) file- and module-level dependency structure is **not** in
+the graph, (b) the ten detected cycles are all self-recursion and a module import cycle
 would be invisible, and (c) the 29 connected components are directories by construction.
 Every cross-module coupling reported in §5 and §7 is asserted by a prose finding with a
 file:line citation, not by an edge.
@@ -981,14 +999,20 @@ file:line citation, not by an edge.
 226 invariant claims and 144 tensions, each carrying a `module_group` tag, a confidence
 score, and — for claims and tensions — an `anchor` citing specific files and line ranges.
 Every statement in sections 2, 4, 5, 6 and 7 of this document traces to one of those
-entities. Confidence on claims runs 0.85–0.95; on tensions, 0.65–0.85.
+entities. Confidence on claims and patterns runs 0.80–0.95; on tensions, 0.65–0.85; on
+purpose concepts, 0.90–0.92. The store also holds 17 superseded prior versions of
+findings revised during enrichment, which is why the raw graph total (4,211) exceeds the
+current-state total (4,194).
 
 **Analyses that did not complete.** `find-clusters` and `semantic-gaps` were each given
-more than an hour at the requested scope of 500 entities and a further ten minutes at a
-reduced scope of 150, and neither returned. Their absence is covered above by two
-substitutes: connected-component detection for §5, and per-entity nearest-neighbour
-lookup across 29 representative files for §7. Both substitutes are graph operations run
-against the same graph; neither is an estimate. If you want the full clustering, run
+the full analysis budget at the requested scope of 500 entities and neither returned —
+the same outcome as the previous run, on the same graph. Their absence is covered above
+by two substitutes: connected-component detection for §5, and per-entity
+nearest-neighbour lookup across representative files for §7, spot-re-verified for this
+map (`theloom/verification/checks.py` 0.742, `theloom/exploration/guards.py` 0.703,
+`tapestry/src/views/systems/systems.ts` 0.736 all reproduced exactly). Both substitutes
+are graph operations run against the same graph; neither is an estimate. If you want the
+full clustering, run
 `loom find-clusters '{"maxEntities": 500, "graph": "codebase-the-loom"}'` with a very
 generous timeout and expect it to be slow on this graph.
 

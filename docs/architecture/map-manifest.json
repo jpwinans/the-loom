@@ -1,9 +1,9 @@
 {
   "graphName": "codebase-the-loom",
   "projectPath": "/Users/jameswinans/Dropbox/Development/the-loom",
-  "commit": "8e7eedb8889da29219dc4739feb47bcdd193461c",
-  "mode": "full",
-  "timestamp": "2026-08-04T02:28:51Z",
+  "commit": "8e33b4d1ab32146f4e979d9c4636e7e08a67d60d",
+  "mode": "incremental",
+  "timestamp": "2026-08-04T03:10:28Z",
   "groups": [
     "scripts",
     "tapestry",
