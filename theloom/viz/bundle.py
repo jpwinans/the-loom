@@ -79,19 +79,15 @@ def _truncate_by_degree(
 def assemble_bundle(params: ExportBundleInput, multi: MultiGraph) -> dict[str, Any]:
     """Assemble a TapestryBundle for a graph.
 
-    ``as_of`` is a system-time bound: when set, entities are reconstructed
-    through the store's real ``read_entity_as_of`` path, relations are pruned
-    to those whose endpoints existed and whose ``created_at`` is at/before the
-    bound, and the shipped event log truncates to ``as_of``. Analytics and
-    semantic sections stay whole-graph/current (they are already
-    scope-independent) — ``as_of`` bounds entities, relations, and the event
-    log only. Deletion now invalidates rather than erases: ``delete-entity``
-    retracts and snapshots the prior incarnation, so a deleted entity remains
-    ``read_entity_as_of``-recoverable and entity payloads are correct as of the
-    bound. Two gaps remain: ``"hard": true`` really does erase the node and its
-    versions, and a relation retired since the bound is not resurrected here
-    (reconstruction reads live edges — its closed-out ``:_RelationVersion``
-    exists but this path does not consult it).
+    ``as_of`` is a system-time bound: when set, entities and relations come
+    from the store's ``read_graph_as_of`` — the incarnation of each entity that
+    was current then, and every edge whose system-time interval was open then,
+    including ones retired since — and the shipped event log truncates to
+    ``as_of``. Analytics and semantic sections stay whole-graph/current (they
+    are already scope-independent) — ``as_of`` bounds entities, relations, and
+    the event log only. One gap remains, and it is inherent: ``"hard": true``
+    erases rather than invalidates, and nothing can reconstruct what was
+    destroyed.
     """
     target = params.graph or multi.default_graph
     if params.graph and not multi.has_graph(params.graph):

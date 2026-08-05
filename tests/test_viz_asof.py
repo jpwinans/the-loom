@@ -54,6 +54,33 @@ def test_as_of_prunes_relations_and_entities_created_later(multi: MultiGraph) ->
     assert as_of_doc["meta"]["relationCount"] == 0
 
 
+def test_as_of_restores_a_relation_retired_since_the_bound(multi: MultiGraph) -> None:
+    """Retracting an entity closes out its edges. A bundle bounded before that
+    must still show the neighbourhood as it stood — the edge was live then."""
+    store = multi.get_store()
+    a = store.create_entity(
+        EntityCreate.model_validate({"name": "a", "entityType": "variable", "observations": []})
+    )
+    b = store.create_entity(
+        EntityCreate.model_validate({"name": "b", "entityType": "variable", "observations": []})
+    )
+    store.create_relation(
+        RelationCreate.model_validate({"from": a.id, "to": b.id, "relationType": "causes"})
+    )
+    time.sleep(0.01)
+    pivot = iso_now()
+    time.sleep(0.01)
+    store.delete_entity(b.id)
+
+    now_doc = assemble_bundle(ExportBundleInput(), multi)
+    assert now_doc["relations"] == []  # the retraction took the edge with it
+
+    as_of_doc = assemble_bundle(ExportBundleInput.model_validate({"asOf": pivot}), multi)
+    assert [(r["from"], r["to"]) for r in as_of_doc["relations"]] == [(a.id, b.id)]
+    assert as_of_doc["meta"]["relationCount"] == 1
+    assert [e["name"] for e in as_of_doc["entities"]] == ["a", "b"]
+
+
 def test_as_of_truncates_temporal_events(multi: MultiGraph) -> None:
     store = multi.get_store()
     store.create_entity(
