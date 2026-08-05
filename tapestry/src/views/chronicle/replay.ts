@@ -13,12 +13,21 @@
  * Event payload shapes (verified against `theloom/store/events.py` /
  * `falkor.py` and the `tapestry-dev` fixture): `entity_created {entity}`,
  * `entity_updated {entity, previous}`, `entity_status_changed {entity,
- * previous}`, `entity_deleted {entity}`, `relation_created {relation}`,
- * `relation_updated {relation, previous}`, `relation_deleted {relation}`,
+ * previous}`, `entity_retracted {entity, previous, invalidatedRelations}`,
+ * `entity_deleted {entity}`, `relation_created {relation}`,
+ * `relation_updated {relation, previous}`, `relation_invalidated {relation,
+ * tx_to}`, `relation_deleted {relation}`,
  * `entities_merged {primary, secondary, previousPrimary, previousSecondary,
  * redirectedRelations, supersedesRelation}`. Each `TapestryEventRaw` is
  * `{id, at, type, payload}` with `at` a canonical ISO string (either the
  * `Z`-suffixed or `+00:00`-suffixed form — both are `Date.parse`-safe).
+ *
+ * Delete is not erase. `delete-entity` emits `entity_retracted` (the node
+ * survives with status `retracted`, its edges are closed out) and
+ * `delete-relation` emits `relation_invalidated`; only the `hard=true` paths
+ * emit `entity_deleted` / `relation_deleted`. So a retraction is replayed as a
+ * status sample plus edge removals, not as a node removal — the node is still
+ * in `bundle.entities` and the scrubber must show it changing, not vanishing.
  */
 import type Graph from "graphology";
 import type { TapestryBundleRaw } from "../../lib/data";
@@ -68,6 +77,7 @@ export interface Diff {
 type EventPayload = {
   entity?: { id?: string; status?: string };
   relation?: { id?: string; from?: string; to?: string };
+  invalidatedRelations?: { id?: string }[];
 };
 
 type TapestryEventRaw = {
@@ -137,6 +147,19 @@ export function buildTimeline(bundle: TapestryBundleRaw): Timeline {
         }
         break;
       }
+      case "entity_retracted": {
+        if (entityId != null) {
+          // The node stays — retraction invalidates, it does not erase — but
+          // it turns 'retracted' and takes every attached edge with it.
+          pushNodeStatus(nodeStatus, entityId, { t, status: event.payload?.entity?.status ?? "retracted" });
+          for (const relation of event.payload?.invalidatedRelations ?? []) {
+            const id = relation?.id;
+            if (id != null && !edgeRemoved.has(id)) edgeRemoved.set(id, t);
+          }
+          events.push({ t, type: event.type, kind: "node", id: entityId, label: entityId });
+        }
+        break;
+      }
       case "entity_deleted": {
         if (entityId != null) {
           if (!nodeRemoved.has(entityId)) nodeRemoved.set(entityId, t);
@@ -157,6 +180,7 @@ export function buildTimeline(bundle: TapestryBundleRaw): Timeline {
         }
         break;
       }
+      case "relation_invalidated":
       case "relation_deleted": {
         if (relationId != null) {
           if (!edgeRemoved.has(relationId)) edgeRemoved.set(relationId, t);

@@ -26,13 +26,16 @@ Storage model — one FalkorDB graph per named Loom graph:
   retiring one means closing its system-time interval, not flipping a flag.
 - Metadata = singleton node ``:_GraphMeta {_doc}``.
 
-Every mutation goes through ``_commit``: its Cypher and its event append are
-sent as one Redis MULTI/EXEC transaction, so the projection and the log move
-together (see ``_commit`` for the exact guarantee). Status changes are
-validated against the lifecycle transition table here in the store.
+Every mutation goes through ``_commit``: ONE Cypher statement plus its event
+append, sent as one Redis MULTI/EXEC transaction, so the projection and the log
+move together (see ``_commit`` for the exact guarantee, and ``_commit_steps``
+for the single batch case that needs more than one statement and what it owes
+in return). Status changes are validated against the lifecycle transition table
+here in the store.
 
 Deletion invalidates. ``delete_entity`` retracts (status 'retracted', prior
-incarnation snapshotted, attached edges closed out bi-temporally) and
+incarnation snapshotted, attached edges closed out bi-temporally, embedding
+vector dropped so the retracted entity leaves the semantic reads too) and
 ``delete_relation`` closes the edge's system-time interval; both take
 ``hard=True`` for true erasure, which is the only path that destroys history.
 """
@@ -171,6 +174,24 @@ def _entity_prefilter(filter: EntityFilter | None) -> tuple[str, dict[str, Any]]
     return " AND ".join(clauses), params
 
 
+# The close-out snapshot for an edge leaving the live projection, as a clause
+# over an UNWIND'd ``row``. A fragment rather than a statement of its own: a
+# retraction closes out its edges in the same statement that retracts the
+# entity, because Redis MULTI does not roll back (see ``_commit``).
+_RELATION_VERSION_CLAUSE = (
+    "CREATE (:_RelationVersion {relation_id: row.id, _doc: row.doc, "
+    "tx_from: row.txFrom, tx_to: $now})"
+)
+
+
+def _relation_version_rows(docs: Sequence[Mapping[str, Any]], now: str) -> list[dict[str, Any]]:
+    """``$rows`` for ``_RELATION_VERSION_CLAUSE``."""
+    return [
+        {"id": doc["id"], "doc": json.dumps(dict(doc)), "txFrom": doc.get("created_at", now)}
+        for doc in docs
+    ]
+
+
 def _is_error(response: Any) -> bool:
     """Redis returns per-command errors as exception *values* inside a
     transaction's reply list (``raise_on_error=False``)."""
@@ -208,15 +229,22 @@ class FalkorGraphStore(GraphStore):
 
     def _commit(
         self,
-        steps: Sequence[tuple[str, dict[str, Any]]],
+        step: tuple[str, dict[str, Any]],
         events: Sequence[tuple[str, dict[str, Any]]],
     ) -> tuple[list[Any], list[str]]:
-        """Run a mutation and append its events as ONE unit.
+        """Run ONE Cypher statement and append its events as one unit.
+
+        The signature is the guarantee: a mutation is a single ``GRAPH.QUERY``,
+        because that is the only unit FalkorDB rolls back. Anything that needs
+        several effects (snapshot + swap + close out attached edges) expresses
+        them as clauses of one statement, not as several statements — Redis
+        MULTI is *not* a rollback boundary, so a second statement failing would
+        leave the first one applied. See ``_commit_steps`` for the one place
+        that genuinely needs several statements, and what it owes in return.
 
         FalkorDB is a Redis module, so ``GRAPH.QUERY`` and ``XADD`` are two
         commands on one connection: both are queued into a single MULTI/EXEC
-        transaction and dispatched in one round trip. The guarantee this buys,
-        precisely:
+        transaction and dispatched in one round trip. Precisely:
 
         - Nothing reaches the server until ``EXEC``. Any failure while the
           transaction is being built — serializing a payload, an injected
@@ -227,13 +255,32 @@ class FalkorGraphStore(GraphStore):
           the client cannot die between them.
         - Redis has no rollback, so a *server-side* error in the Cypher (a
           malformed query — a bug, since every domain precondition is checked
-          in Python first) still lets the queued ``XADD`` run. That event is
-          compensated away by id before the error propagates, leaving the
+          in Python first) still lets the queued ``XADD`` run. The query itself
+          applied nothing (FalkorDB aborts the statement), and that event is
+          compensated away by id before the error propagates — leaving the
           caller with an exception and no trace in either place.
 
         Returns ``(query results, appended event ids)``; the ids let a caller
         that only learns the mutation was wrong *after* ``EXEC`` (see
         ``create_relations``) discard the events it no longer earns.
+        """
+        return self._commit_steps([step], events)
+
+    def _commit_steps(
+        self,
+        steps: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[tuple[str, dict[str, Any]]],
+    ) -> tuple[list[Any], list[str]]:
+        """``_commit`` for the batch case: several Cypher statements in one
+        MULTI/EXEC.
+
+        Weaker than ``_commit`` by exactly one thing, and the caller owes the
+        difference: MULTI is not a rollback boundary, so if statement *k*
+        fails, statements before it have already applied. Only
+        ``create_relations`` uses this (edge types cannot be parametrized, so a
+        mixed-type batch is one statement per type), and it pays the debt by
+        checking every endpoint before committing and by deleting the edges it
+        did create if the reply still disagrees.
         """
         with self._redis.pipeline(transaction=True) as pipe:
             for cypher, params in steps:
@@ -288,18 +335,16 @@ class FalkorGraphStore(GraphStore):
         doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
         entity = Entity.model_validate(doc)
         self._commit(
-            [
-                (
-                    f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, "
-                    f"{_index_literal('ix')}}})",
-                    {
-                        "id": doc["id"],
-                        "doc": json.dumps(doc),
-                        "now": now,
-                        **_index_params(doc, "ix"),
-                    },
-                )
-            ],
+            (
+                f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, "
+                f"{_index_literal('ix')}}})",
+                {
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                    "now": now,
+                    **_index_params(doc, "ix"),
+                },
+            ),
             [("entity_created", {"entity": doc})],
         )
         return entity
@@ -444,7 +489,7 @@ class FalkorGraphStore(GraphStore):
         # (and its derived read-index projection).
         event_type = "entity_status_changed" if status_changed else "entity_updated"
         self._commit(
-            [self._swap_doc_step(entity_id, merged, now)],
+            self._swap_doc_step(entity_id, merged, now),
             [(event_type, {"entity": merged, "previous": current})],
         )
         return entity
@@ -473,11 +518,18 @@ class FalkorGraphStore(GraphStore):
 
         Retraction is what "delete" means in an event-sourced store that never
         overwrites: the doc moves to status 'retracted', its prior incarnation
-        is snapshotted as a closed ``:_EntityVersion``, and every attached edge
-        is closed out bi-temporally (``:_RelationVersion``). The entity leaves
-        every default read — ``list_entities`` filters to active — while
+        is snapshotted as a closed ``:_EntityVersion``, every attached edge is
+        closed out bi-temporally (``:_RelationVersion``), and the entity's
+        embedding vector is dropped. The entity leaves every default read —
+        ``list_entities`` filters to active, and with no vector it is out of
+        the ANN index every semantic read goes through — while
         ``read_entity_as_of`` can still reconstruct what the graph looked like
-        before, which a hard delete makes impossible.
+        before, which a hard delete makes impossible. Retraction is terminal
+        (no transition leads back out of it), so the dropped vector can never
+        be wanted again; re-embedding would rebuild it regardless.
+
+        All of that is ONE Cypher statement: it is the whole point of the
+        retraction that the doc, its history and its edges move together.
 
         Returns the record as it now stands: the retracted doc, or the erased
         doc under ``hard``. Retracting an already-retracted entity is a no-op.
@@ -487,7 +539,7 @@ class FalkorGraphStore(GraphStore):
             raise NotFoundError("Entity not found")
         if hard:
             self._commit(
-                [("MATCH (n:_Entity {id: $id}) DETACH DELETE n", {"id": entity_id})],
+                ("MATCH (n:_Entity {id: $id}) DETACH DELETE n", {"id": entity_id}),
                 [("entity_deleted", {"entity": doc})],
             )
             return Entity.model_validate(doc)
@@ -499,12 +551,18 @@ class FalkorGraphStore(GraphStore):
         retracted = {**doc, "status": EntityStatus.RETRACTED.value, "updated_at": now}
         entity = Entity.model_validate(retracted)
         attached = self._attached_relation_docs(entity_id)
-        steps = [self._swap_doc_step(entity_id, retracted, now)]
+        cypher, params = self._swap_doc_step(entity_id, retracted, now)
+        # The vector is a derived index entry, like the four ``_index_*``
+        # props: it goes when the entity leaves the live projection.
+        cypher += f", n.{_VECTOR_PROPERTY} = NULL"
         if attached:
-            steps.append(self._relation_version_step(attached, now))
-            steps.append(("MATCH (n:_Entity {id: $id})-[r]-() DELETE r", {"id": entity_id}))
+            cypher += (
+                f" WITH n UNWIND $rows AS row {_RELATION_VERSION_CLAUSE} "
+                "WITH DISTINCT n MATCH (n)-[r]-() DELETE r"
+            )
+            params["rows"] = _relation_version_rows(attached, now)
         self._commit(
-            steps,
+            (cypher, params),
             [
                 (
                     "entity_retracted",
@@ -521,27 +579,6 @@ class FalkorGraphStore(GraphStore):
         )
         docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
         return list({doc["id"]: doc for doc in docs}.values())
-
-    @staticmethod
-    def _relation_version_step(
-        docs: Sequence[Mapping[str, Any]], now: str
-    ) -> tuple[str, dict[str, Any]]:
-        """Close out a batch of relation docs' system-time intervals."""
-        return (
-            "UNWIND $rows AS row CREATE (:_RelationVersion {relation_id: row.id, "
-            "_doc: row.doc, tx_from: row.txFrom, tx_to: $now})",
-            {
-                "rows": [
-                    {
-                        "id": doc["id"],
-                        "doc": json.dumps(dict(doc)),
-                        "txFrom": doc.get("created_at", now),
-                    }
-                    for doc in docs
-                ],
-                "now": now,
-            },
-        )
 
     def read_entity_doc(self, entity_id: str) -> dict[str, Any] | None:
         """The verbatim wire doc — key order preserved (synthesis `raw` output
@@ -626,7 +663,7 @@ class FalkorGraphStore(GraphStore):
             params["supersedesId"] = supersedes_doc["id"]
             params["supersedesDoc"] = json.dumps(dict(supersedes_doc))
         self._commit(
-            [("".join(parts), params)],
+            ("".join(parts), params),
             [
                 (
                     "entities_merged",
@@ -763,6 +800,16 @@ class FalkorGraphStore(GraphStore):
         return self.create_relations([spec])[0]
 
     def create_relations(self, specs: Sequence[RelationCreate]) -> list[Relation]:
+        """Create a batch of edges, all of them or none of them.
+
+        A batch spans one query per relation type (edge types cannot be
+        parametrized), and MULTI does not roll back — so "none of them" is
+        bought twice over: every endpoint is checked before anything is
+        committed, and if the reply still reports fewer edges than asked for
+        (an endpoint retracted by a concurrent writer between the check and the
+        EXEC) the edges that did land are deleted again before the error
+        propagates. Half a batch is never a resting state.
+        """
         docs: list[dict[str, Any]] = []
         now = iso_now()
         for spec in specs:
@@ -770,8 +817,8 @@ class FalkorGraphStore(GraphStore):
             doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
             docs.append(doc)
 
-        # One transactional query for the whole batch, grouped by relation type
-        # because edge types cannot be parametrized.
+        self._require_endpoints(docs)
+
         # One UNWIND query per relation type (edge types cannot be parametrized)
         # — a 10k-item batch is ≤15 queries + one pipelined event append.
         by_type: dict[str, list[dict[str, Any]]] = {}
@@ -791,18 +838,49 @@ class FalkorGraphStore(GraphStore):
                     {"rows": rows},
                 )
             )
-        results, event_ids = self._commit(
+        results, event_ids = self._commit_steps(
             steps, [("relation_created", {"relation": doc}) for doc in docs]
         )
         created = sum(int(result.relationships_created) for result in results)
         if created != len(docs):
-            # A missing endpoint is only visible in the reply, after EXEC —
-            # so the events are compensated away rather than pre-empted.
+            # Lost a race with a concurrent delete: the endpoints were there
+            # when checked and gone by EXEC. Undo both halves — the edges that
+            # did land and the events for the whole batch — so the caller's
+            # NOT_FOUND means what it says.
+            self._delete_relations_by_id([doc["id"] for doc in docs])
             self._events.discard(event_ids)
             raise NotFoundError(
                 f"Entity not found: relation endpoints must exist (created {created}/{len(docs)})"
             )
         return [Relation.model_validate(doc) for doc in docs]
+
+    def _require_endpoints(self, docs: Sequence[Mapping[str, Any]]) -> None:
+        """Raise NOT_FOUND unless every endpoint of a batch exists.
+
+        One query for the whole batch, ahead of the commit: a missing endpoint
+        makes its ``CREATE`` row silently produce nothing, which the reply only
+        reports as a count. Pre-empting beats compensating.
+        """
+        wanted = {str(doc["from"]) for doc in docs} | {str(doc["to"]) for doc in docs}
+        if not wanted:
+            return
+        rows = self._rows_paged(
+            "MATCH (n:_Entity) WHERE n.id IN $ids RETURN n.id ORDER BY id(n)",
+            {"ids": sorted(wanted)},
+        )
+        missing = sorted(wanted - {row[0] for row in rows})
+        if missing:
+            raise NotFoundError(
+                f"Entity not found: relation endpoints must exist (missing {', '.join(missing)})"
+            )
+
+    def _delete_relations_by_id(self, relation_ids: Sequence[str]) -> None:
+        """Erase edges by relation id — compensation only, never a domain
+        delete (those invalidate; see ``invalidate_relation``)."""
+        self._query(
+            "UNWIND $ids AS rid MATCH ()-[r]->() WHERE r.id = rid DELETE r",
+            {"ids": list(relation_ids)},
+        )
 
     def import_relation_doc(self, doc: Mapping[str, Any]) -> None:
         """Write a pre-existing relation doc verbatim (migration path; no event)."""
@@ -916,7 +994,7 @@ class FalkorGraphStore(GraphStore):
                 "MATCH ()-[r]->() WHERE id(r) = $rid SET r._doc = $doc",
                 {"rid": edge_id, "doc": json.dumps(merged)},
             )
-        self._commit([step], [("relation_updated", {"relation": merged, "previous": current})])
+        self._commit(step, [("relation_updated", {"relation": merged, "previous": current})])
         return relation
 
     def invalidate_relation(
@@ -940,10 +1018,12 @@ class FalkorGraphStore(GraphStore):
         edge_id, doc = self._target_edge(from_id, to_id, relation_type, relation_id)
         now = iso_now()
         self._commit(
-            [
-                self._relation_version_step([doc], now),
-                ("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id}),
-            ],
+            (
+                "MATCH ()-[r]->() WHERE id(r) = $rid "
+                f"WITH r UNWIND $rows AS row {_RELATION_VERSION_CLAUSE} "
+                "WITH DISTINCT r DELETE r",
+                {"rid": edge_id, "rows": _relation_version_rows([doc], now), "now": now},
+            ),
             [("relation_invalidated", {"relation": doc, "tx_to": now})],
         )
         return Relation.model_validate(doc)
@@ -967,7 +1047,7 @@ class FalkorGraphStore(GraphStore):
             return
         edge_id, doc = self._target_edge(from_id, to_id, relation_type, relation_id)
         self._commit(
-            [("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id})],
+            ("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id}),
             [("relation_deleted", {"relation": doc})],
         )
 

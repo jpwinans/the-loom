@@ -15,7 +15,12 @@ from redis import Redis
 
 from theloom.errors import LoomError, NotFoundError, OperationError
 from theloom.model import RelationCreate
-from theloom.operations.entity import CreateEntityInput, create_entity
+from theloom.operations.entity import (
+    CreateEntityInput,
+    DeleteEntityInput,
+    create_entity,
+    delete_entity,
+)
 from theloom.operations.relations import (
     CreateRelationInput,
     CreateRelationsInput,
@@ -180,6 +185,26 @@ def test_create_missing_endpoint_blocked_by_gate(multi: MultiGraph) -> None:
         create_relation(CreateRelationInput.model_validate(rel_input(a, MISSING)), multi)
     assert "does not exist" in str(excinfo.value)
     assert "Use list_entities to verify both entities exist" in str(excinfo.value)
+
+
+def test_create_to_retracted_endpoint_blocked_by_gate(multi: MultiGraph) -> None:
+    """A retracted entity is not a usable endpoint.
+
+    delete-entity retracts (the doc survives, so ``read_entity`` still answers),
+    but retraction closes out every attached edge — attaching a new one would
+    manufacture the exact state ``check-invariants`` reports as a
+    ``retractedIsolated`` violation.
+    """
+    a = ent(multi, "A")
+    b = ent(multi, "B")
+    delete_entity(DeleteEntityInput.model_validate({"id": b}), multi)
+    with pytest.raises(OperationError) as excinfo:
+        create_relation(CreateRelationInput.model_validate(rel_input(a, b)), multi)
+    assert "retracted" in str(excinfo.value)
+    # ...and the reverse direction is blocked too.
+    with pytest.raises(OperationError):
+        create_relation(CreateRelationInput.model_validate(rel_input(b, a)), multi)
+    assert list_relations(ListRelationsInput.model_validate({}), multi) == []
 
 
 def test_create_cross_graph_blocked_by_gate_like_reference(multi: MultiGraph) -> None:

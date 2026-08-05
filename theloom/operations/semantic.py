@@ -144,10 +144,11 @@ def _search_similar(
     (``FalkorGraphStore.vector_knn``), scores 1/(1+L2) — L2 = sqrt(2-2cos) for
     the cosine the index reports — filters, and truncates.
 
-    Only active entities are returned. A retracted or superseded entity keeps
+    Only active entities are returned. A superseded or deprecated entity keeps
     its embedding (mutations invalidate, they never overwrite), so the index
     still offers it and the filter has to happen here — the same filter every
-    other default read applies.
+    other default read applies. Retraction is the exception: it drops the
+    vector outright, so a retracted entity is not even a candidate.
 
     No per-call full vector or entity scan. Candidates come back in similarity
     order, entity metadata is a point lookup per candidate, and since the order

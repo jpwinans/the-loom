@@ -14,7 +14,9 @@ listEntities({name}) — a *partial*, case-insensitive match.
 
 Default relation guards: CAUSAL_MISSING_POLARITY (post-inference), the mirror
 NON_CAUSAL_POLARITY (structural/epistemic types carry no polarity), SELF_LOOP,
-ORPHAN_RELATION_FROM/TO — all error severity. The polarity partition is
+ORPHAN_RELATION_FROM/TO (an endpoint that does not exist — or that exists only
+as a retracted doc, which is the same thing for attachment purposes) — all
+error severity. The polarity partition is
 enforced on every write path (create, batch create, update, bulk-import) and
 reported on the read side by checks.guard_non_causal_polarity, which shares
 this module's message.
@@ -22,7 +24,7 @@ this module's message.
 
 from __future__ import annotations
 
-from theloom.model import CAUSAL_RELATION_TYPES, EntityFilter
+from theloom.model import CAUSAL_RELATION_TYPES, EntityFilter, EntityStatus
 from theloom.store.falkor import FalkorGraphStore
 from theloom.verification.checks import non_causal_polarity_error
 
@@ -64,8 +66,24 @@ def relation_gate_errors(
         errors.append(
             f"Relation cannot reference the same entity as source and target: '{from_id}'"
         )
-    if store.read_entity(from_id) is None:
-        errors.append(f"Source entity '{from_id}' does not exist")
-    if store.read_entity(to_id) is None:
-        errors.append(f"Target entity '{to_id}' does not exist")
+    errors.extend(_endpoint_errors(store, "Source", from_id))
+    errors.extend(_endpoint_errors(store, "Target", to_id))
     return errors
+
+
+def _endpoint_errors(store: FalkorGraphStore, role: str, entity_id: str) -> list[str]:
+    """ORPHAN_RELATION_FROM/TO for one endpoint.
+
+    A retracted entity is not orphaned but is not attachable either: deletion
+    invalidates rather than erases, so its doc still reads back, while
+    retraction closed out every edge it had. Attaching a new one would recreate
+    exactly the state ``checks.retracted_isolated`` reports as a violation, from
+    a sequence of commands that each reported success — so the gate refuses it
+    here, where the refusal is a typed error.
+    """
+    entity = store.read_entity(entity_id)
+    if entity is None:
+        return [f"{role} entity '{entity_id}' does not exist"]
+    if entity.effective_status == EntityStatus.RETRACTED:
+        return [f"{role} entity '{entity_id}' is retracted and cannot be a relation endpoint"]
+    return []
