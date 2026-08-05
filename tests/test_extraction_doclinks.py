@@ -33,15 +33,18 @@ PER_FILE: list[Doc] = [
     {
         "path": "src/models.py",
         "symbols": {"Account": "Account (models)", "open_account": "open_account (models)"},
+        "symbolKinds": {"Account": "concept", "open_account": "procedure"},
     },
     {
         "path": "lib/helper.js",
         "symbols": {"roundCents": "roundCents (helper)"},
+        "symbolKinds": {"roundCents": "procedure"},
     },
     {
         "path": "lib/index.ts",
         # A name defined in two files: mentioning it names no single symbol.
         "symbols": {"roundCents": "roundCents (index)", "Reporter": "Reporter (index)"},
+        "symbolKinds": {"roundCents": "procedure", "Reporter": "concept"},
     },
 ]
 
@@ -103,7 +106,14 @@ class TestSymbolMentions:
         assert _link("An Account holds a balance; open_account makes one.\n")["relations"] == []
 
     def test_a_language_builtin_is_never_a_link(self) -> None:
-        per_file = [*PER_FILE, {"path": "lib/helper.js", "symbols": {"len": "len (helper)"}}]
+        per_file = [
+            *PER_FILE,
+            {
+                "path": "lib/helper.js",
+                "symbols": {"len": "len (helper)"},
+                "symbolKinds": {"len": "procedure"},
+            },
+        ]
         out = doclinks.resolve_doc_links(
             [{"path": "docs/architecture.md", "content": "Use `len` for sizes.\n"}],
             FILE_PATHS,
@@ -111,8 +121,75 @@ class TestSymbolMentions:
         )
         assert out["relations"] == []
 
+    def test_a_lone_lowercase_word_in_backticks_is_never_a_link(self) -> None:
+        """Backticks alone do not make a word code.
+
+        ``Keep `main` green`` means the git branch, and the project's only
+        ``main`` is the CLI entry point — the unique-name rule would weld the
+        doc to it. A name links only when it is *written* the way code is:
+        qualified, snake_case, camel/PascalCase, or an explicit call form.
+        """
+        per_file = [
+            {
+                "path": "src/cli.py",
+                "symbols": {"main": "main (cli)", "run": "run (cli)"},
+                "symbolKinds": {"main": "procedure", "run": "procedure"},
+            }
+        ]
+        out = doclinks.resolve_doc_links(
+            [
+                {
+                    "path": "docs/architecture.md",
+                    "content": "Keep `main` green; `run` the suite first.\n",
+                }
+            ],
+            FILE_PATHS,
+            per_file,
+        )
+        assert out["relations"] == []
+        assert out["stats"]["docSymbolReferences"] == 0
+
+    def test_the_call_form_rescues_a_lowercase_word(self) -> None:
+        per_file = [
+            {
+                "path": "src/cli.py",
+                "symbols": {"main": "main (cli)"},
+                "symbolKinds": {"main": "procedure"},
+            }
+        ]
+        out = doclinks.resolve_doc_links(
+            [{"path": "docs/architecture.md", "content": "Entry point: `main()`.\n"}],
+            FILE_PATHS,
+            per_file,
+        )
+        assert [r["to"] for r in out["relations"]] == ["main (cli)"]
+
+    def test_a_non_callable_symbol_is_never_a_link(self) -> None:
+        """A backticked config key or JSON field is not a reference to the
+        module-level variable that happens to share its name — the resolver's
+        callable-kind guard, applied here."""
+        per_file = [
+            {
+                "path": "src/settings.py",
+                "symbols": {"graph_name": "graph_name (settings)"},
+                "symbolKinds": {"graph_name": "variable"},
+            }
+        ]
+        out = doclinks.resolve_doc_links(
+            [{"path": "docs/architecture.md", "content": "Set `graph_name` in the config.\n"}],
+            FILE_PATHS,
+            per_file,
+        )
+        assert out["relations"] == []
+
     def test_a_very_short_name_is_never_a_link(self) -> None:
-        per_file = [{"path": "src/models.py", "symbols": {"ok": "ok (models)"}}]
+        per_file = [
+            {
+                "path": "src/models.py",
+                "symbols": {"ok": "ok (models)"},
+                "symbolKinds": {"ok": "procedure"},
+            }
+        ]
         out = doclinks.resolve_doc_links(
             [{"path": "docs/architecture.md", "content": "Return `ok` on success.\n"}],
             FILE_PATHS,
@@ -125,7 +202,13 @@ class TestSymbolMentions:
 
     def test_a_qualified_method_name_resolves(self) -> None:
         summarize = "Reporter.summarize (index)"
-        per_file = [{"path": "lib/index.ts", "symbols": {"Reporter.summarize": summarize}}]
+        per_file = [
+            {
+                "path": "lib/index.ts",
+                "symbols": {"Reporter.summarize": summarize},
+                "symbolKinds": {"Reporter.summarize": "procedure"},
+            }
+        ]
         out = doclinks.resolve_doc_links(
             [{"path": "docs/architecture.md", "content": "See `Reporter.summarize`.\n"}],
             FILE_PATHS,

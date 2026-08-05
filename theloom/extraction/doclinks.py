@@ -10,16 +10,30 @@ the target unambiguously:
 * a **repo-relative path** written in the text that is a file the extraction
   actually produced (``theloom/store/falkor.py``) — the doc states the target,
   so the edge is ``direct_observation``;
-* a **backtick-quoted symbol name** that is the project's only symbol of that
-  name — a deduction, so ``inference``.
+* a **backtick-quoted symbol name** that is *written the way code is written*
+  and is the project's only callable symbol of that name — a deduction, so
+  ``inference``.
 
 Everything else links to nothing. A bare word in prose is never a link (docs
 are full of English words that happen to be symbol names), a name defined more
 than once is never a link (picking one would be a guess presented as
 structure), a language builtin is never a link, and a name too short to be
-distinctive is never a link. These are the same guards the unique-name call
-resolver needed: a wrong edge is worse than a missing one, because every
-downstream analysis treats edges as fact.
+distinctive is never a link.
+
+Backticks by themselves prove nothing, either: docs backtick branch names,
+CLI flags, env vars, config keys and JSON fields, and any of those may
+collide with the project's only symbol of that name. (``Keep `main` green``
+is about the git branch; the repo's only ``main`` is the CLI entry point.) So
+a mention counts only when the *name itself* is code-shaped — qualified
+(``Reporter.summarize``), snake_case, camel/PascalCase, or an explicit call
+form (``main()``) — and only when it lands on a kind of symbol a doc can
+reference at all: the same callable kinds the resolver allows, never a
+variable that merely shares a config key's name. A lone lowercase word links
+to nothing, even when the project defines it exactly once.
+
+These are the guards the unique-name call resolver needed: a wrong edge is
+worse than a missing one, because every downstream analysis treats edges as
+fact.
 
 Out-degree is capped per document. One index page listing every file in the
 repo would otherwise become the most-connected node in the graph while saying
@@ -31,7 +45,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from theloom.extraction.resolution import BUILTIN_NAMES, file_entity_name
+from theloom.extraction.resolution import BUILTIN_NAMES, CALLABLE_KINDS, file_entity_name
 
 Doc = dict[str, Any]
 
@@ -57,15 +71,33 @@ def _symbol_index(per_file: list[Doc]) -> dict[str, set[str]]:
     A method is keyed both qualified (``Reporter.summarize``) and bare
     (``summarize``), so a doc may write either; the uniqueness guard is what
     keeps the bare form honest.
+
+    Only the kinds the resolver treats as reachable targets are indexed. A
+    doc referencing a *variable* by name is far more often a config key, an
+    env var or a JSON field that happens to collide with one, so those never
+    enter the index and can never be the project's "only" symbol of a name.
     """
     index: dict[str, set[str]] = {}
     for record in per_file:
+        kinds = record.get("symbolKinds", {})
         for key, entity_name in record.get("symbols", {}).items():
+            if str(kinds.get(key, "")) not in CALLABLE_KINDS:
+                continue
             index.setdefault(key, set()).add(entity_name)
             bare = key.rsplit(".", 1)[-1]
             if bare != key:
                 index.setdefault(bare, set()).add(entity_name)
     return index
+
+
+def _is_code_shaped(text: str) -> bool:
+    """True when the name is written the way code is and prose is not.
+
+    Qualified, snake_case, or carrying a capital (camelCase, PascalCase,
+    SCREAMING_CASE). A lone lowercase word — ``main``, ``run``, ``allows`` —
+    is a word first and a symbol second, whatever the backticks suggest.
+    """
+    return "." in text or "_" in text or any(char.isupper() for char in text)
 
 
 def _path_mentions(line: str, doc_path: str, file_paths: frozenset[str]) -> list[tuple[str, str]]:
@@ -85,9 +117,14 @@ def _symbol_mentions(line: str, index: dict[str, set[str]]) -> tuple[list[tuple[
     ambiguous = 0
     for match in _BACKTICK_RE.finditer(line):
         text = match.group(1).strip()
-        if text.endswith("()"):
+        # An explicit call form is code syntax, so it stands in for the shape
+        # test a lone lowercase name would otherwise fail.
+        call_form = text.endswith("()")
+        if call_form:
             text = text[:-2]
         if _IDENTIFIER_RE.match(text) is None or len(text) < MIN_SYMBOL_CHARS:
+            continue
+        if not call_form and not _is_code_shaped(text):
             continue
         if text in BUILTIN_NAMES or text.rsplit(".", 1)[-1] in BUILTIN_NAMES:
             continue

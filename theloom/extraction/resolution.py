@@ -49,8 +49,10 @@ _PY_SUFFIXES = (".py", "/__init__.py")
 
 EXTERNAL_PREFIX = "pkg:"
 
-# Kinds a call or a base-class reference can legitimately land on.
-_CALLABLE_KINDS = frozenset({"procedure", "concept"})
+# Kinds a call or a base-class reference can legitimately land on (shared with
+# the doc-linking pass, which needs the same guard: a name that resolves to a
+# variable is a config key or a field far more often than it is a reference).
+CALLABLE_KINDS = frozenset({"procedure", "concept"})
 
 
 # Names that belong to a language runtime, not to any project symbol (shared
@@ -412,7 +414,7 @@ def _resolve_symbol_edges(
                 candidates = {
                     name
                     for name, lang, kind in by_name.get(callee, set())
-                    if lang == language and kind in _CALLABLE_KINDS
+                    if lang == language and kind in CALLABLE_KINDS
                 }
                 # Same-file candidates were already resolved by the per-file
                 # pass; anything left here is genuinely cross-file.
