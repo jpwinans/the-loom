@@ -28,7 +28,7 @@ from theloom.operations.analysis import (
     detect_loops,
 )
 from theloom.operations.common import CommandInput
-from theloom.operations.reification import _hash_at_depth
+from theloom.operations.reification import hash_at_depth
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
@@ -85,7 +85,7 @@ def _capture_snapshot(multi: MultiGraph, graph: str | None) -> dict[str, Any]:
     cache: dict[str, str] = {}
     hash_counts: dict[str, int] = {}
     for node_id in graph_obj.nodes():
-        h = _hash_at_depth(graph_obj, node_id, 2, cache)
+        h = hash_at_depth(graph_obj, node_id, 2, cache)
         hash_counts[h] = hash_counts.get(h, 0) + 1
 
     return {

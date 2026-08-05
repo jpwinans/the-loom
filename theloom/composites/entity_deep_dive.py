@@ -27,7 +27,7 @@ from theloom.operations.analysis import (
     detect_loops,
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
-from theloom.operations.entity import _entity_doc
+from theloom.operations.entity import entity_doc
 from theloom.operations.relations import (
     GetNeighborsInput,
     GetRelationsInput,
@@ -104,7 +104,7 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
     )
 
     def _entity() -> dict[str, Any]:
-        doc = _entity_doc(multi.get_store(graph), entity_id)
+        doc = entity_doc(multi.get_store(graph), entity_id)
         if doc is None:
             raise RuntimeError(f"Entity not found: {entity_id}")
         info: dict[str, Any] = {

@@ -16,7 +16,7 @@ Semantic dissimilarity defaults to Jaccard distance over tokenized entity names
 (the path the far-analogy composite uses); an optional embedding_manager with a
 ``generate_embedding`` method switches to average pairwise cosine distance.
 
-The WL hashing primitive (_hash_at_depth) is reused from
+The WL hashing primitive (hash_at_depth) is reused from
 theloom.operations.reification, and connected components from
 theloom.graph.analytics, to stay bit-identical with reify-patterns.
 """
@@ -29,7 +29,7 @@ from typing import Any
 
 from theloom.graph.analytics import connected_components
 from theloom.graph.hydrate import LoomGraph
-from theloom.operations.reification import _hash_at_depth
+from theloom.operations.reification import hash_at_depth
 from theloom.semantic.embed import cosine_similarity
 
 DEFAULT_MAX_DEPTH = 2
@@ -77,7 +77,7 @@ def compute_component_signature(
     cache: dict[str, str] = {}
     fingerprint_distribution: dict[str, int] = {}
     for entity_id in component_entity_ids:
-        digest = _hash_at_depth(graph, entity_id, effective_depth, cache)
+        digest = hash_at_depth(graph, entity_id, effective_depth, cache)
         fingerprint_distribution[digest] = fingerprint_distribution.get(digest, 0) + 1
 
     hash_order = (
@@ -113,7 +113,7 @@ def compute_all_component_signatures(
     cache: dict[str, str] = {}
     global_hash_set: set[str] = set()
     for node_id in graph.nodes():
-        digest = _hash_at_depth(graph, node_id, effective_depth, cache)
+        digest = hash_at_depth(graph, node_id, effective_depth, cache)
         global_hash_set.add(digest)
 
     global_hash_order = sorted(global_hash_set)

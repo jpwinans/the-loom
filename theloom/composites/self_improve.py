@@ -16,8 +16,11 @@ Within apply, each proposal's entity write is one atomic mutation, but its
 relation writes are independent per-edge attempts against an already-committed
 entity: a failing relation (e.g. a targetId retracted between propose and
 apply) is reported in ``failedWrites`` with a reason rather than swallowed —
-it never rolls back the entity or the relations that did succeed. The
-top-level result is
+it never rolls back the entity or the relations that did succeed. Both writes
+go through the same gated operations path as create-entity/create-relation —
+CAUSAL_POLARITY_DEFAULTS applies to causal relation types, and a relation
+that fails the relation gate lands in ``failedWrites`` instead of the graph.
+The top-level result is
 ``{composite, reconnaissance, violations, proposals, applied, failedWrites,
 summary}``.
 """
@@ -38,9 +41,13 @@ from theloom.composites.simulate_change import (
     SimulationMutation,
     simulate_change,
 )
-from theloom.model import EntityCreate, RelationCreate
+from theloom.model import CAUSAL_POLARITY_DEFAULTS
 from theloom.operations.common import CommandInput
+from theloom.operations.entity import CreateEntityInput
+from theloom.operations.entity import create_entity as create_entity_op
 from theloom.operations.epistemic import PropagateCreditInput, propagate_credit
+from theloom.operations.relations import CreateRelationInput
+from theloom.operations.relations import create_relation as create_relation_op
 from theloom.semantic.entity_proposer import propose_entities as propose_entities_op
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -83,12 +90,15 @@ def _build_mutations_for_proposal(proposal: Doc) -> list[SimulationMutation]:
         if not rel.get("targetId"):
             continue
         evidence = f"Self-improve simulation: {proposal['rationale']}"
+        # Mirror the same CAUSAL_POLARITY_DEFAULTS the gated apply-path applies,
+        # so the simulated mutation matches what would actually be written.
+        polarity = CAUSAL_POLARITY_DEFAULTS.get(rel["relationType"])
         if rel["direction"] == "outgoing":
             payload: Doc = {
                 "from": "__LAST_CREATED__",
                 "to": rel["targetId"],
                 "relationType": rel["relationType"],
-                "polarity": None,
+                "polarity": polarity,
                 "strength": "moderate",
                 "evidence": evidence,
             }
@@ -97,7 +107,7 @@ def _build_mutations_for_proposal(proposal: Doc) -> list[SimulationMutation]:
                 "from": rel["targetId"],
                 "to": "__LAST_CREATED__",
                 "relationType": rel["relationType"],
-                "polarity": None,
+                "polarity": polarity,
                 "strength": "moderate",
                 "evidence": evidence,
             }
@@ -314,7 +324,6 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
         if not auto_apply:
             return {"applied": [], "autoApply": False, "failedWrites": []}
 
-        store = multi.get_store(graph)
         to_apply = st["ranked"][:apply_top_n]
         applied: list[Doc] = []
         failed_writes: list[Doc] = []
@@ -323,8 +332,8 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
             try:
                 proposal = ranked_item["proposal"]
                 now = iso_now()
-                entity = store.create_entity(
-                    EntityCreate.model_validate(
+                entity_doc = create_entity_op(
+                    CreateEntityInput.model_validate(
                         {
                             "name": proposal["entity"]["name"],
                             "entityType": proposal["entity"]["entityType"],
@@ -342,21 +351,29 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                                 "extractor": "self-improve-composite",
                                 "extractionMethod": "automated",
                             },
+                            "graph": graph,
                         }
-                    )
+                    ),
+                    multi,
                 )
+                entity_id = entity_doc["id"]
 
                 created_relation_ids: list[str] = []
                 for rel in proposal["relations"]:
                     if not rel.get("targetId"):
                         continue
                     if rel["direction"] == "outgoing":
-                        from_id, to_id = entity.id, rel["targetId"]
+                        from_id, to_id = entity_id, rel["targetId"]
                     else:
-                        from_id, to_id = rel["targetId"], entity.id
+                        from_id, to_id = rel["targetId"], entity_id
                     try:
-                        relation = store.create_relation(
-                            RelationCreate.model_validate(
+                        # Same gated path as create-relation: the polarity is
+                        # left null here and _effective_polarity applies
+                        # CAUSAL_POLARITY_DEFAULTS, and the relation gate can
+                        # reject the write (e.g. a retracted endpoint) rather
+                        # than let it through.
+                        relation_doc = create_relation_op(
+                            CreateRelationInput.model_validate(
                                 {
                                     "from": from_id,
                                     "to": to_id,
@@ -367,10 +384,12 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                                         "Applied by self-improve composite: "
                                         f"{proposal['rationale']}"
                                     ),
+                                    "graph": graph,
                                 }
-                            )
+                            ),
+                            multi,
                         )
-                        created_relation_ids.append(relation.id)
+                        created_relation_ids.append(relation_doc["id"])
                     except Exception as exc:  # noqa: BLE001 — reported, not swallowed.
                         failed_writes.append(
                             {
@@ -387,7 +406,7 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                     propagate_credit(
                         PropagateCreditInput.model_validate(
                             {
-                                "entityIds": [entity.id],
+                                "entityIds": [entity_id],
                                 "delta": 0.1,
                                 "dampingFactor": 0.5,
                                 "maxDepth": 2,
@@ -398,8 +417,8 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                         multi,
                     )
 
-                procedure_entity = store.create_entity(
-                    EntityCreate.model_validate(
+                procedure_entity_doc = create_entity_op(
+                    CreateEntityInput.model_validate(
                         {
                             "name": f"Self-Improve: Applied {proposal['entity']['name']}",
                             "entityType": "procedure",
@@ -414,42 +433,47 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                                 f"Blast radius: {ranked_item['blastRadius']}",
                                 f"Ranking score: {_to_fixed(ranked_item['score'], 4)}",
                                 f"Simulation verdict: {ranked_item['simulationVerdict']}",
-                                f"Created entity: {entity.id}",
+                                f"Created entity: {entity_id}",
                                 (f"Created relations: {', '.join(created_relation_ids) or 'none'}"),
                             ],
                             "provenance": {
                                 "sourceType": "inference",
-                                "sourceId": entity.id,
+                                "sourceId": entity_id,
                                 "externalRef": None,
                                 "extractionDate": now,
                                 "extractor": "self-improve-composite",
                                 "extractionMethod": "automated",
                             },
+                            "graph": graph,
                         }
-                    )
+                    ),
+                    multi,
                 )
+                procedure_entity_id = procedure_entity_doc["id"]
 
                 # noqa: BLE001 — procedure-link failure is not fatal.
                 with contextlib.suppress(Exception):
-                    store.create_relation(
-                        RelationCreate.model_validate(
+                    create_relation_op(
+                        CreateRelationInput.model_validate(
                             {
-                                "from": procedure_entity.id,
-                                "to": entity.id,
+                                "from": procedure_entity_id,
+                                "to": entity_id,
                                 "relationType": "sources",
                                 "polarity": None,
                                 "strength": "strong",
                                 "evidence": "Self-improvement loop procedure tracking",
+                                "graph": graph,
                             }
-                        )
+                        ),
+                        multi,
                     )
 
                 applied.append(
                     {
                         "ranked": ranked_item,
-                        "createdEntityId": entity.id,
+                        "createdEntityId": entity_id,
                         "createdRelationIds": created_relation_ids,
-                        "procedureEntityId": procedure_entity.id,
+                        "procedureEntityId": procedure_entity_id,
                     }
                 )
             except Exception:  # noqa: BLE001 — per-proposal failure is not fatal.
