@@ -29,12 +29,15 @@ before the typed error propagates.
 
 **Legacy list migration.** Bridges written by an older version still sit in
 ``{prefix}:bridges``. The first access to the registry migrates them in place:
-the list is claimed with an atomic ``RENAME`` onto ``{prefix}:bridges:migrating``,
-each doc is written through the new path (verbatim, plus a ``bridge_migrated``
-event), and only then is the claim dropped. A crash mid-migration leaves the
-claim key behind and the next access resumes from it, so no bridge is ever
-lost; two processes racing can at worst write the same doc twice (the row
-MERGEs by id, only the event duplicates).
+the list is claimed with a single ``RENAMENX`` onto ``{prefix}:bridges:migrating``
+— so a claim key an earlier run left behind is drained first, never overwritten
+— and each doc is written through the new path (verbatim, plus a
+``bridge_migrated`` event) *before* being removed from the claim key, by value.
+A crash mid-migration therefore leaves its docs on the claim key and the next
+access resumes from them. Nothing on the claim key is ever dropped wholesale,
+so no bridge is lost to a racer that refilled the key between another
+process's write and its removal; two processes racing can at worst write the
+same doc twice (the row MERGEs by id, only the event duplicates).
 """
 
 from __future__ import annotations
@@ -182,11 +185,18 @@ class BridgeRegistry:
             raise NotFoundError(_missing(from_id, to_id, relation_type))
 
     def delete_all(self) -> None:
-        """Drop every bridge, its history, and the legacy list (reseed path)."""
-        with contextlib.suppress(Exception):
+        """Drop every bridge, its history, and the legacy list (reseed path).
+
+        A wipe that failed must not read as a wipe that happened: a reseed on
+        top of surviving bridges is silently wrong, so the failure is raised
+        rather than swallowed. A store that never held a bridge is not a
+        failure — the MATCH simply matches nothing.
+        """
+        try:
             self._graph.query("MATCH (b:_Bridge) DELETE b")
-        with contextlib.suppress(Exception):
             self.events.delete()
+        except Exception as exc:
+            raise OperationError(f"Failed to clear bridges: {exc}") from exc
         self._redis.delete(self.legacy_key, self._claim_key)
         self._migrated = True
 
@@ -211,34 +221,49 @@ class BridgeRegistry:
         if self._migrated:
             return
         while True:
-            pending = self._claim_legacy_list()
-            if not pending:
+            self._claim_legacy_list()
+            if not self._drain_claim():
                 break
-            for raw in pending:
-                doc: BridgeDoc = json.loads(raw)
-                commit_steps(
-                    self._redis,
-                    self._graph,
-                    self.events,
-                    [self._merge_step(doc)],
-                    [("bridge_migrated", {"bridge": doc, "source": "legacy_list"})],
-                )
-            self._redis.delete(self._claim_key)
         self._migrated = True
 
-    def _claim_legacy_list(self) -> list[str]:
-        """Take ownership of the legacy list and return the docs still to move.
+    def _claim_legacy_list(self) -> None:
+        """Take ownership of the legacy list, when it is free to take.
 
-        ``RENAME`` is atomic, so exactly one racing process moves the list onto
-        the claim key. A claim key that already exists is an earlier run that
-        died mid-migration: it is drained first (this returns its contents) and
-        the legacy list is left for the next pass, so nothing is overwritten.
+        ``RENAMENX`` *is* the claim — one command, so exactly one racing
+        process moves the list onto the claim key and a claim key already
+        holding an earlier run's undrained docs is never overwritten. That run
+        died mid-migration: its docs are drained first and the legacy list
+        waits for the next pass.
         """
-        if not self._redis.exists(self._claim_key) and self._redis.exists(self.legacy_key):
-            with contextlib.suppress(ResponseError):  # lost the race; drain theirs
-                self._redis.rename(self.legacy_key, self._claim_key)
-        raw: list[Any] = list(self._redis.lrange(self._claim_key, 0, -1))
-        return [item if isinstance(item, str) else item.decode() for item in raw]
+        with contextlib.suppress(ResponseError):  # no legacy list to claim
+            self._redis.renamenx(self.legacy_key, self._claim_key)
+
+    def _drain_claim(self) -> bool:
+        """Migrate every doc under the claim key; True if any moved.
+
+        A doc leaves the claim key only after its own write has committed, and
+        it leaves *by value* (``LREM``) rather than by dropping the key: a
+        racer that migrated the same doc first has already removed it, so this
+        ``LREM`` matches nothing instead of discarding whatever the key holds
+        by then — which may be a legacy list the racer claimed in the meantime,
+        not yet migrated by anyone.
+        """
+        moved = False
+        while True:
+            raw = self._redis.lindex(self._claim_key, 0)
+            if raw is None:
+                return moved
+            text = raw if isinstance(raw, str) else raw.decode()
+            doc: BridgeDoc = json.loads(text)
+            commit_steps(
+                self._redis,
+                self._graph,
+                self.events,
+                [self._merge_step(doc)],
+                [("bridge_migrated", {"bridge": doc, "source": "legacy_list"})],
+            )
+            self._redis.lrem(self._claim_key, 1, text)
+            moved = True
 
     def _merge_step(self, doc: BridgeDoc) -> Step:
         return (_MERGE_VERBATIM, _write_params(doc))

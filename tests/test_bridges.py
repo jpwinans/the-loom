@@ -17,6 +17,8 @@ from falkordb import FalkorDB
 from redis import Redis
 
 from theloom.errors import NotFoundError, OperationError
+from theloom.store import bridges as bridges_module
+from theloom.store.bridges import BridgeRegistry
 from theloom.store.multigraph import MultiGraph
 
 
@@ -225,6 +227,120 @@ def test_interrupted_migration_does_not_swallow_a_newer_legacy_write(
     assert multi.bridges.list_bridges() == [stranded, listed]
     assert redis_client.exists(f"{namespace}:bridges") == 0
     assert redis_client.exists(f"{namespace}:bridges:migrating") == 0
+
+
+class _ClaimRacer:
+    """A Redis view that lets a racer win the claim key just before our rename.
+
+    Stands in for the window between deciding the claim is free and the rename
+    landing: another process claims a stranded list in between. Every other
+    command passes through untouched.
+    """
+
+    def __init__(self, inner: Redis, on_rename: Any) -> None:
+        self._inner = inner
+        self._on_rename = on_rename
+        self._fired = False
+
+    def rename(self, src: str, dst: str) -> Any:
+        return self._raced("rename", src, dst)
+
+    def renamenx(self, src: str, dst: str) -> Any:
+        return self._raced("renamenx", src, dst)
+
+    def _raced(self, command: str, src: str, dst: str) -> Any:
+        if not self._fired:
+            self._fired = True
+            self._on_rename()
+        return getattr(self._inner, command)(src, dst)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+def test_claiming_the_legacy_list_cannot_clobber_a_racers_claim(
+    db: FalkorDB, redis_client: Redis, namespace: str
+) -> None:
+    """The claim is one atomic command: a claim key that fills in the window
+    between "is it free?" and the rename must not be overwritten."""
+    stranded = legacy_doc("bridge-1", "a", "b")
+    listed = legacy_doc("bridge-2", "c", "d")
+    claim_key = f"{namespace}:bridges:migrating"
+    seed_legacy(redis_client, namespace, [listed])
+
+    def racer_wins_the_claim() -> None:
+        redis_client.rpush(claim_key, json.dumps(stranded))
+
+    view = _ClaimRacer(redis_client, racer_wins_the_claim)
+    registry = BridgeRegistry(db, view, key_prefix=namespace)  # type: ignore[arg-type]
+
+    assert {doc["id"] for doc in registry.list_bridges()} == {"bridge-1", "bridge-2"}
+    assert redis_client.exists(claim_key) == 0
+    assert redis_client.exists(f"{namespace}:bridges") == 0
+
+
+def test_draining_the_claim_cannot_drop_a_doc_it_never_migrated(
+    db: FalkorDB, redis_client: Redis, namespace: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A concurrent registry can empty the claim key and refill it with a
+    freshly claimed legacy list mid-drain; this process must remove only the
+    doc it just wrote, never whatever the key happens to hold."""
+    stranded = legacy_doc("bridge-1", "a", "b")
+    later = legacy_doc("bridge-2", "c", "d")
+    claim_key = f"{namespace}:bridges:migrating"
+    redis_client.rpush(claim_key, json.dumps(stranded))
+
+    real_commit = bridges_module.commit_steps
+    interleaved = False
+
+    def commit_then_let_the_racer_run(*args: Any, **kwargs: Any) -> Any:
+        nonlocal interleaved
+        result = real_commit(*args, **kwargs)
+        if not interleaved:
+            interleaved = True
+            # The racer drained the same stranded doc, dropped the emptied
+            # claim, then claimed a legacy list an old-version writer appended.
+            redis_client.delete(claim_key)
+            seed_legacy(redis_client, namespace, [later])
+            redis_client.rename(f"{namespace}:bridges", claim_key)
+        return result
+
+    monkeypatch.setattr(bridges_module, "commit_steps", commit_then_let_the_racer_run)
+    multi = MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
+
+    assert {doc["id"] for doc in multi.bridges.list_bridges()} == {"bridge-1", "bridge-2"}
+    assert redis_client.exists(claim_key) == 0
+
+
+# =============================================================================
+# Wiping
+# =============================================================================
+
+
+class _BrokenGraph:
+    def query(self, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("falkordb unavailable")
+
+
+class _BrokenDB:
+    def select_graph(self, name: str) -> _BrokenGraph:
+        return _BrokenGraph()
+
+
+def test_failed_bridge_wipe_raises_instead_of_reporting_success(
+    redis_client: Redis, namespace: str
+) -> None:
+    """A wipe that did not happen must not read as a wipe that did — a reseed
+    on top of surviving bridges is silently wrong."""
+    registry = BridgeRegistry(_BrokenDB(), redis_client, key_prefix=namespace)  # type: ignore[arg-type]
+    with pytest.raises(OperationError):
+        registry.delete_all()
+
+
+def test_wiping_a_store_that_holds_no_bridges_is_quiet(
+    db: FalkorDB, redis_client: Redis, namespace: str
+) -> None:
+    BridgeRegistry(db, redis_client, key_prefix=f"{namespace}:virgin").delete_all()
 
 
 def test_wipe_clears_bridges_history_and_the_legacy_list(
