@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**163 registry commands** across 23 categories, plus the special `init` command.
+**164 registry commands** across 23 categories, plus the special `init` command.
 
 ## Adaptive Routing
 
@@ -229,6 +229,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 ## Visualization
 
 - **`export-bundle`** — Assemble the TapestryBundle JSON for a graph scope.
+- **`export-graph`** — Write a compact, zero-infrastructure node-link JSON export of a graph.
 - **`serve`** — Serve the interactive visualization live over a read-only REST API.
 - **`visualize`** — Write a self-contained interactive HTML visualization of a graph scope.
 

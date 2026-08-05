@@ -54,6 +54,7 @@ from theloom.operations import epistemic as epistemic_ops
 from theloom.operations import extraction as extraction_ops
 from theloom.operations import inference as inference_ops
 from theloom.operations import merge as merge_ops
+from theloom.operations import portability as portability_ops
 from theloom.operations import reification as reification_ops
 from theloom.operations import relations as relation_ops
 from theloom.operations import semantic as semantic_ops
@@ -1651,6 +1652,13 @@ COMMANDS: list[CommandDescriptor] = [
         input_model=ExportBundleInput,
         handler=assemble_bundle,
         allow_empty=True,
+    ),
+    CommandDescriptor(
+        name="export-graph",
+        category="Visualization",
+        summary="Write a compact, zero-infrastructure node-link JSON export of a graph.",
+        input_model=portability_ops.ExportGraphInput,
+        handler=portability_ops.export_graph,
     ),
     CommandDescriptor(
         name="visualize",
