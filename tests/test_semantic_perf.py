@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 from falkordb import FalkorDB
 from redis import Redis
+from redis.exceptions import ResponseError
 
 from theloom.model import EntityCreate
 from theloom.operations.semantic import (
@@ -51,6 +52,17 @@ class _StubEmbedder:
     def embed_query(self, text: str) -> list[float]:
         self.query_calls += 1
         return self._vector
+
+
+class _TextKeyedEmbedder:
+    """embed_query returns a vector chosen by the query text's first token, so
+    a per-entity search (gaps/clusters) can be given a real similarity shape."""
+
+    def __init__(self, vectors: dict[str, list[float]]) -> None:
+        self._vectors = vectors
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._vectors[text.split()[0]]
 
 
 class _CountingDocumentEmbedder:
@@ -137,9 +149,53 @@ def test_search_similar_respects_entity_type_filter_via_overfetch(
     assert {r["name"] for r in results} == {"concept-a", "concept-b"}
 
 
+def test_search_similar_escalates_candidates_until_a_rare_type_is_found(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A type the ANN index ranks far below the requested limit must still be
+    found: the candidate window grows until the type filter is satisfied or the
+    index is exhausted — a fixed overfetch multiple would report zero hits."""
+    store = multi.get_store()
+    _seed_vectors(multi, {f"concept-{i:02d}": [1.0, 0.0] for i in range(40)})
+    claim = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "rare-claim", "entityType": "claim", "observations": []}
+        )
+    )
+    store.set_entity_vector(claim.id, [0.2, 0.98])
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+    )
+
+    results = semantic_search(
+        SemanticSearchInput.model_validate({"query": "q", "limit": 1, "entityType": "claim"}),
+        multi,
+    )
+    assert [r["name"] for r in results] == ["rare-claim"]
+
+
+def test_search_similar_excludes_non_active_entities(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retraction removes an entity from every default read. Its embedding is
+    left in the index (nothing overwrites in place), so the search itself has
+    to drop non-active candidates."""
+    store = multi.get_store()
+    ids = _seed_vectors(multi, {"live": [1.0, 0.0], "gone": [0.99, 0.1]})
+    store.delete_entity(ids["gone"])
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+    )
+
+    results = semantic_search(SemanticSearchInput(query="q", limit=10), multi)
+    assert [r["name"] for r in results] == ["live"]
+
+
 def test_search_similar_min_score_stops_at_first_below_threshold(
     multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Candidates arrive in descending similarity order, so the first one under
+    the threshold ends the scan — nothing past it is even resolved."""
     _seed_vectors(
         multi,
         {
@@ -150,11 +206,66 @@ def test_search_similar_min_score_stops_at_first_below_threshold(
     monkeypatch.setattr(
         "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
     )
+    reads: list[str] = []
+    read_entity = FalkorGraphStore.read_entity
+
+    def _counting_read(self: FalkorGraphStore, entity_id: str) -> Any:
+        reads.append(entity_id)
+        return read_entity(self, entity_id)
+
+    monkeypatch.setattr(FalkorGraphStore, "read_entity", _counting_read)
+
     results = semantic_search(
         SemanticSearchInput.model_validate({"query": "q", "limit": 10, "minScore": 0.9}),
         multi,
     )
     assert [r["name"] for r in results] == ["near"]
+    assert len(reads) == 1  # the sub-threshold candidate was never resolved
+
+
+# =============================================================================
+# The entity vector index takes its shape from stored vectors, not from callers
+# =============================================================================
+
+
+def test_vector_knn_indexes_the_stored_dimension_not_the_query_dimension(
+    multi: MultiGraph,
+) -> None:
+    store = multi.get_store()
+    ids = _seed_vectors(multi, {"a": [1.0, 0.0, 0.0]})
+    with pytest.raises(ResponseError, match="dimension mismatch"):
+        store.vector_knn([1.0, 0.0], 5)  # a wrong-width query must not shape the index
+    assert store.vector_index_dimension() == 3
+    assert [entity_id for entity_id, _ in store.vector_knn([1.0, 0.0, 0.0], 5)] == [ids["a"]]
+
+
+def test_vector_knn_without_any_embeddings_creates_no_index(multi: MultiGraph) -> None:
+    store = multi.get_store()
+    store.create_entity(
+        EntityCreate.model_validate({"name": "bare", "entityType": "concept", "observations": []})
+    )
+    assert store.vector_knn([1.0, 0.0], 5) == []
+    assert store.vector_index_dimension() is None
+
+
+def test_ensure_vector_index_surfaces_a_real_failure(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A create that fails for any reason other than the index already being
+    there is raised, not swallowed — a silently missing index means every
+    embedding written afterwards is unsearchable."""
+    store = multi.get_store()
+    query = store._query
+
+    def _boom(cypher: str, params: dict[str, Any] | None = None) -> Any:
+        if cypher.startswith("CREATE VECTOR INDEX"):
+            raise RuntimeError("index create failed")
+        return query(cypher, params)
+
+    monkeypatch.setattr(store, "_query", _boom)
+    with pytest.raises(RuntimeError, match="index create failed"):
+        store.ensure_vector_index()
+    assert store.vector_index_dimension() is None
 
 
 # =============================================================================
@@ -214,6 +325,35 @@ def test_semantic_gaps_samples_spread_across_store_order(
     assert seen != names[:5]
     indices = sorted(names.index(name) for name in seen)
     assert indices[0] < 10 <= indices[-1]
+
+
+def test_semantic_gaps_reports_partners_outside_the_sample(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sample decides which entities are *probed*, not which may be the
+    other end of a gap. A sampled entity's nearest neighbour usually sits in an
+    unsampled stride slot, so requiring both ends in the sample throws the
+    result away."""
+    vectors = {
+        "pair-a": [1.0, 0.0],
+        "pair-b": [0.999, 0.045],
+        "other-c": [0.0, 1.0],
+        "other-d": [0.045, 0.999],
+    }
+    ids = _seed_vectors(multi, vectors)
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder",
+        lambda: _TextKeyedEmbedder(vectors),
+    )
+
+    gaps = semantic_gaps(SemanticGapsInput.model_validate({"maxEntities": 2}), multi)
+
+    pairs = {frozenset([g["entityA"]["id"], g["entityB"]["id"]]) for g in gaps}
+    assert frozenset([ids["pair-a"], ids["pair-b"]]) in pairs
+    for gap in gaps:
+        for side in ("entityA", "entityB"):
+            assert gap[side]["name"] in vectors
+            assert gap[side]["entityType"] == "concept"
 
 
 # =============================================================================

@@ -72,6 +72,9 @@ from theloom.store.filters import (
 from theloom.store.paging import PAGE_SIZE, fetch_all_rows
 from theloom.timeutil import iso_now
 
+_ENTITY_LABEL = "_Entity"
+_VECTOR_PROPERTY = "_embedding"
+
 _IMMUTABLE_ENTITY_FIELDS = ("id", "created_at")
 _IMMUTABLE_RELATION_FIELDS = ("id", "from", "to", "created_at")
 
@@ -315,13 +318,51 @@ class FalkorGraphStore(GraphStore):
 
     # -- vectors (entity vectors live in the same store) ------------------------
 
+    def vector_index_dimension(self) -> int | None:
+        """The width of the entity vector index, or ``None`` if the graph has
+        no such index yet. The index is write-once — FalkorDB rejects a second
+        CREATE on the same property — so this is also the authority on whether
+        a vector already stored can ever be searched."""
+        rows = self._rows(
+            "CALL db.indexes() YIELD label, types, options RETURN label, types, options"
+        )
+        for label, types, options in rows:
+            if label != _ENTITY_LABEL:
+                continue
+            if "VECTOR" not in (dict(types or {}).get(_VECTOR_PROPERTY) or []):
+                continue
+            dimension = dict(dict(options or {}).get(_VECTOR_PROPERTY) or {}).get("dimension")
+            return int(dimension) if dimension is not None else None
+        return None
+
     def ensure_vector_index(self, dimension: int = 768) -> None:
-        """Create the entity vector index (idempotent)."""
-        with contextlib.suppress(Exception):  # already exists
+        """Create the entity vector index at ``dimension`` if the graph has none.
+
+        Idempotent, but not blind: an existing index keeps whatever width it was
+        created with (a re-CREATE is an error, not a reshape), and any other
+        failure is surfaced rather than swallowed. Swallowing it is what let a
+        wrong-width index sit there silently indexing nothing.
+        """
+        if self.vector_index_dimension() is not None:
+            return
+        try:
             self._query(
-                "CREATE VECTOR INDEX FOR (e:_Entity) ON (e._embedding) "
+                f"CREATE VECTOR INDEX FOR (e:_Entity) ON (e.{_VECTOR_PROPERTY}) "
                 f"OPTIONS {{dimension: {dimension}, similarityFunction: 'cosine'}}"
             )
+        except Exception:
+            # Lost a race with a concurrent create: the index exists, which is
+            # all this method promised. Anything else is a real failure.
+            if self.vector_index_dimension() is None:
+                raise
+
+    def _stored_vector_dimension(self) -> int | None:
+        """The width of the vectors actually stored, or ``None`` if none are."""
+        rows = self._rows(
+            f"MATCH (n:_Entity) WHERE n.{_VECTOR_PROPERTY} IS NOT NULL "
+            f"RETURN n.{_VECTOR_PROPERTY} LIMIT 1"
+        )
+        return len(rows[0][0]) if rows else None
 
     def set_entity_vector(self, entity_id: str, vector: list[float]) -> None:
         """Attach/update an entity's embedding vector (same store, one query)."""
@@ -342,11 +383,16 @@ class FalkorGraphStore(GraphStore):
         """(entity id, cosine similarity) for the k nearest embedded entities.
         FalkorDB returns cosine *distance*; similarity = 1 - distance.
 
-        The index dimension follows the query vector's own length (real
-        embeddings are always 768-dim; tests may seed lower-dimensional
-        synthetic vectors), so ``ensure_vector_index`` is idempotent whether
-        this is the first vector op on the graph or a later one."""
-        self.ensure_vector_index(dimension=len(query_vector))
+        If the graph has no vector index yet, one is created at the width of
+        the vectors already *stored* — never at the query vector's width, which
+        would let a single oddly-shaped query permanently fix the schema and
+        leave every real embedding unindexed. With nothing embedded there is
+        nothing to search and no index to guess at, so the answer is empty."""
+        if self.vector_index_dimension() is None:
+            stored = self._stored_vector_dimension()
+            if stored is None:
+                return []
+            self.ensure_vector_index(dimension=stored)
         rows = self._rows(
             "CALL db.idx.vector.queryNodes('_Entity', '_embedding', $k, vecf32($q)) "
             "YIELD node, score RETURN node.id, score",

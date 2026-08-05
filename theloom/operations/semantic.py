@@ -27,7 +27,7 @@ from pydantic import Field
 from theloom.config import load_config
 from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
-from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityType
+from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityStatus, EntityType
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
@@ -126,9 +126,10 @@ def _query_text(entity: Doc) -> str:
     return f"{entity['name']} {observations}"
 
 
-# entity_types filtering can't be pushed into the ANN index, so a type-filtered
-# call overfetches candidates from the index before trimming back to `limit`.
-_TYPE_FILTER_OVERFETCH = 6
+# Neither the status nor the entityType filter can be pushed into the ANN
+# index, so a filtered call reads a candidate window and widens it by this
+# factor whenever the window ran out before `limit` was met.
+_CANDIDATE_GROWTH = 4
 
 
 def _search_similar(
@@ -143,39 +144,54 @@ def _search_similar(
     (``FalkorGraphStore.vector_knn``), scores 1/(1+L2) — L2 = sqrt(2-2cos) for
     the cosine the index reports — filters, and truncates.
 
-    No per-call full vector or entity scan: candidates come back in
-    similarity order already, entity metadata is a point lookup per
-    candidate, and since the index is sorted best-first, the first candidate
-    under ``min_score`` means every later one is too, so the scan stops
-    there. A type filter can't be pushed into the index, so it overfetches
-    a bounded multiple of ``limit`` rather than the whole graph."""
+    Only active entities are returned. A retracted or superseded entity keeps
+    its embedding (mutations invalidate, they never overwrite), so the index
+    still offers it and the filter has to happen here — the same filter every
+    other default read applies.
+
+    No per-call full vector or entity scan. Candidates come back in similarity
+    order, entity metadata is a point lookup per candidate, and since the order
+    is best-first the first candidate under ``min_score`` means every later one
+    is too — the scan stops there. Filters that the index can't answer (status,
+    entityType) can starve a fixed-size window, so the window *grows* until
+    ``limit`` is met or the index is exhausted: a rare type stays findable
+    instead of silently returning fewer hits than exist.
+    """
     query_vector = get_embedder().embed_query(query_text)
-    k = limit * _TYPE_FILTER_OVERFETCH if entity_types else limit
-    candidates = store.vector_knn(query_vector, max(k, 1))
-    results: list[dict[str, Any]] = []
-    for entity_id, cosine in candidates:
-        score = _lance_score(cosine)
-        if min_score is not None and score < min_score:
-            break  # descending similarity order: nothing further qualifies
-        entity = store.read_entity(entity_id)
-        if entity is None:
-            continue
-        if entity_types and entity.entity_type.value not in entity_types:
-            continue
-        results.append(
-            {
-                "id": entity_id,
-                "score": score,
-                "metadata": {
-                    "name": entity.name,
-                    "entityType": entity.entity_type.value,
-                    "entryType": "entity",
-                },
-            }
-        )
-        if len(results) >= limit:
-            break
-    return results
+    resolved: dict[str, Any] = {}
+    k = max(limit, 1)
+    while True:
+        candidates = store.vector_knn(query_vector, k)
+        results: list[dict[str, Any]] = []
+        exhausted = len(candidates) < k
+        for entity_id, cosine in candidates:
+            score = _lance_score(cosine)
+            if min_score is not None and score < min_score:
+                exhausted = True  # descending order: nothing further qualifies
+                break
+            if entity_id not in resolved:
+                resolved[entity_id] = store.read_entity(entity_id)
+            entity = resolved[entity_id]
+            if entity is None or entity.effective_status != EntityStatus.ACTIVE:
+                continue
+            if entity_types and entity.entity_type.value not in entity_types:
+                continue
+            results.append(
+                {
+                    "id": entity_id,
+                    "score": score,
+                    "metadata": {
+                        "name": entity.name,
+                        "entityType": entity.entity_type.value,
+                        "entryType": "entity",
+                    },
+                }
+            )
+            if len(results) >= limit:
+                break
+        if exhausted or len(results) >= limit:
+            return results
+        k *= _CANDIDATE_GROWTH
 
 
 def _spread_sample(items: list[Doc], max_items: int, seed: int | None = None) -> list[Doc]:
@@ -933,8 +949,16 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str
         for sr in results:
             if float(sr["score"]) < min_similarity or sr["id"] in connected:
                 continue
-            if sr["id"] not in index:
-                continue
+            # The sample decides which entities are *probed*, not which may be
+            # the far end of a gap: a spread sample scatters co-written,
+            # semantically adjacent entities into unsampled stride slots, so
+            # requiring both ends in the sample would discard most real pairs.
+            # The search already carries the partner's metadata.
+            partner = index.get(sr["id"]) or {
+                "id": sr["id"],
+                "name": sr["metadata"]["name"],
+                "entityType": sr["metadata"]["entityType"],
+            }
             key = ":".join(sorted([entity["id"], sr["id"]]))
             if key in seen:
                 continue
@@ -942,7 +966,7 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str
             gaps.append(
                 {
                     "entityA": index[entity["id"]],
-                    "entityB": index[sr["id"]],
+                    "entityB": partner,
                     "similarity": sr["score"],
                 }
             )
