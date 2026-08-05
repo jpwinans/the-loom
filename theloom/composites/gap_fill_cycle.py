@@ -24,7 +24,7 @@ deterministic. A commit therefore requires ``commitThreshold <= 0`` (the
 only threshold the always-``0`` interestingness score can clear) plus a
 passing structural gate; ``autoCreate: true`` remains the ungated path.
 
-After :func:`build_composite_result`, the aggregate metadata is extended with
+After :func:`run_composite`, the aggregate metadata is extended with
 ``committed`` / ``skipped`` commitment counts.
 """
 
