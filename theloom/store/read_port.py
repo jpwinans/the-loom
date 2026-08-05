@@ -12,7 +12,9 @@ Two rules keep it narrow:
   reads (``read_entity_doc``, ``list_entity_docs``, ``list_relation_docs``,
   ``read_entity_docs``), which exist because a few commands must preserve
   verbatim key order. Those stay where they are; they are not part of the
-  port, and nothing here returns a raw doc.
+  port, and nothing here returns a raw doc. Whether the doc twins should
+  survive at all is a separate decision, to be taken once their callers are
+  typed against this port — not by widening the port to accommodate them.
 - **Only what production reads.** The members below are the read methods with
   real callers outside ``theloom/store/``; nothing is declared here on
   speculation.
