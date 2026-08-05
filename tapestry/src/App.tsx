@@ -90,6 +90,9 @@ const THEMES: { id: Theme; label: string; icon: ReactNode }[] = [
   },
 ];
 
+/** The Loom's mark: beam, hanging warp, and a weft mid-pass — the thread runs
+ * over the first warp, behind the second (the gap), over the third, with the
+ * shuttle leading the pass. The instrument, not the finished cloth. */
 function BrandMark() {
   return (
     <svg
@@ -100,19 +103,21 @@ function BrandMark() {
       fill="none"
       aria-hidden="true"
     >
+      <path d="M2 2.8h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       <path
-        d="M3 2.2v13.6M9 2.2v13.6M15 2.2v13.6"
+        d="M3.6 5.2v10.3M7.2 5.2v10.3M10.8 5.2v10.3M14.4 5.2v10.3"
         stroke="currentColor"
         strokeWidth="1.4"
         strokeLinecap="round"
         opacity="0.5"
       />
       <path
-        d="M2 6.2h14M2 11.8h14"
+        d="M1.8 10.4h3.4M8.6 10.4h3.4"
         stroke="currentColor"
         strokeWidth="2"
         strokeLinecap="round"
       />
+      <path d="M13.4 10.4 15.1 9.3 16.8 10.4 15.1 11.5Z" fill="currentColor" />
     </svg>
   );
 }
@@ -267,7 +272,7 @@ export function App() {
       <header className="app__header">
         <div className="brand">
           <BrandMark />
-          <span className="brand__name">Tapestry</span>
+          <span className="brand__name">The Loom</span>
           <span className="brand__sep" aria-hidden="true" />
           <span className="brand__context">
             <span className="brand__graph">{bundle.meta.title ?? bundle.meta.graph}</span>
