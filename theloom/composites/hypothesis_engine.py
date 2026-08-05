@@ -38,6 +38,7 @@ from theloom.analysis.interestingness import (
 )
 from theloom.composites.framework import build_composite_result, time_section
 from theloom.operations.common import CommandInput
+from theloom.operations.entity_proposal import EntityProposalOptions
 from theloom.operations.semantic import SemanticGapsInput, semantic_gaps
 from theloom.semantic.deduplication_gate import deduplicate_proposals
 from theloom.semantic.entity_proposer import propose_entities
@@ -269,15 +270,15 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
     # -- Section 2: proposals ----------------------------------------------
     def _proposals() -> dict[str, Any]:
         store = multi.get_store(graph)
-        propose_result = propose_entities(
-            store,
+        options = EntityProposalOptions.model_validate(
             {
                 "limit": max_results * 3,  # over-generate so filtering has room
                 "simulate": simulate,
                 "strategies": strategies,
                 "graph": graph,
-            },
+            }
         )
+        propose_result = propose_entities(store, options.to_options())
         state["allProposals"] = propose_result["proposals"]
         return {
             "count": len(propose_result["proposals"]),

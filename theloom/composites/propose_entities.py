@@ -19,6 +19,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from theloom.operations.common import CommandInput
+from theloom.operations.entity_proposal import EntityProposalOptions
 from theloom.semantic.entity_proposer import propose_entities as propose_entities_op
 from theloom.store.multigraph import MultiGraph
 
@@ -37,12 +38,14 @@ class ProposeEntitiesInput(CommandInput):
 def propose_entities(params: ProposeEntitiesInput, multi: MultiGraph) -> dict[str, Any]:
     """Forward CLI params to the entity-proposer op and return its raw result."""
     store = multi.get_store(params.graph)
-    options: dict[str, Any] = {
-        "limit": params.limit,
-        "simulate": params.simulate,
-        "strategies": params.strategies,
-        "minPatternOccurrences": params.min_pattern_occurrences,
-        "maxPatterns": params.max_patterns,
-        "graph": params.graph,
-    }
-    return propose_entities_op(store, options)
+    options = EntityProposalOptions.model_validate(
+        {
+            "limit": params.limit,
+            "simulate": params.simulate,
+            "strategies": params.strategies,
+            "minPatternOccurrences": params.min_pattern_occurrences,
+            "maxPatterns": params.max_patterns,
+            "graph": params.graph,
+        }
+    )
+    return propose_entities_op(store, options.to_options())

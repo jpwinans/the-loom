@@ -45,6 +45,7 @@ from theloom.model import CAUSAL_POLARITY_DEFAULTS
 from theloom.operations.common import CommandInput
 from theloom.operations.entity import CreateEntityInput
 from theloom.operations.entity import create_entity as create_entity_op
+from theloom.operations.entity_proposal import EntityProposalOptions
 from theloom.operations.epistemic import PropagateCreditInput, propagate_credit
 from theloom.operations.relations import CreateRelationInput
 from theloom.operations.relations import create_relation as create_relation_op
@@ -227,16 +228,16 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
     # -- Section 3: Propose ----------------------------------------------------
     def _propose() -> Doc:
         store = multi.get_store(graph)
-        propose_result = propose_entities_op(
-            store,
+        options = EntityProposalOptions.model_validate(
             {
                 "limit": max_proposals,
                 "simulate": False,  # simulated separately in Section 4
                 "strategies": ["pattern_completion"],
                 "graph": graph,
                 "capabilitySpec": st["cap_spec"],
-            },
+            }
         )
+        propose_result = propose_entities_op(store, options.to_options())
         st["proposals"] = propose_result["proposals"]
         return {
             "totalProposals": len(propose_result["proposals"]),
