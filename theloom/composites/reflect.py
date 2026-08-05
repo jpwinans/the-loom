@@ -42,6 +42,7 @@ from typing import Any
 from pydantic import Field
 
 from theloom.errors import ValidationError
+from theloom.extraction.encoding import parse_file_path
 from theloom.model import EntityFilter, EntityType, RelationFilter, RelationType, UsageOutcome
 from theloom.operations.common import CommandInput
 from theloom.operations.entity import UpdateEntityInput, update_entity
@@ -68,7 +69,6 @@ PREFERRED = "preferred"
 CONTESTED = "contested"
 DEAD_END = "dead_end"
 
-_FILE_PATH_PREFIX = "file path:"
 #: Bookkeeping tags never make a good anchor line — they say nothing about
 #: what the entity *is*.
 _BOOKKEEPING_PREFIXES = (
@@ -243,7 +243,7 @@ def _status_observation(status: str, tally: _Tally) -> str:
 
 
 def _file_path(observations: list[str]) -> str | None:
-    return _observation_value(observations, _FILE_PATH_PREFIX)
+    return parse_file_path(observations)
 
 
 def _fingerprint(path: Path) -> str | None:
