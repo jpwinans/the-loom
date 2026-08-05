@@ -7,7 +7,10 @@ services:
       - "6379:6379"   # Redis/Bolt protocol (client connects here)
       - "3000:3000"   # FalkorDB Browser UI
     volumes:
-      - falkordb-data:/data
+      # The image writes its RDB to /var/lib/falkordb/data (and symlinks
+      # /data/data into the container filesystem), so mounting at /data
+      # never captured the snapshot — a container removal lost everything.
+      - falkordb-data:/var/lib/falkordb/data
     command: ["--save", "60", "1"]   # periodic snapshot persistence
     environment:
       # Uncap result sets: the default (10000) silently truncates reads.
