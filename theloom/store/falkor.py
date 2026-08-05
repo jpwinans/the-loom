@@ -79,6 +79,14 @@ _IMMUTABLE_RELATION_FIELDS = ("id", "from", "to", "created_at")
 # without the leading underscore here; the node property is "_" + field.
 _INDEX_FIELDS = ("status", "type", "name", "search")
 
+# `_search` folds the name and every observation into one haystack with this
+# separator. filters.py tests the name and each observation *separately*, so a
+# query containing the separator can straddle two of them: it matches the
+# folded haystack and nothing at all in the oracle. That keeps the prefilter a
+# superset (which is all it promises) but makes it inexact — see
+# ``_pushdown_is_exact``.
+_SEARCH_SEPARATOR = "\n"
+
 
 def _index_props(doc: Mapping[str, Any]) -> dict[str, str]:
     """Project a wire doc onto the derived read-index properties.
@@ -92,7 +100,7 @@ def _index_props(doc: Mapping[str, Any]) -> dict[str, str]:
         "status": str(doc.get("status") or "active"),
         "type": str(doc.get("entityType") or ""),
         "name": name.lower(),
-        "search": "\n".join([name, *(str(obs) for obs in observations)]).lower(),
+        "search": _SEARCH_SEPARATOR.join([name, *(str(obs) for obs in observations)]).lower(),
     }
 
 
@@ -112,11 +120,18 @@ def _index_assignments(alias: str, prefix: str) -> str:
 
 
 def _pushdown_is_exact(filter: EntityFilter | None) -> bool:
-    """True when the Cypher prefilter alone decides membership — i.e. no
-    filter field is left for the Python pass. Only then may LIMIT/count run
-    server-side."""
+    """True when the Cypher prefilter alone decides membership — i.e. nothing
+    is left for the Python pass to reject. Only then may LIMIT/count run
+    server-side, because both are computed over the prefilter's candidate set.
+
+    Two ways a field can leave work behind: it has no server-side counterpart
+    at all (version/session/sourcedFrom), or its pushed-down predicate is only
+    a superset of the real one (a ``query`` straddling the ``_search`` fold).
+    """
     if filter is None:
         return True
+    if filter.query is not None and _SEARCH_SEPARATOR in filter.query:
+        return False
     return (
         filter.version is None
         and filter.min_version is None
@@ -600,16 +615,22 @@ class FalkorGraphStore(GraphStore):
         """The one entity read path: Cypher prefilter → Python confirmation
         (filters.py stays the semantics oracle) → limit.
 
-        ``limit`` and the total are computed server-side whenever the prefilter
-        alone decides membership; when a filter field has no server-side
-        counterpart (version/session/sourcedFrom) the candidate window is read
-        whole and sliced after the Python pass, so semantics never depend on
-        which path ran.
+        ``limit`` and the total are computed server-side only when the
+        prefilter alone decides membership (see ``_pushdown_is_exact``);
+        otherwise the candidate window is read whole and sliced after the
+        Python pass, so semantics never depend on which path ran.
         """
         where, params = _entity_prefilter(filter)
         cypher = f"MATCH (n:_Entity) WHERE {where} RETURN n._doc, n._status ORDER BY id(n)"
         limit = filter.limit if filter is not None else None
         server_limit = limit if limit is not None and _pushdown_is_exact(filter) else None
+
+        if server_limit is not None and self._has_unindexed_entity():
+            # The NULL check below only sees the limited window, but the
+            # server-side count spans the whole graph — where an unmigrated
+            # node passes every ``(prop IS NULL OR ...)`` predicate regardless
+            # of its real status/type/name. Migrate before counting, not after.
+            self._migrate_entity_index()
 
         rows = self._rows_paged(cypher, params, server_limit)
         if any(row[1] is None for row in rows):
@@ -646,6 +667,12 @@ class FalkorGraphStore(GraphStore):
     def _count_entities(self, where: str, params: dict[str, Any]) -> int:
         rows = self._rows(f"MATCH (n:_Entity) WHERE {where} RETURN count(n)", params)
         return int(rows[0][0]) if rows else 0
+
+    def _has_unindexed_entity(self) -> bool:
+        """Does any entity predate the derived read index? Stops at the first
+        hit, and is only asked on the server-limited path — where the window
+        that would otherwise reveal one is capped."""
+        return bool(self._rows("MATCH (n:_Entity) WHERE n._status IS NULL RETURN n.id LIMIT 1"))
 
     def _migrate_entity_index(self) -> None:
         """Backfill the derived read-index properties for every entity that

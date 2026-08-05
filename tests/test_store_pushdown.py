@@ -58,7 +58,10 @@ def seed(store: FalkorGraphStore) -> dict[str, str]:
         "beta": {
             "name": "Beta Pattern",
             "entityType": "pattern",
-            "observations": ["about gadgets"],
+            # A newline *inside* one observation: a query spanning it is a true
+            # match for filters.py, unlike one spanning the name/observation
+            # boundary that only the folded `_search` haystack joins.
+            "observations": ["about gadgets\nand doodads", "omega tail"],
             "version": 2,
         },
         "gamma": {
@@ -189,6 +192,12 @@ ENTITY_FILTER_MATRIX: list[dict[str, Any]] = [
     {"excludeSourcedFrom": [SOURCE], "statusFilter": ALL_STATUSES},
     {"sourcedFrom": [SOURCE], "excludeSourcedFrom": [SOURCE], "statusFilter": ALL_STATUSES},
     {"entityType": "concept", "query": "widgets", "statusFilter": ["deprecated"]},
+    # A query spanning the name/observation boundary: `_search` folds the two
+    # together, so the Cypher prefilter says yes and filters.py says no.
+    {"query": "alpha concept\nmentions", "statusFilter": ALL_STATUSES},
+    # ...and one spanning a newline *within* a single observation, which is a
+    # genuine match on both sides.
+    {"query": "gadgets\nand doodads", "statusFilter": ALL_STATUSES},
 ]
 
 
@@ -450,6 +459,82 @@ def test_limit_on_a_legacy_graph_is_exact(store: FalkorGraphStore) -> None:
     )
     assert total == 4
     assert len(entities) == 2
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3])
+@pytest.mark.parametrize("filter_doc", ENTITY_FILTER_MATRIX, ids=lambda d: json.dumps(d))
+def test_limited_reads_match_the_oracle_prefix_and_total(
+    store: FalkorGraphStore, filter_doc: dict[str, Any], limit: int
+) -> None:
+    """The whole filter matrix, under a limit: the window is the oracle's own
+    prefix and the total is the oracle's own length. A server-side LIMIT/count
+    may only run where the prefilter decides membership exactly."""
+    ids = seed(store)
+    resolved = resolve(filter_doc, ids)
+    expected = [e.id for e in oracle_entities(store, EntityFilter.model_validate(resolved))]
+    entities, total = store.list_entities_page(
+        EntityFilter.model_validate({**resolved, "limit": limit})
+    )
+    assert [e.id for e in entities] == expected[:limit]
+    assert total == len(expected)
+
+
+def test_limit_does_not_count_prefilter_false_positives(store: FalkorGraphStore) -> None:
+    """`_search` folds name and observations together, so this query matches
+    server-side and nothing at all in filters.py. The total must be 0, not 1,
+    and the window must not be spent on the false positive."""
+    seed(store)
+    entities, total = store.list_entities_page(
+        EntityFilter.model_validate(
+            {"query": "alpha concept\nmentions", "statusFilter": ALL_STATUSES, "limit": 1}
+        )
+    )
+    assert [e.id for e in entities] == []
+    assert total == 0
+
+
+def test_a_prefilter_false_positive_does_not_consume_the_window(
+    store: FalkorGraphStore,
+) -> None:
+    """A false positive that sorts ahead of a genuine match: `beta` spans the
+    query across two observations, `omega` holds it inside one. A server-side
+    LIMIT of 1 would spend the window on `beta` and report no items at all."""
+    seed(store)
+    omega = store.create_entity(
+        EntityCreate.model_validate(
+            {
+                "name": "Omega Concept",
+                "entityType": "concept",
+                "observations": ["the doodads\nomega line"],
+            }
+        )
+    )
+    entities, total = store.list_entities_page(
+        EntityFilter.model_validate(
+            {"query": "doodads\nomega", "statusFilter": ALL_STATUSES, "limit": 1}
+        )
+    )
+    assert [e.id for e in entities] == [omega.id]
+    assert total == 1
+
+
+def test_limit_does_not_count_unmigrated_nodes_outside_the_window(
+    store: FalkorGraphStore,
+) -> None:
+    """The NULL-status backfill trigger only sees the limited window. Nodes that
+    predate the read index and sort *behind* it are tolerated by every prefilter
+    predicate, so a server-side count would score them all as matches."""
+    ids = seed(store)
+    store._query(
+        "MATCH (n:_Entity) WHERE n.id <> $id REMOVE n._status, n._type, n._name, n._search",
+        {"id": ids["alpha"]},
+    )
+    entities, total = store.list_entities_page(
+        EntityFilter.model_validate({"entityType": "concept", "limit": 1})
+    )
+    assert [e.id for e in entities] == [ids["alpha"]]
+    assert total == 1
+    assert unindexed_count(store) == 0
 
 
 def test_limit_rejects_zero_and_negatives() -> None:
