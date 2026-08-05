@@ -36,6 +36,7 @@ from theloom.composites import influence_map as influence_map_composite
 from theloom.composites import multi_graph_landscape as multi_graph_landscape_composite
 from theloom.composites import propose_entities as propose_entities_composite
 from theloom.composites import provenance_audit as provenance_audit_composite
+from theloom.composites import reflect as reflect_composite
 from theloom.composites import self_improve as self_improve_composite
 from theloom.composites import semantic_landscape as semantic_landscape_composite
 from theloom.composites import simulate_change as simulate_change_composite
@@ -60,6 +61,7 @@ from theloom.operations import solve as solve_ops
 from theloom.operations import symbolic as symbolic_ops
 from theloom.operations import synthesis as synthesis_ops
 from theloom.operations import verification as verification_ops
+from theloom.operations import work_memory as work_memory_ops
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import cegis as cegis_module
 from theloom.viz import serve as viz_serve
@@ -1349,6 +1351,23 @@ def _consumption_commands() -> list[CommandDescriptor]:
     ]
 
 
+def _work_memory_commands() -> list[CommandDescriptor]:
+    """Work Memory: the experiential layer — what was tried, how it turned out,
+    and the standing lessons that fall out of it."""
+    return [
+        CommandDescriptor(
+            name="record-outcome",
+            category="Work Memory",
+            summary=(
+                "Record how a piece of work turned out as usage evidence citing the entities "
+                "it leaned on (supports when useful, questions when not)."
+            ),
+            input_model=work_memory_ops.RecordOutcomeInput,
+            handler=work_memory_ops.record_outcome,
+        )
+    ]
+
+
 def _composite_commands() -> list[CommandDescriptor]:
     """Composites: multi-section bundles over the core operations."""
     entries: list[tuple[str, str, Any, Any, bool]] = [
@@ -1371,6 +1390,15 @@ def _composite_commands() -> list[CommandDescriptor]:
             "Semantic analysis overview of a graph (composite).",
             semantic_landscape_composite.SemanticLandscapeInput,
             semantic_landscape_composite.semantic_landscape,
+            True,
+        ),
+        (
+            "reflect",
+            "Distil recorded outcomes into standing lessons: time-decayed usage scores, "
+            "preferred/contested/dead-end statuses, and staleness against changed files "
+            "(composite).",
+            reflect_composite.ReflectInput,
+            reflect_composite.reflect,
             True,
         ),
         (
@@ -1537,6 +1565,7 @@ COMMANDS: list[CommandDescriptor] = [
     *_inference_commands(),
     *_verification_commands(),
     *_consumption_commands(),
+    *_work_memory_commands(),
     *_composite_commands(),
     CommandDescriptor(
         name="reify-patterns",

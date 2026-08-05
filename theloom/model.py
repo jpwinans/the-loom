@@ -95,6 +95,17 @@ class RelationType(StrEnum):
     CRYSTALLIZED_FROM = "crystallized_from"
 
 
+class UsageOutcome(StrEnum):
+    """How a recorded piece of work actually turned out (the experiential
+    layer). ``useful`` is a positive citation of what it cited; ``dead_end``
+    and ``corrected`` are negative — the difference is that a correction says
+    the graph was wrong, a dead end says it led nowhere."""
+
+    USEFUL = "useful"
+    DEAD_END = "dead_end"
+    CORRECTED = "corrected"
+
+
 class MemoryType(StrEnum):
     """3D Memory Machine axis 1: what cognitive function does this serve?"""
 

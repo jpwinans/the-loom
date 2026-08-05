@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**161 registry commands** across 22 categories, plus the special `init` command.
+**163 registry commands** across 23 categories, plus the special `init` command.
 
 ## Adaptive Routing
 
@@ -27,6 +27,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 - **`multi-graph-landscape`** — Ecosystem-level overview of all graphs (composite).
 - **`propose-entities`** — Propose new entities that should exist in the knowledge graph (composite).
 - **`provenance-audit`** — Full provenance audit for an entity (composite).
+- **`reflect`** — Distil recorded outcomes into standing lessons: time-decayed usage scores, preferred/contested/dead-end statuses, and staleness against changed files (composite).
 - **`self-improve`** — Autonomous self-improvement cycle: reconnaissance, capability check, propose, simulate, rank, apply (composite).
 - **`semantic-landscape`** — Semantic analysis overview of a graph (composite).
 - **`simulate-change`** — Simulate graph mutations and preview structural impact (composite).
@@ -230,3 +231,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 - **`export-bundle`** — Assemble the TapestryBundle JSON for a graph scope.
 - **`serve`** — Serve the interactive visualization live over a read-only REST API.
 - **`visualize`** — Write a self-contained interactive HTML visualization of a graph scope.
+
+## Work Memory
+
+- **`record-outcome`** — Record how a piece of work turned out as usage evidence citing the entities it leaned on (supports when useful, questions when not).
