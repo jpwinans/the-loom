@@ -22,7 +22,7 @@ production code path constructs one. Writes exist only to set a scene.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from theloom.errors import NotFoundError
@@ -40,6 +40,7 @@ from theloom.store.filters import (
     apply_relation_filters,
     extract_neighbor_ids,
 )
+from theloom.store.read_port import GraphSnapshot
 from theloom.timeutil import iso_now
 
 
@@ -50,9 +51,18 @@ class InMemoryGraphStore:
         # id -> wire doc, in creation order (dicts preserve insertion order,
         # which is exactly what FalkorDB's `ORDER BY id(n)` gives us).
         self._entities: dict[str, dict[str, Any]] = {}
+        # id -> system time the current incarnation opened at, mirroring the
+        # graph node's `tx_from`. Separate from the doc, as in the store.
+        self._tx_from: dict[str, str] = {}
+        # Closed-out incarnations, the `:_EntityVersion` nodes' shape:
+        # {entity_id, doc, tx_from, tx_to}. Appended to, never rewritten.
+        self._entity_versions: list[dict[str, Any]] = []
         # Relation wire docs in creation order; parallel edges between the same
         # pair are as first-class here as they are in the graph.
         self._relations: list[dict[str, Any]] = []
+        # Edges that have left the live projection, the `:_RelationVersion`
+        # nodes' shape: {doc, tx_from, tx_to}.
+        self._relation_versions: list[dict[str, Any]] = []
         # entity id -> embedding, for the entities that have one.
         self._vectors: dict[str, list[float]] = {}
 
@@ -65,6 +75,34 @@ class InMemoryGraphStore:
         doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
         entity = Entity.model_validate(doc)
         self._entities[entity.id] = doc
+        self._tx_from[entity.id] = now
+        return entity
+
+    def update_entity(self, entity_id: str, updates: Mapping[str, Any]) -> Entity:
+        """Merge updates, snapshotting the prior incarnation as a closed
+        version interval — invalidate, never overwrite, as in the real store.
+
+        Lifecycle transitions are *not* validated here: writes on this adapter
+        set a scene, and the transition table is the real store's business.
+        """
+        current = self._entities.get(entity_id)
+        if current is None:
+            raise NotFoundError("Entity not found")
+        now = iso_now()
+        merged = {**current, **dict(updates), "updated_at": now}
+        for field in ("id", "created_at"):
+            merged[field] = current[field]
+        entity = Entity.model_validate(merged)
+        self._entity_versions.append(
+            {
+                "entity_id": entity_id,
+                "doc": current,
+                "tx_from": self._tx_from[entity_id],
+                "tx_to": now,
+            }
+        )
+        self._entities[entity_id] = merged
+        self._tx_from[entity_id] = now
         return entity
 
     def create_relation(self, spec: RelationCreate) -> Relation:
@@ -89,6 +127,25 @@ class InMemoryGraphStore:
         self._relations.extend(docs)
         return [Relation.model_validate(doc) for doc in docs]
 
+    def invalidate_relation(
+        self, from_id: str, to_id: str, relation_type: str | None = None
+    ) -> Relation:
+        """Retire an edge bi-temporally: it leaves the live projection and its
+        final doc is kept with a closed system-time interval, as in the real
+        store. The oldest match wins where parallel edges exist."""
+        for doc in self._relations:
+            if (
+                doc["from"] == from_id
+                and doc["to"] == to_id
+                and (relation_type is None or doc["relationType"] == relation_type)
+            ):
+                self._relations.remove(doc)
+                self._relation_versions.append(
+                    {"doc": doc, "tx_from": doc["created_at"], "tx_to": iso_now()}
+                )
+                return Relation.model_validate(doc)
+        raise NotFoundError("Relation not found")
+
     def set_entity_vector(self, entity_id: str, vector: list[float]) -> None:
         """Attach an embedding to an entity (same store, as in FalkorDB)."""
         self._vectors[entity_id] = [float(x) for x in vector]
@@ -105,6 +162,40 @@ class InMemoryGraphStore:
             for entity_id in dict.fromkeys(entity_ids)
             if entity_id in self._entities
         }
+
+    def read_graph_as_of(self, timestamp: str) -> GraphSnapshot:
+        """The whole graph as it stood at ``timestamp`` (see the read port)."""
+        entities = self._entities_as_of(timestamp)
+        present = {entity.id for entity in entities}
+        relations = [
+            relation
+            for relation in self._relations_as_of(timestamp)
+            if relation.from_ in present and relation.to in present
+        ]
+        return GraphSnapshot(entities=entities, relations=relations)
+
+    def _relations_as_of(self, timestamp: str) -> list[Relation]:
+        docs = [doc for doc in self._relations if doc.get("created_at", "") <= timestamp]
+        seen = {doc["id"] for doc in docs}
+        for version in self._relation_versions:
+            doc = version["doc"]
+            if doc["id"] not in seen and version["tx_from"] <= timestamp < version["tx_to"]:
+                seen.add(doc["id"])
+                docs.append(doc)
+        return [Relation.model_validate(doc) for doc in docs]
+
+    def _entities_as_of(self, timestamp: str) -> list[Entity]:
+        versions = {
+            version["entity_id"]: version["doc"]
+            for version in self._entity_versions
+            if version["tx_from"] <= timestamp < version["tx_to"]
+        }
+        entities: list[Entity] = []
+        for entity_id, doc in self._entities.items():
+            covering = doc if self._tx_from[entity_id] <= timestamp else versions.get(entity_id)
+            if covering is not None:
+                entities.append(Entity.model_validate(covering))
+        return entities
 
     def list_entities(self, filter: EntityFilter | None = None) -> list[Entity]:
         entities = [Entity.model_validate(doc) for doc in self._entities.values()]

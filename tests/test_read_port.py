@@ -14,6 +14,7 @@ through the harness helpers.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
@@ -28,6 +29,7 @@ from theloom.model import (
     RelationFilter,
 )
 from theloom.store.read_port import GraphReadPort
+from theloom.timeutil import iso_now
 
 
 @dataclass
@@ -41,11 +43,17 @@ class Harness:
     def entity(self, name: str, **overrides: object) -> Entity:
         return self._store.create_entity(spec(name, **overrides))  # type: ignore[attr-defined]
 
+    def update(self, entity_id: str, updates: dict[str, object]) -> Entity:
+        return self._store.update_entity(entity_id, updates)  # type: ignore[attr-defined]
+
     def relations(self, *specs: RelationCreate) -> list[Relation]:
         return self._store.create_relations(list(specs))  # type: ignore[attr-defined]
 
     def relation(self, from_id: str, to_id: str, **overrides: object) -> Relation:
         return self.relations(rel_spec(from_id, to_id, **overrides))[0]
+
+    def invalidate(self, from_id: str, to_id: str, relation_type: str | None = None) -> Relation:
+        return self._store.invalidate_relation(from_id, to_id, relation_type)  # type: ignore[attr-defined]
 
     def vector(self, entity_id: str, values: Sequence[float]) -> None:
         self._store.set_entity_vector(entity_id, list(values))  # type: ignore[attr-defined]
@@ -431,6 +439,83 @@ def test_list_entities_exclude_sourced_from_wins_over_sourced_from(harness: Harn
     )
 
     assert listed == []
+
+
+# =============================================================================
+# read_graph_as_of (the bi-temporal graph-level read)
+# =============================================================================
+
+
+def test_as_of_omits_an_entity_that_did_not_exist_yet(harness: Harness) -> None:
+    harness.entity("Delay")
+    time.sleep(0.01)
+    pivot = iso_now()  # strictly after Delay, strictly before Feedback Loop
+    time.sleep(0.01)
+    harness.entity("Feedback Loop")
+
+    snapshot = harness.reader.read_graph_as_of(pivot)
+
+    assert [e.name for e in snapshot.entities] == ["Delay"]
+
+
+def test_as_of_shows_the_entity_version_current_at_the_bound(harness: Harness) -> None:
+    created = harness.entity("Delay", observations=["as first written"])
+    time.sleep(0.01)
+    pivot = iso_now()  # strictly after the create, strictly before the update
+    time.sleep(0.01)
+    harness.update(created.id, {"name": "Perception Delay", "observations": ["rewritten"]})
+
+    snapshot = harness.reader.read_graph_as_of(pivot)
+
+    assert [e.name for e in snapshot.entities] == ["Delay"]
+    assert snapshot.entities[0].observations == ["as first written"]
+    assert harness.reader.read_entity(created.id) is not None
+    assert harness.reader.read_entity(created.id).name == "Perception Delay"  # type: ignore[union-attr]
+
+
+def test_as_of_keeps_only_the_relations_that_had_been_created(harness: Harness) -> None:
+    a = harness.entity("Delay")
+    b = harness.entity("Feedback Loop")
+    already = harness.relation(a.id, b.id)
+    time.sleep(0.01)
+    pivot = iso_now()
+    time.sleep(0.01)
+    c = harness.entity("Overshoot")
+    harness.relation(a.id, c.id)  # both edge and endpoint postdate the bound
+
+    snapshot = harness.reader.read_graph_as_of(pivot)
+
+    assert [r.id for r in snapshot.relations] == [already.id]
+
+
+def test_as_of_omits_a_relation_retired_before_the_bound(harness: Harness) -> None:
+    a = harness.entity("Delay")
+    b = harness.entity("Feedback Loop")
+    harness.relation(a.id, b.id)
+    harness.invalidate(a.id, b.id)
+    time.sleep(0.01)
+    pivot = iso_now()  # the edge's whole interval is behind the bound
+
+    snapshot = harness.reader.read_graph_as_of(pivot)
+
+    assert {e.name for e in snapshot.entities} == {"Delay", "Feedback Loop"}
+    assert snapshot.relations == []
+
+
+def test_as_of_resurrects_a_relation_retired_after_the_bound(harness: Harness) -> None:
+    """The edge's interval is open at the bound even though it is closed now."""
+    a = harness.entity("Delay")
+    b = harness.entity("Feedback Loop")
+    edge = harness.relation(a.id, b.id)
+    time.sleep(0.01)
+    pivot = iso_now()  # inside [created_at, tx_to)
+    time.sleep(0.01)
+    harness.invalidate(a.id, b.id)
+
+    snapshot = harness.reader.read_graph_as_of(pivot)
+
+    assert [r.id for r in snapshot.relations] == [edge.id]
+    assert harness.reader.list_relations() == []  # and it is gone from today
 
 
 # =============================================================================

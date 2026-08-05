@@ -27,12 +27,24 @@ adapter in ``theloom/store/memory.py``.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, NamedTuple, Protocol, runtime_checkable
 
 from theloom.model import Entity, EntityFilter, Relation, RelationFilter
 from theloom.store.base import Direction
 
-__all__ = ["Direction", "GraphReadPort"]
+__all__ = ["Direction", "GraphReadPort", "GraphSnapshot"]
+
+
+class GraphSnapshot(NamedTuple):
+    """One graph as it stood at a system time — the answer to "state as of T".
+
+    Not a domain shape (nothing is stored in this form): it is what a
+    bi-temporal read returns, so the two halves of a point-in-time view travel
+    together and are consistent with each other.
+    """
+
+    entities: list[Entity]
+    relations: list[Relation]
 
 
 @runtime_checkable
@@ -70,6 +82,31 @@ class GraphReadPort(Protocol):
         active alone) → entityType → name → query → version → session — plus
         the two that need edges, ``sourcedFrom`` / ``excludeSourcedFrom``,
         where exclude wins. ``filter.limit`` caps the window after filtering.
+        """
+        ...
+
+    def read_graph_as_of(self, timestamp: str) -> GraphSnapshot:
+        """The whole graph as it stood at an ISO system time.
+
+        Entities are the incarnation current at ``timestamp`` — an entity
+        updated since comes back as it read then, one not yet created is
+        absent, and status is whatever it was then (no active-only default;
+        this is history, not a listing) — in creation order.
+
+        Relations are the edges whose system-time interval was open at
+        ``timestamp``: created at/before it and not yet retired *by* it. An
+        edge retired since is therefore present, and one already retired then
+        is absent — the point of the read, and the reason a caller cannot get
+        this right from ``list_relations`` alone, which only ever sees today's
+        live edges. Both ends must be present in ``entities``, so the snapshot
+        is internally consistent: no edge dangles off an entity that did not
+        exist yet. Live edges come first, then the resurrected ones, each group
+        in creation order.
+
+        Two edges of the erasure: a ``hard`` delete destroys history, so
+        anything erased that way is absent from every snapshot; and a relation
+        *updated* since the bound carries its current payload, because edge
+        updates overwrite in place rather than snapshotting.
         """
         ...
 
