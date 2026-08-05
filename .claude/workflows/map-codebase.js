@@ -21,6 +21,9 @@ const NO_ENRICH = !!A.noEnrich         // structural-only run: skip the Enrich p
 const LOOM = 'run the Loom CLI over Bash as `loom <command> \'<json>\'` — kebab-case commands, camelCase JSON fields plus a `graph` field on every call. Two CLI-enforced invariants: create-relation REQUIRES polarity ("+"/"-" for causal types, null otherwise), strength (weak|moderate|strong|foundational), and evidence (string or null); and embedding is a separate step — run `loom embed-entities \'{"graph": "<GRAPH_NAME>"}\'` after each creation batch. If `loom` is not on PATH, prefix each call with `uv run --directory "$LOOM_DIR"`, where LOOM_DIR is the Loom checkout (default ~/Dropbox/Development/the-loom). There is no MCP server — do not look for the-loom MCP tools'
 // Cheap-path commands worth knowing before falling back to full listings/scans.
 const CONSUMPTION_HINT = 'Prefer the Consumption commands for one-call answers instead of manual multi-step lookups: `loom explore \'{"name": "<symbol>", "graph": "<GRAPH_NAME>"}\'` (definition, callers, callees, imports, containment, inheritance, semantic layer, budgeted), `loom find-callers` / `loom find-callees` (`{"name": "<symbol>", "graph": "<GRAPH_NAME>"}`, ranked and anchored), and `loom blast-radius \'{"name": "<symbol>", "graph": "<GRAPH_NAME>"}\'` (reverse dependency reach, grouped by module). All entity-addressed reads take `name` instead of an id (exactly one of `id`/`name`), and `list-entities` / `read-entity` / `get-neighbors` / `get-relations` / `entity-deep-dive` accept `"compact": true` and `"limit": N` to keep responses small.'
+// Repo-hygiene guard, injected into every sub-agent prompt: nothing but the pipeline's
+// designated deliverables (and loom's own graph writes) may land in the repo tree.
+const SCRATCH_GUARD = 'Never write scratch, intermediate, or bookkeeping files (batch results, retry state, dedupe logs, working notes) into the project tree or the repo root, even transiently — use /tmp for anything temporary. The only files this pipeline commits to the target repo are the designated OUTPUT_DIR deliverables (ARCHITECTURE-MAP.md, codebase-map.html, QUERYING.md, map-manifest.json); everything else is a loom CLI graph write, never a local file.'
 
 // ---- schemas (canonical defs in .claude/references/map-codebase-schemas.md) ----
 const SETUP = { type: 'object', additionalProperties: true,
@@ -49,7 +52,7 @@ const MAP = { type: 'object', additionalProperties: true, required: ['mapPath', 
 
 // ===== Phase 0: Setup =====
 phase('Setup')
-const setup = await agent(`Initialize a map-codebase run. Loom access: ${LOOM}.
+const setup = await agent(`Initialize a map-codebase run. Loom access: ${LOOM}. ${SCRATCH_GUARD}
 1. Resolve TARGET PATH "${PATH}" to an absolute path (pwd-relative if not absolute); derive slug from its dirname; GRAPH_NAME = ${GRAPH ? `"${GRAPH}"` : '"codebase-{slug}"'}; OUTPUT_DIR = ${OUTPUT ? `"${OUTPUT}"` : '"{abs path}/docs/architecture/"'} (mkdir -p it). Record \`git -C <path> rev-parse HEAD\` and whether \`git -C <path> status --porcelain\` is non-empty (dirtyTree).
 2. Fail fast: \`loom graph-stats '{}'\` must succeed — if it errors on connection, throw with the remediation line "docker compose up -d falkordb".
 3. Mode: if OUTPUT_DIR/map-manifest.json exists AND its graphName equals GRAPH_NAME AND that graph exists AND ${FULL} is false → mode "incremental" (on a graphName mismatch, fall back to mode "full"): run loom update-codebase '{"projectPath": "<abs>", "graphName": "<GRAPH_NAME>", "gitRef": "<manifest.commit>"${NO_TESTS ? ', "includeTests": false' : ''}}'. Otherwise mode "full": loom create-graph '{"name": "<GRAPH_NAME>"}' (ignore already-exists), then loom extract-codebase '{"projectPath": "<abs>", "graph": "<GRAPH_NAME>"${NO_TESTS ? ', "includeTests": false' : ''}}'. After extraction, compute skippedFiles = (\`git -C <path> ls-files | wc -l\`) minus stats.totalFiles — the repo files not parsed (unsupported types, config, docs). Do NOT embed here — embedding happens once, later in this run.
@@ -64,7 +67,7 @@ let unenriched = setup.moduleGroups
 if (!NO_ENRICH) {
   phase('Enrich')
   const enrichResults = await pipeline(setup.moduleGroups, (g) =>
-    agent(`Enrich one module group of the codebase graph. Loom access: ${LOOM}. ${CONSUMPTION_HINT}
+    agent(`Enrich one module group of the codebase graph. Loom access: ${LOOM}. ${CONSUMPTION_HINT} ${SCRATCH_GUARD}
 GRAPH_NAME: ${setup.graphName}
 PROJECT_PATH: ${setup.projectPath}
 GROUP: ${JSON.stringify(g)}
@@ -84,7 +87,7 @@ Execute exactly per your agent definition. Emit ONLY your Structured Output Cont
 
 // ===== Phase 1.5: Embed (one pass over everything created — extraction, and enrichment if it ran) =====
 phase('Embed')
-await agent(`Embed every unembedded entity in the codebase graph. Loom access: ${LOOM}.
+await agent(`Embed every unembedded entity in the codebase graph. Loom access: ${LOOM}. ${SCRATCH_GUARD}
 Run \`loom embed-entities '{"graph": "${setup.graphName}"}'\` — this can take several minutes on a first run
 (one-time embedder model download plus one embedding per entity); run it with a long Bash timeout (600000 ms),
 never the default. Report nothing else; return an empty object.`,
@@ -92,7 +95,7 @@ never the default. Report nothing else; return an empty object.`,
 
 // ===== Phase 2: Cartograph =====
 phase('Cartograph')
-const map = await agent(`Write the architecture map deliverables. Loom access: ${LOOM}. ${CONSUMPTION_HINT}
+const map = await agent(`Write the architecture map deliverables. Loom access: ${LOOM}. ${CONSUMPTION_HINT} ${SCRATCH_GUARD}
 GRAPH_NAME: ${setup.graphName}
 PROJECT_PATH: ${setup.projectPath}
 OUTPUT_DIR: ${OUTPUT || `${setup.projectPath}/docs/architecture/`}

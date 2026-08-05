@@ -6,19 +6,12 @@ from __future__ import annotations
 import time
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import LoomError
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 from theloom.viz.bundle import ExportBundleInput, assemble_bundle
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def test_as_of_shows_prior_incarnation(multi: MultiGraph) -> None:

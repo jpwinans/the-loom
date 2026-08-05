@@ -144,6 +144,15 @@ output — a shape like "→ 6 callers, 1 file rollup"):
 Close with: query the graph before grepping the repo — the graph already has the answer
 anchored to a file and line.
 
+**Consumption nudge.** After the recipes, add a "Make agents use this graph" section
+containing a copy-paste Claude Code hook snippet for the mapped repo's
+`.claude/settings.json` — a PreToolUse nudge on `Grep|Glob` that injects a reminder to
+prefer the graph whenever `docs/architecture/map-manifest.json` exists (it must emit
+`hookSpecificOutput.additionalContext` only — never a `permissionDecision`, never a
+block — and end in `|| true` so it can't fail the tool call). Reproduce the snippet
+verbatim from the-loom's own `.claude/settings.json`, which is the canonical copy.
+State that installing it is optional and the repo owner's choice.
+
 ### 5. Write `OUTPUT_DIR/map-manifest.json`
 
 ```json
@@ -172,6 +181,11 @@ This file is the incremental anchor — the next run reads `commit` as its `gitR
 3. **Unenriched groups appear in Coverage by name** — a silent gap reads as "nothing
    interesting here", which is a lie.
 4. **Operate autonomously; never spawn agents or ask the user questions.**
+5. **The only files this agent writes anywhere are the four named in OUTPUT_DIR**
+   (`ARCHITECTURE-MAP.md`, `codebase-map.html`, `QUERYING.md`, `map-manifest.json`).
+   Any scratch or intermediate file the analysis needs (raw command output, working
+   notes) goes under `/tmp`, never PROJECT_PATH, never the repo root, never anywhere
+   else in the repo tree.
 
 ## Structured Output Contract
 

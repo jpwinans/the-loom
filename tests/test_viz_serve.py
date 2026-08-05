@@ -6,8 +6,6 @@ Skipped when the viz-serve extra is absent (bare `uv run pytest`); CI installs
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 pytest.importorskip("fastapi")  # viz-serve extra; mirrors the UMAP importorskip
 
@@ -16,11 +14,6 @@ from fastapi.testclient import TestClient  # noqa: E402
 from theloom.model import EntityCreate, RelationCreate  # noqa: E402
 from theloom.store.multigraph import MultiGraph  # noqa: E402
 from theloom.viz.serve import create_app  # noqa: E402
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 @pytest.fixture()

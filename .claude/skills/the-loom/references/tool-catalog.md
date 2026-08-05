@@ -297,3 +297,14 @@ Structural analogy, concept mapping, and creative substitution.
 | `leverage-point-details` | Leverage point details | `entityId`, `graph?` |
 | `session-changelog` | Track session changes | `graph?` |
 | `check-capabilities` | Check available features | — |
+
+---
+
+## Visualization & Export (4 tools)
+
+| Tool | Description | Key Params |
+|------|-------------|------------|
+| `export-bundle` | Assemble the full TapestryBundle JSON (entities, relations, analytics, temporal, semantic) for a graph scope | `graph?`, `scope?`, `include?`, `title?`, `asOf?`, `maxEntities?` |
+| `visualize` | Write a self-contained interactive HTML visualization of a graph scope | `output?`, `theme?` (`auto`/`dark`/`light`), plus `export-bundle`'s scoping params |
+| `serve` | Serve the interactive visualization live over a read-only REST API | `host?`, `port?`, `graph?`, `check?` |
+| `export-graph` | Write a compact, zero-infrastructure node-link JSON export — no FalkorDB or Loom CLI needed to read it back, unlike the bundle formats above | `output` (required), `graph?`, `includeSuperseded?` (default `false`), `entityTypes?`, `force?` |

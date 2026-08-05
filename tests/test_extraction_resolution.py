@@ -236,6 +236,39 @@ class TestResolveCalls:
         ]
 
 
+class TestIsTestPath:
+    """One answer to "is this the product?", shared by the file collector and
+    the doc linker's vocabulary — a repo whose tests are ``tests/test_*.py``
+    must not read as product source in one pass and as tests in another."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests/test_work_memory.py",
+            "tests/conftest.py",
+            "src/store_test.py",
+            "tapestry/src/lib/schema.test.ts",
+            "tapestry/src/views/smoke.spec.ts",
+            "app/__tests__/render.tsx",
+            "TESTS/Test_Thing.PY",
+        ],
+    )
+    def test_test_files_are_recognised(self, path: str) -> None:
+        assert resolution.is_test_path(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "theloom/store/falkor.py",
+            "theloom/extraction/latest.py",
+            "docs/superpowers/specs/2026-07-11-design.md",
+            "src/contest.py",
+        ],
+    )
+    def test_product_source_is_not(self, path: str) -> None:
+        assert not resolution.is_test_path(path)
+
+
 class TestUniqueNameGuards:
     """The unique-name rule is the low-precision resolver, so it needs guards.
 
@@ -376,7 +409,14 @@ class TestEndToEnd:
         extraction used to spend it on call edges, which made the two
         indistinguishable once both were in one graph."""
         result = treesitter.extract_codebase("tests/fixtures/repo")
-        assert {r["relationType"] for r in result["relations"]} == {"part_of", "requires", "calls"}
+        assert {r["relationType"] for r in result["relations"]} == {
+            "part_of",
+            "requires",
+            "calls",
+            # A doc naming a file or a symbol; still structural, still not a
+            # semantic grounding link.
+            "references",
+        }
 
     def test_every_call_edge_is_anchored_at_its_call_site(self) -> None:
         """One machine-stable format, whichever resolver produced the edge."""

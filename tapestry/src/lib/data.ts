@@ -18,8 +18,17 @@ export interface TapestryBundleRaw {
   };
   entities: Record<string, unknown>[];
   relations: Record<string, unknown>[];
-  analytics?: Record<string, unknown>;
-  temporal?: { events: Record<string, unknown>[] };
+  analytics?: {
+    /** measure -> entityId -> score (`degree`, `betweenness`, `pagerank`, ...). */
+    centrality: Record<string, Record<string, number>>;
+    components: string[][];
+    loops: Record<string, unknown>[];
+    leveragePoints: Record<string, unknown>[];
+    bridges: Record<string, unknown>[];
+  };
+  temporal?: {
+    events: { id: string; at: string; type: string; payload: Record<string, unknown> }[];
+  };
   semantic?: {
     method: string;
     projection: Record<string, number[]>;

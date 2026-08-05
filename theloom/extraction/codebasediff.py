@@ -14,8 +14,10 @@ semantics are *replace on re-extract*:
   ``(fromName, toName, relationType)``: edges the fresh extraction no longer
   states are closed out bi-temporally (``invalidate_relation`` — the edge
   leaves the projection, its final doc is kept), and edges it now states are
-  created. Edges between two untouched files, and the semantic layer's
-  ``related_to`` links into code, are left alone.
+  created. Edges between two untouched files are left alone, and so is
+  anything structural extraction does not emit: the semantic layer's
+  ``related_to`` links into code, and any ``references`` edge that does not
+  come *from a documentation file* (the only shape the doc-link pass states).
 
 Ownership is by the file an entity was extracted from ("File path: " for a
 symbol, the ``file:`` prefix for a file entity). An edge belongs to a changed
@@ -44,7 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from theloom.errors import OperationError
-from theloom.extraction import treesitter
+from theloom.extraction import doclinks, treesitter
 from theloom.model import Entity, EntityCreate, RelationCreate
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
@@ -64,10 +66,21 @@ _DELETED = ("source_retracted", "file deleted")
 _CHANGED = ("outdated_knowledge", "code changed")
 
 # The edge types structural extraction emits — and the only ones this diff
-# touches. A semantic layer built on top of the same graph links into code with
-# ``related_to``; those edges are nobody's re-extraction to retract, so an
-# update leaves them exactly where they are.
-_STRUCTURAL_RELATION_TYPES = frozenset({"part_of", "requires", "calls", "instance_of"})
+# touches (``references`` included: a doc's links are re-derived from its text,
+# so editing the doc must retract the mentions it dropped). A semantic layer
+# built on top of the same graph links into code with ``related_to``; those
+# edges are nobody's re-extraction to retract, so an update leaves them exactly
+# where they are.
+_STRUCTURAL_RELATION_TYPES = frozenset(
+    {"part_of", "requires", "calls", "instance_of", "references"}
+)
+
+# ``references`` is the one structural type the rest of the graph also uses —
+# a claim referencing a file, a user's own edge. Structural extraction emits it
+# from a *documentation file entity* and nowhere else, so only edges of that
+# exact shape are this diff's to re-derive; every other ``references`` edge is
+# left where it is, like ``related_to``.
+_DOC_SUFFIXES = tuple(f".{extension}" for extension in sorted(doclinks.DOC_EXTENSIONS))
 
 
 def _is_extractable(path: str) -> bool:
@@ -209,6 +222,25 @@ def _plan_update(changed: list[Doc], extraction: Doc, store: FalkorGraphStore) -
     return plan
 
 
+def _is_structural(relation_type: str, from_name: str, from_path: str | None) -> bool:
+    """True when this edge is one structural extraction re-derives.
+
+    Type alone decides it for every type but ``references``, which the graph
+    shares with the semantic layer and with hand-authored edges. Structural
+    extraction only ever states ``references`` from a documentation file
+    entity, so that shape — and only that shape — is the diff's to retract.
+    """
+    if relation_type not in _STRUCTURAL_RELATION_TYPES:
+        return False
+    if relation_type != "references":
+        return True
+    return (
+        from_name.startswith(_FILE_PREFIX)
+        and from_path is not None
+        and from_path.endswith(_DOC_SUFFIXES)
+    )
+
+
 def _plan_relations(
     plan: _Plan,
     changed_set: set[str],
@@ -227,11 +259,11 @@ def _plan_relations(
 
     live: dict[RelationKey, Doc] = {}
     for doc in store.list_relation_docs():
-        if doc["relationType"] not in _STRUCTURAL_RELATION_TYPES:
-            continue
         from_name = id_to_name.get(doc["from"])
         to_name = id_to_name.get(doc["to"])
         if from_name is None or to_name is None:
+            continue
+        if not _is_structural(doc["relationType"], from_name, owner.get(from_name)):
             continue
         if not touches(owner.get(from_name), owner.get(to_name)):
             continue
@@ -239,9 +271,10 @@ def _plan_relations(
 
     fresh: dict[RelationKey, Doc] = {}
     for relation in extraction["relations"]:
-        if relation["relationType"] not in _STRUCTURAL_RELATION_TYPES:
+        from_name = relation["from"]
+        if not _is_structural(relation["relationType"], from_name, fresh_file.get(from_name)):
             continue
-        if not touches(fresh_file.get(relation["from"]), fresh_file.get(relation["to"])):
+        if not touches(fresh_file.get(from_name), fresh_file.get(relation["to"])):
             continue
         fresh.setdefault((relation["from"], relation["to"], relation["relationType"]), relation)
 

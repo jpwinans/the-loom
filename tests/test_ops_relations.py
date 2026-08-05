@@ -10,8 +10,6 @@ get-neighbors (with follow_bridges).
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import LoomError, NotFoundError, OperationError
 from theloom.model import RelationCreate
@@ -51,11 +49,6 @@ from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
 MISSING = "00000000-0000-4000-8000-000000000000"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def ent(multi: MultiGraph, name: str, graph: str | None = None) -> str:

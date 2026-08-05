@@ -12,6 +12,7 @@ from falkordb import FalkorDB
 from redis import Redis
 
 from theloom.config import LoomConfig, load_config
+from theloom.store.multigraph import MultiGraph
 
 
 @pytest.fixture(scope="session")
@@ -41,6 +42,11 @@ def namespace(db: FalkorDB, redis_client: Redis) -> Iterator[str]:
     leftovers = [key for key in redis_client.scan_iter(f"{prefix}*")]
     if leftovers:
         redis_client.delete(*leftovers)
+
+
+@pytest.fixture()
+def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
+    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 @pytest.fixture()

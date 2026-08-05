@@ -19,7 +19,6 @@ from typing import Any
 
 import pytest
 from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import NotFoundError, OperationError
 from theloom.extraction import treesitter
@@ -33,11 +32,6 @@ Doc = dict[str, Any]
 
 FIXTURE_REPO = Path(__file__).parent / "fixtures" / "repo"
 GRAPH = "default"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph=GRAPH, key_prefix=namespace)
 
 
 @pytest.fixture()
@@ -309,6 +303,60 @@ def test_semantic_layer_edges_survive_a_structural_update(
     assert result["stats"]["relationsRemoved"] == 2
 
 
+def test_a_hand_authored_reference_into_changed_code_survives(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """`references` is diffed only where the doc-link pass emits it.
+
+    Structural extraction states `references` from a *doc file* and nowhere
+    else, so an agent's or a user's `references` edge into code — here a claim
+    about the service — is nobody's re-extraction to retract, exactly like
+    `related_to`.
+    """
+    claim = store.create_entity(
+        EntityCreate.model_validate(
+            {
+                "name": "Transfers must check the policy ceiling",
+                "entityType": "claim",
+                "observations": ["map_layer: semantic"],
+            }
+        )
+    )
+    service_file = entity_by_name(store, "file:src/service.py")
+    store.create_relation(
+        RelationCreate.model_validate(
+            {"from": claim.id, "to": service_file.id, "relationType": "references"}
+        )
+    )
+
+    (seeded / "src" / "service.py").write_text(REWRITTEN_SERVICE, encoding="utf-8")
+    commit(seeded, "rewrite the service on top of policy")
+
+    result = update(seeded, multi)
+
+    live = edges(store)
+    assert ("Transfers must check the policy ceiling", "file:src/service.py", "references") in live
+    assert result["stats"]["relationsRemoved"] == 2
+
+
+def test_editing_a_doc_retracts_the_mentions_it_dropped(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    doc = seeded / "docs" / "architecture.md"
+    doc.write_text(
+        "# Architecture\n\nThe domain models live in src/models.py.\n",
+        encoding="utf-8",
+    )
+    commit(seeded, "trim the architecture doc")
+
+    update(seeded, multi)
+
+    live = edges(store)
+    assert ("file:docs/architecture.md", "file:src/models.py", "references") in live
+    assert ("file:docs/architecture.md", "file:src/service.py", "references") not in live
+    assert ("file:docs/architecture.md", "open_account (models)", "references") not in live
+
+
 def test_deleted_file_supersedes_its_entities_and_edges(
     seeded: Path, multi: MultiGraph, store: FalkorGraphStore
 ) -> None:
@@ -387,7 +435,13 @@ def test_removed_symbol_in_a_changed_file_is_superseded(
     seeded: Path, multi: MultiGraph, store: FalkorGraphStore
 ) -> None:
     policy = seeded / "src" / "policy.py"
-    policy.write_text('"""Policy checks."""\n\nMAX_TRANSFER = 10000.0\n', encoding="utf-8")
+    policy.write_text(
+        '"""Policy checks."""\n\nMAX_TRANSFER = 10000.0\n\n\n'
+        "def under_review(amount: float) -> str:\n"
+        '    """Return the review state for an amount."""\n'
+        '    return "under_review" if amount > MAX_TRANSFER else "cleared"\n',
+        encoding="utf-8",
+    )
     commit(seeded, "drop the allows helper")
 
     result = update(seeded, multi)
@@ -516,7 +570,7 @@ def test_guard_refuses_superseding_more_than_half_the_graph(
     assert names(store) == before
 
     forced = update(seeded, multi, force=True)
-    assert forced["stats"]["entitiesRetracted"] == 13
+    assert forced["stats"]["entitiesRetracted"] == 14
     assert "file:lib/index.ts" in names(store)
 
 

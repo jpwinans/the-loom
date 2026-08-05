@@ -2,18 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
-from falkordb import FalkorDB
-from redis import Redis
-
 from theloom.model import EntityCreate
 from theloom.store.multigraph import MultiGraph
 from theloom.viz.temporal import assemble_temporal
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def test_event_log_accessor(multi: MultiGraph, namespace: str) -> None:

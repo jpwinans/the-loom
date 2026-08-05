@@ -49,17 +49,20 @@ _PY_SUFFIXES = (".py", "/__init__.py")
 
 EXTERNAL_PREFIX = "pkg:"
 
-# Kinds a call or a base-class reference can legitimately land on.
-_CALLABLE_KINDS = frozenset({"procedure", "concept"})
+# Kinds a call or a base-class reference can legitimately land on (shared with
+# the doc-linking pass, which needs the same guard: a name that resolves to a
+# variable is a config key or a field far more often than it is a reference).
+CALLABLE_KINDS = frozenset({"procedure", "concept"})
 
 
-# Names that belong to a language runtime, not to any project symbol. A bare
+# Names that belong to a language runtime, not to any project symbol (shared
+# with the doc-linking pass, which needs the same guard). A bare
 # call to one of these is never a dependency on a file in this repository —
 # and because such a name may coincide with a single project symbol, the
 # unique-name rule would otherwise weld hundreds of callers to it. (Observed:
 # 288 Python ``len()`` calls resolving to a lone TypeScript ``len`` constant,
 # making it the most-connected node in the graph.)
-_BUILTINS = frozenset(
+BUILTIN_NAMES = frozenset(
     {
         # Python
         "len",
@@ -137,6 +140,34 @@ def call_evidence(caller: str, callee: str, path: str, line: int) -> str:
     by ``confidence.basis``, not by prose, so the format stays fixed.
     """
     return f"{caller} calls {callee} at {path}:{line + 1}"
+
+
+# Where a repository keeps its tests, across the conventions the supported
+# languages use: a marked file name (``x.test.ts``, ``test_x.py``, ``x_test.go``)
+# or a directory set aside for them.
+#
+# ``spec``/``specs`` is deliberately not a test *directory*: a repository that
+# keeps written specifications there would lose them from the map, and the
+# ``.spec.`` file marker already catches the RSpec/Jest convention.
+_TEST_FILE_MARKERS = (".test.", ".spec.", "__tests__/", "__test__/")
+_TEST_DIRECTORIES = frozenset({"test", "tests", "__tests__", "__test__"})
+
+
+def is_test_path(path: str) -> bool:
+    """True when the path is a test file rather than product source.
+
+    Shared, because "is this the product?" is asked in more than one place and
+    a repository whose Python tests all live in ``tests/test_*.py`` must not
+    read as product source in one pass and as tests in another.
+    """
+    lowered = path.replace(os.sep, "/").lower()
+    if any(marker in lowered for marker in _TEST_FILE_MARKERS):
+        return True
+    segments = lowered.split("/")
+    if any(segment in _TEST_DIRECTORIES for segment in segments[:-1]):
+        return True
+    stem = segments[-1].rsplit(".", 1)[0]
+    return stem == "conftest" or stem.startswith("test_") or stem.endswith("_test")
 
 
 def file_entity_name(path: str) -> str:
@@ -400,7 +431,7 @@ def _resolve_symbol_edges(
             proven = target is not None
 
             if target is None:
-                if callee in _BUILTINS:
+                if callee in BUILTIN_NAMES:
                     # A language builtin, not a project symbol.
                     ambiguous += 1
                     continue
@@ -411,7 +442,7 @@ def _resolve_symbol_edges(
                 candidates = {
                     name
                     for name, lang, kind in by_name.get(callee, set())
-                    if lang == language and kind in _CALLABLE_KINDS
+                    if lang == language and kind in CALLABLE_KINDS
                 }
                 # Same-file candidates were already resolved by the per-file
                 # pass; anything left here is genuinely cross-file.

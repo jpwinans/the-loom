@@ -4,15 +4,21 @@ Stream key: ``{prefix}:{graph}:events``. Every store mutation appends an event
 (entity_created/updated/status_changed/deleted, relation_created/updated/
 deleted) whose payload carries the full document(s) involved, so history is
 replayable and "session changelog"-class queries read the log rather than
-trusting mutable pointers.
+trusting mutable pointers. Document chunks are global rather than graph-scoped,
+so they log to the reserved name ``_chunks`` (chunk_created / chunk_deleted /
+chunks_deleted — see ``theloom.documents.chunkstore``).
 
 Atomicity: FalkorDB *is* the Redis server, so the graph mutation and the
 stream append are two commands against one connection and go out together in a
-single MULTI/EXEC transaction (see ``FalkorGraphStore._commit``). ``queue``
-buffers an append onto that transaction; ``discard`` is its compensation, used
-when the graph half of the transaction reports a server-side error (Redis
-executes every queued command regardless, so the event has to be rolled back
-out by id).
+single MULTI/EXEC transaction (see ``theloom.store.commit``). ``queue``
+buffers an append onto that transaction, and the two commands compensate each
+other in whichever direction the failure runs — Redis executes every queued
+command regardless of its neighbours, so exactly one half can fail at EXEC:
+
+- the graph half failed: the event is not earned, so ``discard`` deletes it by
+  id;
+- the stream half failed: the mutation is applied and unrollbackable, so the
+  event is *true* and ``repair`` appends it again outside the transaction.
 """
 
 from __future__ import annotations
@@ -33,6 +39,19 @@ class Event:
     id: str
     type: str
     payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RepairResult:
+    """The outcome of ``EventLog.repair``: what landed, and what stopped it.
+
+    ``appended`` holds the ids of the leading events that were re-appended, in
+    order; ``error`` is the failure that halted the run (``None`` when every
+    event landed). The events at and after ``len(appended)`` are untouched.
+    """
+
+    appended: list[str]
+    error: Exception | None
 
 
 class EventLog:
@@ -65,6 +84,33 @@ class EventLog:
         """
         if entry_ids:
             self._redis.xdel(self.key, *entry_ids)
+
+    def repair(self, events: Sequence[tuple[str, dict[str, Any]]]) -> RepairResult:
+        """Re-append events whose queued XADD errored at ``EXEC``.
+
+        The mirror image of ``discard``. A runtime rejection of the append (the
+        stream key holding a non-stream value, a server-side refusal of the
+        write) does not touch the graph mutation queued beside it, and Redis
+        has no rollback to undo that mutation with — so the projection has
+        moved and the event describing it is simply true. Appending it again,
+        outside the transaction, is the only compensation the semantics allow.
+
+        The retry is a plain ``XADD``, so a cause that outlives the transaction
+        (a permanently mistyped key) raises again. A failure is *returned*
+        rather than raised, and the run stops at it: the ids already appended
+        stay visible to the caller (it owes them the same compensation as any
+        other event it wrote), and the events behind the failure are left alone
+        so nothing overtakes the one that could not land. The caller turns the
+        remainder into a typed error naming exactly that gap rather than
+        leaving the log silently short — or overstating it.
+        """
+        appended: list[str] = []
+        for event_type, payload in events:
+            try:
+                appended.append(self.append(event_type, payload))
+            except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+                return RepairResult(appended=appended, error=exc)
+        return RepairResult(appended=appended, error=None)
 
     def append_many(self, events: list[tuple[str, dict[str, Any]]]) -> None:
         """Append a batch of events in one pipelined round trip (batch mutations)."""

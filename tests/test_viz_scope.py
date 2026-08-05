@@ -3,18 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import LoomError
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
 from theloom.viz.scope import ScopeInput, resolve_scope
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 @pytest.fixture()

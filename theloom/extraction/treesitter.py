@@ -27,8 +27,12 @@ innermost enclosing symbol, or to the file entity at module level; ADR/RFC
 identifiers mentioned in a comment are recorded separately as ``cites:``.
 
 Non-code text files (stylesheets, config, docs — see ``TEXT_EXTENSIONS``) get a
-file entity too, with no edges, so an invariant anchored in e.g. a design-token
-stylesheet has something to point at.
+file entity too, so an invariant anchored in e.g. a design-token stylesheet has
+something to point at. Documentation additionally gets edges: a Markdown file
+is scanned for the paths and symbols it names, and each unambiguous mention
+becomes a ``references`` edge into the code (see
+``theloom.extraction.doclinks``), so docs are no longer an island the graph
+cannot reach.
 
 What counts as part of the codebase is decided by **git**, not by the
 filesystem. Inside a work tree, an ignored path never becomes an entity (it is
@@ -48,7 +52,7 @@ import re
 import subprocess
 from typing import Any
 
-from theloom.extraction import resolution
+from theloom.extraction import doclinks, resolution
 
 Doc = dict[str, Any]
 
@@ -73,6 +77,14 @@ MAX_TEXT_FILE_BYTES = 1024 * 1024
 
 DOCSTRING_MAX_CHARS = 300
 RATIONALE_MAX_CHARS = 200
+
+# Node types that hold a string literal in the supported grammars (Python and
+# TypeScript/JavaScript both name it ``string``; ``string_literal`` is there so
+# a grammar that names it that way needs no second pass).
+_STRING_NODE_TYPES = frozenset({"string", "string_literal"})
+
+# Below this a value is a word, not a term worth reserving.
+MIN_VOCABULARY_CHARS = 3
 
 SKIP_DIRS = {
     "node_modules",
@@ -177,6 +189,10 @@ def _named(node: Any) -> list[Any]:
 # =============================================================================
 
 _STRING_PREFIX_RE = re.compile(r"^[rubfRUBF]{0,3}('''|\"\"\"|'|\")")
+# The leading identifier of a string literal, when the literal *is* that
+# identifier or is keyed by it (``"usage_status: "``, ``"basis=..."``). Those
+# are the terms a project writes as values rather than as code.
+_VOCABULARY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:[:=]|$)")
 _COMMENT_MARKER_RE = re.compile(r"^\s*(?:#+|//+|/\*+|\*+)\s?")
 _COMMENT_TAIL_RE = re.compile(r"\s*\*+/\s*$")
 _RATIONALE_RE = re.compile(r"^(NOTE|HACK|WHY|IMPORTANT|TODO|FIXME)\s*:\s*(.*)$")
@@ -303,6 +319,25 @@ def _leading_module_comment(root: Any, source: bytes) -> str | None:
     if len(children) > 1 and children[1].start_point[0] <= first.end_point[0] + 1:
         return None
     return _clean_block_comment(raw)
+
+
+def _string_literal_vocabulary(node: Any, source: bytes, found: set[str]) -> None:
+    """The identifier-shaped terms this file writes as string *values*.
+
+    An enum value, a status token, a keyed prefix constant — the project's own
+    domain language. The doc linker needs it to tell a term from a symbol:
+    ``single_source`` is a ``ConfidenceBasis`` value long before it is the
+    semiring function of the same name, and a doc quoting the term is not
+    referencing the function.
+    """
+    if node.type in _STRING_NODE_TYPES:
+        body = _strip_string_literal(_text(node, source))
+        match = _VOCABULARY_RE.match(body) if body else None
+        if match is not None and len(match.group(1)) >= MIN_VOCABULARY_CHARS:
+            found.add(match.group(1))
+        return
+    for child in node.children:
+        _string_literal_vocabulary(child, source, found)
 
 
 def _comment_notes(node: Any, source: bytes, notes: list[Doc]) -> None:
@@ -972,12 +1007,16 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
 
     _attach_notes(tree.root_node, source, file_entity, symbol_spans)
 
+    vocabulary: set[str] = set()
+    _string_literal_vocabulary(tree.root_node, source, vocabulary)
+
     return {
         "entities": entities,
         "relations": relations,
         "language": lang,
         "imports": extraction["imports"],
         "symbols": symbol_name_map,
+        "stringLiterals": sorted(vocabulary),
         "symbolKinds": {
             key: kind_to_entity_type(sym["kind"])
             for sym in extraction["symbols"]
@@ -1089,8 +1128,7 @@ def _text_file_entity(path: str, kind: str) -> Doc:
 
 
 def _is_test_file(rel: str) -> bool:
-    lowered = rel.lower()
-    return any(marker in lowered for marker in (".test.", ".spec.", "__tests__/", "__test__/"))
+    return resolution.is_test_path(rel)
 
 
 def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> Doc:
@@ -1104,6 +1142,8 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
     all_relations: list[Doc] = []
     entity_names: set[str] = set()
     per_file: list[Doc] = []
+    doc_files: list[Doc] = []
+    file_paths: set[str] = set()
     for file in files:
         lang = detect_language(file["relativePath"])
         path = resolution.normalise_path(file["relativePath"])
@@ -1115,7 +1155,11 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
             if entity["name"] not in entity_names:
                 entity_names.add(entity["name"])
                 all_entities.append(entity)
+                file_paths.add(path)
+                if kind in doclinks.DOC_EXTENSIONS:
+                    doc_files.append({"path": path, "content": file["content"]})
             continue
+        file_paths.add(path)
         result = extract_from_source(file["content"], path, lang)
         for entity in result["entities"]:
             if entity["name"] not in entity_names:
@@ -1129,6 +1173,7 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
                 "symbolKinds": result["symbolKinds"],
                 "imports": result["imports"],
                 "symbols": result["symbols"],
+                "stringLiterals": result["stringLiterals"],
                 "unresolvedCalls": result["unresolvedCalls"],
                 "unresolvedInheritances": result["unresolvedInheritances"],
             }
@@ -1138,6 +1183,7 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
     imports = resolution.resolve_imports(per_file, known_files, external_entities=external_entities)
     calls = resolution.resolve_calls(per_file, known_files)
     inheritances = resolution.resolve_inheritances(per_file, known_files)
+    docs = doclinks.resolve_doc_links(doc_files, frozenset(file_paths), per_file)
     for entity in imports["entities"]:
         if entity["name"] not in entity_names:
             entity_names.add(entity["name"])
@@ -1145,11 +1191,17 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
     all_relations.extend(imports["relations"])
     all_relations.extend(calls["relations"])
     all_relations.extend(inheritances["relations"])
+    all_relations.extend(docs["relations"])
 
     return {
         "entities": all_entities,
         "relations": all_relations,
-        "resolution": {**imports["stats"], **calls["stats"], **inheritances["stats"]},
+        "resolution": {
+            **imports["stats"],
+            **calls["stats"],
+            **inheritances["stats"],
+            **docs["stats"],
+        },
     }
 
 

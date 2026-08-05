@@ -54,6 +54,7 @@ from theloom.operations import epistemic as epistemic_ops
 from theloom.operations import extraction as extraction_ops
 from theloom.operations import inference as inference_ops
 from theloom.operations import merge as merge_ops
+from theloom.operations import portability as portability_ops
 from theloom.operations import reification as reification_ops
 from theloom.operations import relations as relation_ops
 from theloom.operations import semantic as semantic_ops
@@ -1438,10 +1439,11 @@ def _composite_commands() -> list[CommandDescriptor]:
         ),
         (
             "enrichment-crawl",
-            "Crawl frontier nodes and propose enrichment relations (composite). "
-            "UNAVAILABLE with an LLM configured: the CISC N-sample crawl is not "
-            "implemented and returns OPERATION_ERROR; only the no-LLM template-mode "
-            "envelope works.",
+            "Crawl under-described frontier nodes and propose enrichment relations "
+            "(composite). Needs no LLM: candidates come from structural closure plus "
+            "semantic neighbours, so CISC N-sample voting is not applied and numSamples "
+            "spends nothing (reported as a boundary). WRITES when dryRun is false "
+            "(default true): each surviving candidate is created via create-relation.",
             enrichment_crawl_composite.EnrichmentCrawlInput,
             enrichment_crawl_composite.enrichment_crawl,
             True,
@@ -1455,9 +1457,10 @@ def _composite_commands() -> list[CommandDescriptor]:
         ),
         (
             "creativity-loop",
-            "Run the autonomous creativity loop: explore, retrieve, transfer, verify, learn "
-            "(composite). UNAVAILABLE: the multi-cycle orchestration is not implemented, "
-            "so every call returns OPERATION_ERROR.",
+            "Run the autonomous creativity loop: explore, retrieve, transfer, score, "
+            "accept/reject, learn (composite). Read-only and deterministic — no LLM; it "
+            "stops early on consecutive empty cycles or a plateau. The analogy trigger "
+            "queue is reported per cycle, never drained.",
             creativity_loop_composite.CreativityLoopInput,
             creativity_loop_composite.creativity_loop,
             True,
@@ -1649,6 +1652,13 @@ COMMANDS: list[CommandDescriptor] = [
         input_model=ExportBundleInput,
         handler=assemble_bundle,
         allow_empty=True,
+    ),
+    CommandDescriptor(
+        name="export-graph",
+        category="Visualization",
+        summary="Write a compact, zero-infrastructure node-link JSON export of a graph.",
+        input_model=portability_ops.ExportGraphInput,
+        handler=portability_ops.export_graph,
     ),
     CommandDescriptor(
         name="visualize",

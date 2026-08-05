@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**163 registry commands** across 23 categories, plus the special `init` command.
+**164 registry commands** across 23 categories, plus the special `init` command.
 
 ## Adaptive Routing
 
@@ -15,8 +15,8 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 ## Composites
 
 - **`analogy-transfer`** — Generate novel entities via CWSG analogy transfer from cross-domain mappings (composite).
-- **`creativity-loop`** — Run the autonomous creativity loop: explore, retrieve, transfer, verify, learn (composite). UNAVAILABLE: the multi-cycle orchestration is not implemented, so every call returns OPERATION_ERROR.
-- **`enrichment-crawl`** — Crawl frontier nodes and propose enrichment relations (composite). UNAVAILABLE with an LLM configured: the CISC N-sample crawl is not implemented and returns OPERATION_ERROR; only the no-LLM template-mode envelope works.
+- **`creativity-loop`** — Run the autonomous creativity loop: explore, retrieve, transfer, score, accept/reject, learn (composite). Read-only and deterministic — no LLM; it stops early on consecutive empty cycles or a plateau. The analogy trigger queue is reported per cycle, never drained.
+- **`enrichment-crawl`** — Crawl under-described frontier nodes and propose enrichment relations (composite). Needs no LLM: candidates come from structural closure plus semantic neighbours, so CISC N-sample voting is not applied and numSamples spends nothing (reported as a boundary). WRITES when dryRun is false (default true): each surviving candidate is created via create-relation.
 - **`entity-deep-dive`** — Comprehensive analysis of a single entity (composite).
 - **`explore-frontier`** — Rank frontier regions by foraging signals with MVT advice and anti-pattern guards (composite).
 - **`far-analogy-retrieval`** — Run the full far-analogy retrieval pipeline: fingerprint, match, slip, transfer, score (composite).
@@ -229,6 +229,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 ## Visualization
 
 - **`export-bundle`** — Assemble the TapestryBundle JSON for a graph scope.
+- **`export-graph`** — Write a compact, zero-infrastructure node-link JSON export of a graph.
 - **`serve`** — Serve the interactive visualization live over a read-only REST API.
 - **`visualize`** — Write a self-contained interactive HTML visualization of a graph scope.
 

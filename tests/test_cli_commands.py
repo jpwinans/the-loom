@@ -9,17 +9,10 @@ pairs sorted by from_graph then to_graph. Error codes per the CLI contract.
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.cli.registry import COMMANDS, run_handler
 from theloom.errors import LoomError
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def bridge(from_id: str, to_id: str, from_graph: str, to_graph: str) -> dict[str, object]:

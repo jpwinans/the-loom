@@ -192,6 +192,7 @@ graph-stats (graph: "name")     → inspect specific graph
 | Record how a piece of work turned out | `record-outcome` |
 | Distil recorded outcomes into standing lessons | `reflect` |
 | Pre-download the embedding model | `warm-embedder` |
+| Export a graph as a portable JSON file (no FalkorDB/CLI to read it back) | `export-graph` |
 
 ### Composite vs Manual
 

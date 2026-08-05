@@ -12,8 +12,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.composites.entity_deep_dive import EntityDeepDiveInput, entity_deep_dive
 from theloom.errors import NotFoundError, ValidationError
@@ -37,11 +35,6 @@ from theloom.operations.relations import (
 )
 from theloom.operations.synthesis import ExplainPathInput
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def ent(multi: MultiGraph, name: str, observations: list[str] | None = None) -> str:

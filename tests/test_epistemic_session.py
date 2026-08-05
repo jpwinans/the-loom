@@ -14,10 +14,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-from falkordb import FalkorDB
-from redis import Redis
-
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.operations.epistemic import (
     AnsweredQuestionsInput,
@@ -50,11 +46,6 @@ from theloom.store.multigraph import MultiGraph
 S1 = "session-1"
 S2 = "session-2"
 LEGACY_SID = "sid"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def make_entity(multi: MultiGraph, name: str, **overrides: object) -> dict[str, Any]:

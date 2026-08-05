@@ -8,19 +8,12 @@ the point (see the compact-output package).
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import ValidationError
 from theloom.operations.analysis import AnalyzeCentralityInput, analyze_centrality
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.operations.relations import CreateRelationInput, create_relation
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def ent(multi: MultiGraph, name: str) -> str:
