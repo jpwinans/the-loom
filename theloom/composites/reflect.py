@@ -25,7 +25,9 @@ rules over the citation edges:
 
 Statuses are applied through the normal ``update-entity`` path, so every
 lesson is versioned and event-sourced; a new ``usage_status`` observation
-replaces the previous one rather than accumulating a contradictory pile.
+replaces the previous one rather than accumulating a contradictory pile, and a
+reflection that reaches no verdict removes the previous one instead of leaving
+a lesson the current evidence no longer supports.
 """
 
 from __future__ import annotations
@@ -162,14 +164,20 @@ def _usage_records(store: FalkorGraphStore) -> list[dict[str, Any]]:
 
 
 def _citations_by_source(store: FalkorGraphStore) -> dict[str, list[str]]:
-    """Cited entity ids per usage-record id, over the citation edge types."""
+    """Distinct cited entity ids per usage-record id, over the citation edge
+    types.
+
+    Deduplicated per record because corroboration counts *experiences*: two
+    edges from one record to one entity are one record's opinion, however they
+    got there, and must weigh exactly as much as one.
+    """
     cited: dict[str, list[str]] = defaultdict(list)
     for relation_type in _CITATION_TYPES:
         for relation in store.list_relation_docs(
             RelationFilter.model_validate({"relationType": relation_type.value})
         ):
             cited[str(relation["from"])].append(str(relation["to"]))
-    return cited
+    return {source: list(dict.fromkeys(targets)) for source, targets in cited.items()}
 
 
 def _weight(recorded: datetime, as_of: datetime, half_life_days: float) -> float:
@@ -259,10 +267,14 @@ def _resolve(project_path: str, relative: str) -> Path:
 def _next_observations(
     current: list[str], status_line: str | None, fingerprint_line: str | None, stale: bool
 ) -> list[str] | None:
-    """The entity's observations after this reflection, or None if unchanged."""
-    updated = list(current)
+    """The entity's observations after this reflection, or None if unchanged.
+
+    The previous status is dropped whatever this reflection concluded: when it
+    reaches no verdict the old line is retracted rather than left standing, so
+    the stored lesson never outlives the evidence for it.
+    """
+    updated = [text for text in current if not text.startswith(USAGE_STATUS_PREFIX)]
     if status_line is not None:
-        updated = [text for text in updated if not text.startswith(USAGE_STATUS_PREFIX)]
         updated.append(status_line)
     if fingerprint_line is not None and not any(
         text.startswith(FINGERPRINT_PREFIX) for text in updated

@@ -13,8 +13,15 @@ Two deliberate non-behaviours:
 - **Embedding is not automatic.** Like every other write command, this one
   leaves the vector to an explicit ``embed-entities`` call.
 - **Nothing is written on a bad citation.** Every cited id is confirmed to
-  exist before the evidence entity is created, so a typo can never leave a
-  dangling usage record behind.
+  exist and be attachable before the evidence entity is created, and the
+  citations then go in as one all-or-nothing batch whose failure erases the
+  evidence entity again — so a typo, or an entity retracted underneath the
+  check, can never leave a dangling usage record behind.
+
+One outcome is one experience, so a repeated id in ``entityIds`` is collapsed
+to a single citation: corroboration in ``reflect`` counts distinct records, and
+a caller must not be able to manufacture agreement by naming the same entity
+twice.
 
 The reading half is the ``reflect`` composite, which aggregates these records
 with time decay; the observation vocabulary they share lives here.
@@ -26,11 +33,10 @@ from typing import Any
 
 from pydantic import Field
 
-from theloom.errors import NotFoundError
-from theloom.model import RelationType, UsageOutcome
+from theloom.errors import NotFoundError, OperationError
+from theloom.model import EntityStatus, RelationCreate, RelationType, UsageOutcome
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.operations.entity import CreateEntityInput, create_entity
-from theloom.operations.relations import CreateRelationInput, create_relation
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 
@@ -92,12 +98,28 @@ def _observations(params: RecordOutcomeInput, recorded_at: str) -> list[str]:
 def record_outcome(params: RecordOutcomeInput, multi: MultiGraph) -> dict[str, Any]:
     """Record how one piece of work turned out, as evidence plus citations."""
     store = multi.get_store(params.graph)
-    known = store.read_entity_docs(params.entity_ids)
-    missing = [entity_id for entity_id in params.entity_ids if entity_id not in known]
+    # One outcome is one experience: a repeated id cites once, so a single call
+    # can never corroborate itself in reflect.
+    entity_ids = list(dict.fromkeys(params.entity_ids))
+    known = store.read_entity_docs(entity_ids)
+    missing = [entity_id for entity_id in entity_ids if entity_id not in known]
     if missing:
         raise NotFoundError(
             "Cannot record an outcome citing entities that do not exist: "
             f"{', '.join(missing)}. Use list-entities to verify the ids first."
+        )
+    # Retraction closes out every edge an entity had; a new citation would
+    # recreate exactly the state the retracted-isolated check reports as a
+    # violation. Refuse here, before anything is written.
+    retracted = [
+        entity_id
+        for entity_id in entity_ids
+        if known[entity_id].get("status") == EntityStatus.RETRACTED.value
+    ]
+    if retracted:
+        raise OperationError(
+            "Cannot record an outcome citing retracted entities: "
+            f"{', '.join(retracted)}. A retracted entity cannot be a relation endpoint."
         )
 
     recorded_at = iso_now()
@@ -124,21 +146,30 @@ def record_outcome(params: RecordOutcomeInput, multi: MultiGraph) -> dict[str, A
 
     relation_type = OUTCOME_RELATION[params.outcome]
     citation = f"Recorded outcome '{params.outcome.value}' for question: {params.question}"
-    relations = [
-        create_relation(
-            CreateRelationInput.model_validate(
-                {
-                    "from": evidence["id"],
-                    "to": entity_id,
-                    "relationType": relation_type.value,
-                    "polarity": None,
-                    "strength": "moderate",
-                    "evidence": citation,
-                    "graph": params.graph,
-                }
-            ),
-            multi,
+    specs = [
+        RelationCreate.model_validate(
+            {
+                "from": evidence["id"],
+                "to": entity_id,
+                "relationType": relation_type.value,
+                "polarity": None,
+                "strength": "moderate",
+                "evidence": citation,
+            }
         )
-        for entity_id in params.entity_ids
+        for entity_id in entity_ids
     ]
-    return {"evidence": evidence, "relations": relations}
+    try:
+        # All the citations or none of them — and a usage record without its
+        # citations is the dangling record this command promises never to
+        # leave, so a failed batch takes the evidence entity with it.
+        relations = store.create_relations(specs)
+    except Exception:
+        store.delete_entity(str(evidence["id"]), hard=True)
+        raise
+    return {
+        "evidence": evidence,
+        "relations": [
+            relation.model_dump(by_alias=True, exclude_unset=True) for relation in relations
+        ],
+    }

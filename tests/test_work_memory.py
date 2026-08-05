@@ -29,6 +29,7 @@ from redis import Redis
 
 from theloom.cli.registry import run_handler
 from theloom.errors import NotFoundError, ValidationError
+from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
 AS_OF = "2026-08-04T00:00:00.000Z"
@@ -199,6 +200,44 @@ def test_record_outcome_refuses_unknown_citations_without_writing(multi: MultiGr
     assert remaining == []
 
 
+def test_record_outcome_collapses_a_repeated_citation_to_one_edge(multi: MultiGraph) -> None:
+    """One outcome is one experience: citing the same id twice must not vote
+    twice, or a single call could satisfy corroboration on its own."""
+    target = ent(multi, "cited_twice_in_one_call")
+
+    result = run_handler(
+        "record-outcome",
+        {"question": "q", "entityIds": [target, target], "outcome": "useful"},
+        multi,
+    )
+    assert [relation["to"] for relation in result["relations"]] == [target]
+
+    reflected = reflect(multi, minCorroboration=2)
+    assert names(reflected["preferred"]) == set()
+    assert usage_status(multi, target) is None
+
+
+def test_record_outcome_leaves_no_evidence_behind_when_the_citations_cannot_land(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A citation retracted between the existence check and the write must not
+    leave a usage record citing nothing."""
+    target = ent(multi, "vanishing")
+
+    def boom(*args: Any, **kwargs: Any) -> list[Any]:
+        raise NotFoundError("Entity not found: relation endpoints must exist")
+
+    monkeypatch.setattr(FalkorGraphStore, "create_relations", boom)
+    with pytest.raises(NotFoundError):
+        run_handler(
+            "record-outcome",
+            {"question": "q", "entityIds": [target], "outcome": "useful"},
+            multi,
+        )
+
+    assert run_handler("list-entities", {"entityType": "evidence"}, multi) == []
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -321,6 +360,44 @@ def test_reflect_replaces_the_previous_usage_status_and_versions_the_entity(
     assert len(statuses) == 1
     assert statuses[0].startswith("usage_status: dead_end")
     assert read(multi, entity_id)["version"] > first_version
+
+
+def test_reflect_counts_one_use_per_record_even_with_duplicate_citation_edges(
+    multi: MultiGraph,
+) -> None:
+    """Corroboration counts distinct usage records, not citation edges."""
+    entity_id = ent(multi, "double_cited")
+    usage_record(
+        multi, question="a", outcome="useful", targets=[entity_id, entity_id], recorded=AS_OF
+    )
+
+    result = reflect(multi, minCorroboration=2)
+    assert names(result["preferred"]) == set()
+    assert usage_status(multi, entity_id) is None
+
+    usage_record(multi, question="b", outcome="useful", targets=[entity_id], recorded=AS_OF)
+    result = reflect(multi, minCorroboration=2)
+    preferred = {str(row["name"]): row for row in result["preferred"]}
+    assert set(preferred) == {"double_cited"}
+    assert preferred["double_cited"]["useful"] == 2
+    assert preferred["double_cited"]["score"] == pytest.approx(2.0)
+
+
+def test_reflect_retracts_a_status_it_can_no_longer_justify(multi: MultiGraph) -> None:
+    """A reflection that no longer reaches a verdict must clear the previous
+    one instead of leaving a contradictory record behind."""
+    entity_id = ent(multi, "demoted")
+    usage_record(multi, question="a", outcome="useful", targets=[entity_id], recorded=AS_OF)
+    usage_record(multi, question="b", outcome="useful", targets=[entity_id], recorded=AS_OF)
+    reflect(multi, minCorroboration=2)
+    assert usage_status(multi, entity_id) is not None
+
+    result = reflect(multi, minCorroboration=3)
+    assert names(result["preferred"]) == set()
+    assert names(result["contested"]) == set()
+    assert names(result["deadEnds"]) == set()
+    assert usage_status(multi, entity_id) is None
+    assert result["summary"]["updated"] == 1
 
 
 def test_reflect_is_a_no_op_when_nothing_was_recorded(multi: MultiGraph) -> None:
