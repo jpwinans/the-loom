@@ -11,6 +11,9 @@ from __future__ import annotations
 import time
 
 from theloom.composites import framework
+from theloom.composites.graph_reconnaissance import GraphReconInput, graph_reconnaissance
+from theloom.operations.entity import CreateEntityInput, create_entity
+from theloom.store.multigraph import MultiGraph
 
 
 class TestTimeSection:
@@ -138,3 +141,46 @@ class TestRunComposite:
         assert composite["result"] == {}
         assert composite["metadata"]["sectionsSucceeded"] == 0
         assert composite["metadata"]["sectionsFailed"] == 0
+
+
+class TestGraphReconnaissanceWireShape:
+    """graph-reconnaissance migrated from a hand-rolled timer pair straight
+    into `run_composite` — its wire output (both envelope keys and per-section
+    keys) must be unchanged key-for-key."""
+
+    def test_top_level_and_section_keys_are_unchanged(self, multi: MultiGraph) -> None:
+        create_entity(
+            CreateEntityInput.model_validate(
+                {"name": "Node A", "entityType": "concept", "observations": ["a"]}
+            ),
+            multi,
+        )
+
+        result = graph_reconnaissance(GraphReconInput(), multi)
+
+        assert set(result.keys()) == {"result", "metadata"}
+        assert set(result["result"].keys()) == {
+            "stats",
+            "loops",
+            "leveragePoints",
+            "centrality",
+            "components",
+            "bridges",
+        }
+        for section in result["result"].values():
+            assert set(section.keys()) == {"data", "durationMs", "error"}
+        assert set(result["metadata"].keys()) == {
+            "totalDurationMs",
+            "sectionsSucceeded",
+            "sectionsFailed",
+            "executedAt",
+        }
+        assert result["metadata"]["sectionsFailed"] == 0
+        stats = result["result"]["stats"]["data"]
+        assert set(stats.keys()) == {
+            "entityCount",
+            "relationCount",
+            "entityTypeDistribution",
+            "relationTypeDistribution",
+        }
+        assert stats["entityCount"] == 1

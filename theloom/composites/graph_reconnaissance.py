@@ -9,12 +9,11 @@ list-bridges. Every section runs inside :func:`time_section`.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite
 from theloom.operations.analysis import (
     AnalyzeCentralityInput,
     DetectComponentsInput,
@@ -51,7 +50,6 @@ def _centrality_entries(centrality_response: dict[str, Any]) -> list[dict[str, A
 
 
 def graph_reconnaissance(params: GraphReconInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     graph = params.graph
     centrality_limit = (
         params.centrality_limit if params.centrality_limit is not None else DEFAULT_CENTRALITY_LIMIT
@@ -160,13 +158,13 @@ def graph_reconnaissance(params: GraphReconInput, multi: MultiGraph) -> dict[str
         except Exception:  # noqa: BLE001 — degrade to [] on any bridge error.
             return []
 
-    sections = {
-        "stats": time_section(_stats),
-        "loops": time_section(_loops),
-        "leveragePoints": time_section(_leverage_points),
-        "centrality": time_section(_centrality),
-        "components": time_section(_components),
-        "bridges": time_section(_bridges),
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("stats", _stats),
+            ("loops", _loops),
+            ("leveragePoints", _leverage_points),
+            ("centrality", _centrality),
+            ("components", _components),
+            ("bridges", _bridges),
+        ]
+    )
