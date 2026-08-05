@@ -47,6 +47,7 @@ from typing import Any
 
 from theloom.errors import OperationError
 from theloom.extraction import doclinks, treesitter
+from theloom.extraction.encoding import is_file_entity_name, parse_file_entity_name, parse_file_path
 from theloom.model import Entity, EntityCreate, RelationCreate
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
@@ -56,9 +57,6 @@ Doc = dict[str, Any]
 
 # (fromName, toName, relationType) — the identity of an edge across extractions.
 RelationKey = tuple[str, str, str]
-
-_FILE_PREFIX = "file:"
-_FILE_PATH_OBSERVATION = "File path: "
 
 # Why an entity stopped appearing, in the model's closed vocabulary. The prose
 # form the user reads travels on ``changeReason``.
@@ -144,13 +142,10 @@ def _empty_result(changed_files: list[str]) -> Doc:
 
 def _file_of(name: str, observations: Sequence[Any]) -> str | None:
     """The project file an entity was extracted from, or None (e.g. a package)."""
-    if name.startswith(_FILE_PREFIX):
-        return name[len(_FILE_PREFIX) :]
-    for observation in observations:
-        text = str(observation)
-        if text.startswith(_FILE_PATH_OBSERVATION):
-            return text[len(_FILE_PATH_OBSERVATION) :]
-    return None
+    file_path = parse_file_entity_name(name)
+    if file_path is not None:
+        return file_path
+    return parse_file_path(observations)
 
 
 @dataclass
@@ -235,7 +230,7 @@ def _is_structural(relation_type: str, from_name: str, from_path: str | None) ->
     if relation_type != "references":
         return True
     return (
-        from_name.startswith(_FILE_PREFIX)
+        is_file_entity_name(from_name)
         and from_path is not None
         and from_path.endswith(_DOC_SUFFIXES)
     )
