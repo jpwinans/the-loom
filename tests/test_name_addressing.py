@@ -19,7 +19,14 @@ from theloom.composites.entity_deep_dive import EntityDeepDiveInput, entity_deep
 from theloom.errors import NotFoundError, ValidationError
 from theloom.operations.analysis import FindShortestPathInput, find_shortest_path
 from theloom.operations.common import resolve_entity_ref
-from theloom.operations.entity import CreateEntityInput, ReadEntityInput, create_entity, read_entity
+from theloom.operations.entity import (
+    CreateEntityInput,
+    ReadEntityInput,
+    UpdateEntityInput,
+    create_entity,
+    read_entity,
+    update_entity,
+)
 from theloom.operations.relations import (
     CreateRelationInput,
     GetNeighborsInput,
@@ -45,6 +52,13 @@ def ent(multi: MultiGraph, name: str, observations: list[str] | None = None) -> 
     }
     result = create_entity(CreateEntityInput.model_validate(doc), multi)
     return str(result["id"])
+
+
+def set_status(multi: MultiGraph, entity_id: str, status: str) -> None:
+    update_entity(
+        UpdateEntityInput.model_validate({"id": entity_id, "status": status}),
+        multi,
+    )
 
 
 def rel(multi: MultiGraph, from_id: str, to_id: str) -> None:
@@ -125,6 +139,63 @@ def test_resolver_requires_exactly_one(multi: MultiGraph) -> None:
     with pytest.raises(ValidationError):
         resolve_entity_ref(store, entity_id=target, name="solo")
     assert resolve_entity_ref(store, entity_id=target, name=None) == target
+
+
+@pytest.mark.parametrize("status", ["superseded", "deprecated", "retracted", "investigating"])
+def test_resolver_reaches_non_active_entities(multi: MultiGraph, status: str) -> None:
+    """Status transitions are first-class state: a name must address the same
+    entities an id does, whatever their status."""
+    target = ent(multi, f"lifecycle_{status}")
+    set_status(multi, target, status)
+    store = multi.get_store(None)
+    assert resolve_entity_ref(store, entity_id=None, name=f"lifecycle_{status}") == target
+
+
+def test_resolver_prefers_active_over_non_active(multi: MultiGraph) -> None:
+    """Same name, one active and one superseded: the live one wins rather than
+    the pair reading as ambiguous."""
+    old = ent(multi, "renderer")
+    set_status(multi, old, "superseded")
+    live = ent(multi, "renderer")
+    store = multi.get_store(None)
+    assert resolve_entity_ref(store, entity_id=None, name="renderer") == live
+
+
+def test_non_active_entity_addressable_by_name_in_commands(multi: MultiGraph) -> None:
+    """Name and id addressing agree for a superseded entity across commands."""
+    a = ent(multi, "alpha")
+    b = ent(multi, "beta")
+    rel(multi, a, b)
+    set_status(multi, a, "superseded")
+    assert read_entity(ReadEntityInput.model_validate({"name": "alpha"}), multi)["id"] == a
+    assert get_relations(
+        GetRelationsInput.model_validate({"name": "alpha"}), multi
+    ) == get_relations(GetRelationsInput.model_validate({"entityId": a}), multi)
+    assert get_neighbors(
+        GetNeighborsInput.model_validate({"name": "alpha"}), multi
+    ) == get_neighbors(GetNeighborsInput.model_validate({"entityId": a}), multi)
+    dive = entity_deep_dive(EntityDeepDiveInput.model_validate({"name": "alpha"}), multi)
+    assert dive["result"]["entity"]["data"]["id"] == a
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_resolver_rejects_blank_name(multi: MultiGraph, blank: str) -> None:
+    """A blank name is a missing name, not a match-everything query — even when
+    the store holds exactly one entity that it could silently resolve to."""
+    ent(multi, "solo")
+    store = multi.get_store(None)
+    with pytest.raises(ValidationError) as excinfo:
+        resolve_entity_ref(store, entity_id=None, name=blank)
+    assert excinfo.value.code == "VALIDATION_ERROR"
+    assert "exactly one" in str(excinfo.value)
+
+
+def test_blank_name_rejected_by_commands(multi: MultiGraph) -> None:
+    ent(multi, "solo")
+    with pytest.raises(ValidationError):
+        read_entity(ReadEntityInput.model_validate({"name": ""}), multi)
+    with pytest.raises(ValidationError):
+        get_relations(GetRelationsInput.model_validate({"name": "  "}), multi)
 
 
 def test_resolver_uses_server_side_filter(multi: MultiGraph, monkeypatch: Any) -> None:

@@ -18,7 +18,7 @@ import pydantic
 from pydantic import AfterValidator
 
 from theloom.errors import NotFoundError, ValidationError
-from theloom.model import Entity, EntityFilter, LoomModel
+from theloom.model import Entity, EntityFilter, EntityStatus, LoomModel
 
 if TYPE_CHECKING:
     from theloom.store.falkor import FalkorGraphStore
@@ -60,6 +60,11 @@ class CommandInput(LoomModel):
 
 _FILE_PATH_PREFIX = "file path:"
 _MAX_CANDIDATES = 25
+# Name addressing must reach exactly what id addressing reaches: the id-matched
+# reads carry no status predicate, and status transitions are ordinary
+# event-sourced state, so the resolver looks at every status and only *prefers*
+# active when a name matches both a live and a retired entity.
+_ALL_STATUSES = [status.value for status in EntityStatus]
 
 
 def _file_path_hint(entity: Entity) -> str:
@@ -100,24 +105,34 @@ def resolve_entity_ref(
     ``name`` must be supplied.
 
     A name resolves by exact (case-insensitive) match first; failing that, by
-    case-insensitive substring. Either way more than one match is refused with
-    a candidate listing rather than guessed, and no match is NOT_FOUND.
+    case-insensitive substring; within either pool an active entity wins over a
+    retired one. Otherwise more than one match is refused with a candidate
+    listing rather than guessed, and no match is NOT_FOUND.
+
+    A blank name counts as no name: an empty substring would match every
+    entity, so it is refused as a missing argument, never run as a query.
     """
-    if (entity_id is None) == (name is None):
+    supplied_name = name if name is not None and name.strip() else None
+    if (entity_id is None) == (supplied_name is None):
         raise ValidationError(
             f"Provide exactly one of '{id_field}' or '{name_field}' "
             "(an entity id, or a name to resolve)."
         )
     if entity_id is not None:
         return entity_id
-    assert name is not None
+    assert supplied_name is not None
+    name = supplied_name
 
     # EntityFilter.name is a case-insensitive substring match pushed down into
     # Cypher, so the exact-match pool is always a subset of this window.
-    candidates = store.list_entities(EntityFilter.model_validate({"name": name}))
+    candidates = store.list_entities(
+        EntityFilter.model_validate({"name": name, "statusFilter": _ALL_STATUSES})
+    )
     lowered = name.lower()
     exact = [entity for entity in candidates if entity.name.lower() == lowered]
     pool = exact or candidates
+    active = [entity for entity in pool if entity.effective_status is EntityStatus.ACTIVE]
+    pool = active or pool
     if len(pool) == 1:
         return pool[0].id
     if not pool:
