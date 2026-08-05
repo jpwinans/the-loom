@@ -232,7 +232,9 @@ def inference_rule_delete(params: InferenceRuleDeleteInput, multi: MultiGraph) -
             f"Error deleting inference rule: Entity {params.rule_id} is not an "
             f"inference rule (type: {entity.entity_type.value})"
         )
-    store.delete_entity(params.rule_id)
+    # A rule is machinery, not a knowledge claim: deleting one is a config
+    # change, so it is erased rather than left behind as a retracted entity.
+    store.delete_entity(params.rule_id, hard=True)
     return {"deleted": True, "ruleId": params.rule_id}
 
 

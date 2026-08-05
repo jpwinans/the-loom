@@ -6,10 +6,13 @@ semantics:
 - The store generates ids (UUID) and timestamps (ISO, ms, Z) on create.
 - ``update_*`` merges partial updates and preserves id/created_at; entity
   status changes are validated against the lifecycle transition table.
-- ``delete_entity`` returns the deleted entity; missing targets raise
+- ``delete_*`` invalidates by default (entities are retracted, edges have
+  their system-time interval closed) and only erases under ``hard=True``;
+  ``delete_entity`` returns the resulting record and missing targets raise
   ``NotFoundError``.
 - Relations are keyed by (from, to, relationType?) — parallel typed edges
-  between the same pair are first-class.
+  between the same pair are first-class, and ``relation_id`` addresses one
+  specific edge when even the type is shared.
 - Batching is a first-class transactional method (``create_relations``),
   never duck-typing.
 
@@ -58,15 +61,18 @@ class GraphStore(ABC):
         version rather than overwriting history. Raises NotFoundError."""
 
     @abstractmethod
-    def delete_entity(self, entity_id: str) -> Entity:
-        """Delete an entity and its attached relations; returns the deleted
-        entity. Raises NotFoundError."""
+    def delete_entity(self, entity_id: str, hard: bool = False) -> Entity:
+        """Retract an entity (status 'retracted', prior incarnation
+        snapshotted, attached relations closed out bi-temporally) and return
+        the retracted record. ``hard=True`` erases it and its edges instead,
+        destroying that history. Raises NotFoundError."""
 
     @abstractmethod
     def list_entities(self, filter: EntityFilter | None = None) -> list[Entity]:
         """List entities with the filter semantics (status defaults to
         ['active']; order: status → type → name → query → version; then
-        sourcedFrom/excludeSourcedFrom with exclude winning)."""
+        sourcedFrom/excludeSourcedFrom with exclude winning), capped at
+        ``filter.limit`` when set."""
 
     # -- Relations ------------------------------------------------------------
 
@@ -97,13 +103,23 @@ class GraphStore(ABC):
         to_id: str,
         updates: Mapping[str, Any],
         relation_type: str | None = None,
+        relation_id: str | None = None,
     ) -> Relation:
-        """Merge updates into the targeted edge (first match when no type).
+        """Merge updates into the targeted edge — ``relation_id`` picks one
+        specific parallel edge, otherwise the oldest match wins.
         Raises NotFoundError."""
 
     @abstractmethod
-    def delete_relation(self, from_id: str, to_id: str, relation_type: str | None = None) -> None:
-        """Delete the targeted edge (first match when no type). Raises NotFoundError."""
+    def delete_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None = None,
+        relation_id: str | None = None,
+        hard: bool = False,
+    ) -> None:
+        """Retire the targeted edge bi-temporally (``hard=True`` erases it).
+        ``relation_id`` picks one specific parallel edge. Raises NotFoundError."""
 
     @abstractmethod
     def list_relations(self, filter: RelationFilter | None = None) -> list[Relation]:

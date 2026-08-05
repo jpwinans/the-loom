@@ -28,7 +28,15 @@ from theloom.algebra.core import (
     viterbi_extractor,
 )
 
-STRUCTURAL_TYPES = {"related_to", "instance_of", "part_of", "sources", "crystallized_from"}
+STRUCTURAL_TYPES = {
+    "related_to",
+    "instance_of",
+    "part_of",
+    "sources",
+    "calls",
+    "references",
+    "crystallized_from",
+}
 EPISTEMIC_TYPES = {"supports", "contradicts", "questions", "supersedes"}
 TAU = 3
 

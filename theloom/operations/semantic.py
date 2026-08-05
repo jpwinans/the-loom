@@ -24,15 +24,16 @@ from typing import Any
 
 from pydantic import Field
 
+from theloom.config import load_config
 from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
-from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityType
+from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityStatus, EntityType
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.semantic.embed import (
+    EMBEDDING_DIMENSIONS,
     EMBEDDING_VERSION,
     build_embedding_text,
     compute_content_hash,
-    cosine_similarity,
     get_embedder,
 )
 from theloom.store.falkor import FalkorGraphStore
@@ -125,6 +126,12 @@ def _query_text(entity: Doc) -> str:
     return f"{entity['name']} {observations}"
 
 
+# Neither the status nor the entityType filter can be pushed into the ANN
+# index, so a filtered call reads a candidate window and widens it by this
+# factor whenever the window ran out before `limit` was met.
+_CANDIDATE_GROWTH = 4
+
+
 def _search_similar(
     store: FalkorGraphStore,
     query_text: str,
@@ -132,36 +139,97 @@ def _search_similar(
     min_score: float | None = None,
     entity_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Similarity search over the in-store vectors: embeds the query
-    (QUERY prefix), scores 1/(1+L2), filters, sorts desc, truncates."""
-    vectors = store.get_entity_vectors()
-    if not vectors:
-        return []
+    """Similarity search over the entity vector index: embeds the query
+    (QUERY prefix), asks FalkorDB's ANN index for the nearest candidates
+    (``FalkorGraphStore.vector_knn``), scores 1/(1+L2) — L2 = sqrt(2-2cos) for
+    the cosine the index reports — filters, and truncates.
+
+    Only active entities are returned. A superseded or deprecated entity keeps
+    its embedding (mutations invalidate, they never overwrite), so the index
+    still offers it and the filter has to happen here — the same filter every
+    other default read applies. Retraction is the exception: it drops the
+    vector outright, so a retracted entity is not even a candidate.
+
+    No per-call full vector or entity scan. Entity metadata is a point lookup
+    per candidate. The ANN window is approximate: its *scores* are exact but
+    its membership and ordering are best-effort (observed on the emulated
+    linux/amd64 build: a k-window holding the farthest nodes while the true
+    nearest sat outside it), so candidates are re-sorted by our own computed
+    score, and the only thing treated as proof of exhaustion is the index
+    returning fewer than ``k`` rows. Filters the index can't answer (status,
+    entityType, ``min_score`` over an unlucky window) can starve a fixed-size
+    window, so the window *grows* until ``limit`` is met or the index is
+    exhausted: a rare type stays findable instead of silently returning fewer
+    hits than exist.
+    """
     query_vector = get_embedder().embed_query(query_text)
-    entities = {e["id"]: e for e in _entity_docs(store)}
-    results: list[dict[str, Any]] = []
-    for entity_id, vector in vectors.items():
-        entity = entities.get(entity_id)
-        if entity is None:
-            continue
-        if entity_types and entity["entityType"] not in entity_types:
-            continue
-        score = _lance_score(cosine_similarity(query_vector, vector))
-        if min_score is not None and score < min_score:
-            continue
-        results.append(
-            {
-                "id": entity_id,
-                "score": score,
-                "metadata": {
-                    "name": entity["name"],
-                    "entityType": entity["entityType"],
-                    "entryType": "entity",
-                },
-            }
+    resolved: dict[str, Any] = {}
+    k = max(limit, 1)
+    while True:
+        candidates = store.vector_knn(query_vector, k)
+        results: list[dict[str, Any]] = []
+        exhausted = len(candidates) < k
+        scored = sorted(
+            ((entity_id, _lance_score(cosine)) for entity_id, cosine in candidates),
+            key=lambda pair: -pair[1],
         )
-    results.sort(key=lambda r: -float(r["score"]))
-    return results[:limit]
+        for entity_id, score in scored:
+            if min_score is not None and score < min_score:
+                break  # sorted: the rest of THIS window is below; growth decides the rest
+            if entity_id not in resolved:
+                resolved[entity_id] = store.read_entity(entity_id)
+            entity = resolved[entity_id]
+            if entity is None or entity.effective_status != EntityStatus.ACTIVE:
+                continue
+            if entity_types and entity.entity_type.value not in entity_types:
+                continue
+            results.append(
+                {
+                    "id": entity_id,
+                    "score": score,
+                    "metadata": {
+                        "name": entity.name,
+                        "entityType": entity.entity_type.value,
+                        "entryType": "entity",
+                    },
+                }
+            )
+            if len(results) >= limit:
+                break
+        if exhausted or len(results) >= limit:
+            return results
+        k *= _CANDIDATE_GROWTH
+
+
+def _spread_sample(items: list[Doc], max_items: int, seed: int | None = None) -> list[Doc]:
+    """A deterministic sample spread evenly across store order, not the first
+    ``max_items`` records — a first-N sample only ever looks at whatever was
+    written earliest, which skews systematically (oldest entity types,
+    earliest sessions, …). Indices are ``offset + i*step`` (stride
+    ``len(items)/max_items``, wrapped modulo ``len(items)``); ``seed`` shifts
+    the phase so repeated calls can cover a different slice of the same
+    graph while staying reproducible for a given seed."""
+    n = len(items)
+    if n <= max_items:
+        return items
+    step = n / max_items
+    offset = (seed % n) if seed is not None else 0
+    seen: set[int] = set()
+    indices: list[int] = []
+    for i in range(max_items):
+        index = (offset + int(i * step)) % n
+        if index not in seen:
+            seen.add(index)
+            indices.append(index)
+    # Stride rounding can collide on small n/max_items ratios; fill any gap
+    # by scanning forward from the offset so the sample size stays exact.
+    pos = offset
+    while len(indices) < max_items:
+        pos = (pos + 1) % n
+        if pos not in seen:
+            seen.add(pos)
+            indices.append(pos)
+    return [items[i] for i in sorted(indices)]
 
 
 def _as_type_list(value: Any) -> list[str] | None:
@@ -190,6 +258,10 @@ class EmbedEntitiesInput(CommandInput):
     entity_type: str | None = Field(default=None, alias="entityType")
     force_reembed: bool | None = Field(default=None, alias="forceReembed")
     graph: str | None = None
+
+
+class WarmEmbedderInput(CommandInput):
+    pass
 
 
 class EmbeddingReconcileInput(CommandInput):
@@ -252,6 +324,7 @@ class SemanticGapsInput(CommandInput):
     min_similarity: float | None = Field(default=None, ge=0, le=1, alias="minSimilarity")
     entity_type: EntityType | list[EntityType] | None = Field(default=None, alias="entityType")
     max_entities: int | None = Field(default=None, ge=1, alias="maxEntities")
+    seed: int | None = None
     graph: str | None = None
 
 
@@ -324,6 +397,19 @@ def embed_entity(params: EmbedEntityInput, multi: MultiGraph) -> dict[str, Any]:
     return _embed_one(
         store, entity.model_dump(by_alias=True, exclude_unset=True), skip_hash_check=False
     )
+
+
+def warm_embedder(params: WarmEmbedderInput, multi: MultiGraph) -> dict[str, Any]:
+    """Pre-download the embedding model and run one warmup query, so the
+    ~500MB HuggingFace fetch happens here rather than invisibly inside the
+    first real embed/search command."""
+    get_embedder().embed_query("warm up the embedding model")
+    return {
+        "warm": True,
+        "model": EMBEDDING_VERSION,
+        "dimensions": EMBEDDING_DIMENSIONS,
+        "cacheDir": load_config().model_cache_dir,
+    }
 
 
 def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, Any]:
@@ -856,7 +942,7 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str
     limit = params.limit or 20
     min_similarity = params.min_similarity if params.min_similarity is not None else 0.6
     max_entities = params.max_entities or 200
-    entities = _entity_docs(store)[:max_entities]
+    entities = _spread_sample(_entity_docs(store), max_entities, params.seed)
     if not entities:
         return []
     index = {
@@ -870,8 +956,16 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str
         for sr in results:
             if float(sr["score"]) < min_similarity or sr["id"] in connected:
                 continue
-            if sr["id"] not in index:
-                continue
+            # The sample decides which entities are *probed*, not which may be
+            # the far end of a gap: a spread sample scatters co-written,
+            # semantically adjacent entities into unsampled stride slots, so
+            # requiring both ends in the sample would discard most real pairs.
+            # The search already carries the partner's metadata.
+            partner = index.get(sr["id"]) or {
+                "id": sr["id"],
+                "name": sr["metadata"]["name"],
+                "entityType": sr["metadata"]["entityType"],
+            }
             key = ":".join(sorted([entity["id"], sr["id"]]))
             if key in seen:
                 continue
@@ -879,7 +973,7 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str
             gaps.append(
                 {
                     "entityA": index[entity["id"]],
-                    "entityB": index[sr["id"]],
+                    "entityB": partner,
                     "similarity": sr["score"],
                 }
             )

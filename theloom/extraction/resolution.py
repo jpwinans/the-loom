@@ -126,6 +126,19 @@ _BUILTINS = frozenset(
 )
 
 
+def call_evidence(caller: str, callee: str, path: str, line: int) -> str:
+    """Evidence for a call edge, anchored at the **call site**.
+
+    One fixed, parseable format for every call edge, whichever pass emitted it:
+    ``<caller> calls <callee> at <file>:<line>``. ``line`` is 0-based (the
+    tree-sitter convention the extractor carries) and renders 1-based. The site
+    is where the call is written, not where the callee is defined — following
+    an edge means reading the caller. How the target was established is carried
+    by ``confidence.basis``, not by prose, so the format stays fixed.
+    """
+    return f"{caller} calls {callee} at {path}:{line + 1}"
+
+
 def file_entity_name(path: str) -> str:
     """The entity name the extractor gives a file."""
     return f"file:{path}"
@@ -340,6 +353,7 @@ def _resolve_symbol_edges(
     field: str,
     relation_type: str,
     verb: str,
+    anchored: bool = False,
 ) -> Doc:
     """Join edges whose target symbol is defined in another file.
 
@@ -351,7 +365,10 @@ def _resolve_symbol_edges(
     picking one would be a guess presented as structure.
 
     Calls and base classes differ only in the edge they produce, so both run
-    through this one resolver.
+    through this one resolver. ``anchored`` picks the evidence form: a call
+    site carries a line, so its evidence is the fixed ``call_evidence`` format
+    and the proven/deduced distinction is left to ``confidence.basis``; a base
+    class has no site, so its evidence spells out how it was resolved.
     """
     # (file, bare symbol name) -> entity name; and, for the unique-name rule,
     # bare name -> every candidate with the language and kind needed to judge it.
@@ -412,9 +429,13 @@ def _resolve_symbol_edges(
             seen.add(edge)
             if proven:
                 proven_count += 1
-                evidence = f"{caller_name} {verb} {callee}, imported from {origin}"
             else:
                 inferred_count += 1
+            if anchored:
+                evidence = call_evidence(caller_name, callee, importer, int(call.get("line", 0)))
+            elif proven:
+                evidence = f"{caller_name} {verb} {callee}, imported from {origin}"
+            else:
                 evidence = f"{caller_name} {verb} {callee}, the project's only symbol of that name"
             relations.append(_relation(caller_name, target, relation_type, evidence, proven=proven))
 
@@ -425,13 +446,18 @@ def _resolve_symbol_edges(
 
 
 def resolve_calls(per_file: list[Doc], known_files: frozenset[str]) -> Doc:
-    """Cross-file calls: ``related_to``, matching the per-file pass's convention."""
+    """Cross-file calls: ``calls``, matching the per-file pass's convention.
+
+    Every edge is anchored at its call site — the line in the *caller's* file
+    where the call is written.
+    """
     out = _resolve_symbol_edges(
         per_file,
         known_files,
         field="unresolvedCalls",
-        relation_type="related_to",
+        relation_type="calls",
         verb="calls",
+        anchored=True,
     )
     stats = out["stats"]
     return {

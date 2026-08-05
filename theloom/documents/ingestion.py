@@ -27,7 +27,22 @@ _ALLOWED_CONTENT_FORMATS = ("markdown", "html", "txt")
 
 
 class IngestionError(Exception):
-    """Ingestion failure carrying a message that maps to a CLI error code."""
+    """Ingestion failure carrying a message that maps to a CLI error code.
+
+    ``theloom/documents`` doesn't import the CLI's typed-error hierarchy
+    (``theloom.errors``) — that translation happens at the operations
+    boundary (``theloom/operations/documents.py``). These two subclasses let
+    that boundary classify structurally, by ``isinstance``, instead of
+    pattern-matching the message text.
+    """
+
+
+class IngestionNotFoundError(IngestionError):
+    """The requested file, directory, or document does not exist."""
+
+
+class IngestionValidationError(IngestionError):
+    """The caller supplied an invalid ingestion request."""
 
 
 def _source_id_from_path(file_path: str) -> str:
@@ -117,16 +132,16 @@ class DocumentIngestion:
         try:
             stat = path.stat()
         except OSError as exc:
-            raise IngestionError(f"File not found: {file_path}") from exc
+            raise IngestionNotFoundError(f"File not found: {file_path}") from exc
         if stat.st_size > MAX_FILE_SIZE:
-            raise IngestionError(
+            raise IngestionValidationError(
                 f"File too large: {stat.st_size} bytes exceeds maximum of "
                 f"{MAX_FILE_SIZE} bytes ({round(MAX_FILE_SIZE / 1024 / 1024)}MB)"
             )
         try:
             fmt = detect_format(file_path)
         except ParseError as exc:
-            raise IngestionError(str(exc)) from exc
+            raise IngestionValidationError(str(exc)) from exc
         source_id = _source_id_from_path(file_path)
         content: str | bytes = (
             path.read_bytes() if fmt in ("pdf", "docx") else path.read_text(encoding="utf-8")
@@ -143,9 +158,9 @@ class DocumentIngestion:
         options = dict(options or {})
         directory = Path(dir_path)
         if not directory.exists():
-            raise IngestionError(f"Directory not found: {dir_path}")
+            raise IngestionNotFoundError(f"Directory not found: {dir_path}")
         if not directory.is_dir():
-            raise IngestionError(f"Not a directory: {dir_path}")
+            raise IngestionValidationError(f"Not a directory: {dir_path}")
 
         files = _find_matching_files(directory, pattern or DEFAULT_DIR_PATTERN)
         if not files:
@@ -185,7 +200,7 @@ class DocumentIngestion:
     ) -> Doc:
         options = dict(options or {})
         if fmt not in _ALLOWED_CONTENT_FORMATS:
-            raise IngestionError(
+            raise IngestionValidationError(
                 f"Format '{fmt}' requires binary content. Use ingestFromFile() instead."
             )
         options["title"] = options.get("title") or source_id
@@ -200,7 +215,7 @@ class DocumentIngestion:
         except SsrfError as exc:
             message = str(exc)
             if message.startswith("Unsupported protocol") or message.startswith("Access denied"):
-                raise IngestionError(message) from exc
+                raise IngestionValidationError(message) from exc
             raise IngestionError(f"Failed to fetch URL: {message}") from exc
 
         fmt = "html"
@@ -245,7 +260,7 @@ class DocumentIngestion:
     def delete_document(self, source_id: str) -> Doc:
         deleted = self._store.delete_where_source(source_id)
         if deleted == 0:
-            raise IngestionError(f"No document found with sourceId: {source_id}")
+            raise IngestionNotFoundError(f"No document found with sourceId: {source_id}")
         return {"sourceId": source_id, "deletedChunks": deleted}
 
     # -- reingest-document ------------------------------------------------------
@@ -254,7 +269,7 @@ class DocumentIngestion:
         options = dict(options or {})
         existing = self._store.query_chunks(source_id=source_id, limit=1000)
         if not existing:
-            raise IngestionError(f"No document found with sourceId: {source_id}")
+            raise IngestionNotFoundError(f"No document found with sourceId: {source_id}")
 
         first = existing[0]
         source_name = first.get("sourceName") or source_id

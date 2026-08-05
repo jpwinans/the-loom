@@ -53,6 +53,68 @@ describe("stateAt", () => {
   });
 });
 
+// Delete is not erase: `delete-entity` emits `entity_retracted` (node stays,
+// status flips, attached edges close out) and `delete-relation` emits
+// `relation_invalidated`.
+const retractionBundle = {
+  ...bundle,
+  temporal: {
+    events: [
+      ...(bundle.temporal as unknown as { events: unknown[] }).events.slice(0, 3),
+      {
+        id: "4000-0",
+        at: "1970-01-01T00:00:04.000Z",
+        type: "entity_retracted",
+        payload: {
+          entity: { id: "b", status: "retracted" },
+          previous: { id: "b", status: "active" },
+          invalidatedRelations: [{ id: "e1" }],
+        },
+      },
+    ],
+  },
+} as unknown as TapestryBundleRaw;
+
+describe("retraction replay", () => {
+  it("flips the node to retracted and closes out its edges", () => {
+    const t = buildTimeline(retractionBundle);
+    const before = stateAt(t, currentGraph(), 3000);
+    expect(before.statusById.get("b") ?? "active").toBe("active");
+    expect(before.visibleEdges.has("e1")).toBe(true);
+
+    const after = stateAt(t, currentGraph(), t.end);
+    expect(after.visibleNodes.has("b")).toBe(true); // retraction is not erasure
+    expect(after.statusById.get("b")).toBe("retracted");
+    expect(after.visibleEdges.has("e1")).toBe(false);
+  });
+  it("counts the retraction as invalidated in a diff", () => {
+    const t = buildTimeline(retractionBundle);
+    expect([...diffStates(t, 3000, 4000).invalidated]).toEqual(["b"]);
+  });
+});
+
+describe("relation_invalidated replay", () => {
+  it("removes the edge like relation_deleted does", () => {
+    const invalidated = {
+      ...bundle,
+      temporal: {
+        events: [
+          ...(bundle.temporal as unknown as { events: unknown[] }).events.slice(0, 3),
+          {
+            id: "4000-0",
+            at: "1970-01-01T00:00:04.000Z",
+            type: "relation_invalidated",
+            payload: { relation: { id: "e1", from: "a", to: "b" }, tx_to: "1970-01-01T00:00:04.000Z" },
+          },
+        ],
+      },
+    } as unknown as TapestryBundleRaw;
+    const t = buildTimeline(invalidated);
+    expect(stateAt(t, currentGraph(), 3500).visibleEdges.has("e1")).toBe(true);
+    expect(stateAt(t, currentGraph(), t.end).visibleEdges.has("e1")).toBe(false);
+  });
+});
+
 describe("diffStates", () => {
   it("classifies added / changed / invalidated across a window", () => {
     const t = buildTimeline(bundle);

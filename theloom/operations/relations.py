@@ -3,12 +3,19 @@
 Semantics, including a few that look like bugs but are intentional:
 
 - Polarity auto-inference for causal types (CAUSAL_POLARITY_DEFAULTS) when the
-  caller passes null.
+  caller passes null — on create AND on an update that retypes an edge.
+- The polarity partition (causal types carry polarity, structural/epistemic
+  types carry none) is an invariant of the stored edge: update-relation gates
+  on the *resulting* type/polarity pair, not just create-relation.
 - The verification gate runs against the *resolved single store* BEFORE the
   bridge branch — so a cross-graph relation is blocked with an
   entity-does-not-exist gate error, and the bridge auto-creation path is
   unreachable from the CLI. The store-level bridge
   capability (MultiGraph.create_relation) remains for when the gate is off.
+- The endpoint gate (the endpoint exists AND is not retracted) is one verdict —
+  guards.endpoint_error — for both arities: create-relation reads its two
+  endpoints, create-relations prefetches every endpoint status in the target
+  graph. Neither is the lenient way in.
 - list-relations distinguishes an explicit ``"polarity": null`` filter (matches
   only null-polarity relations) from an absent key (no filter).
 - get-relations / get-neighbors append cross-graph bridge rows/stubs after the
@@ -24,16 +31,24 @@ from pydantic import Field
 from theloom.errors import NotFoundError, OperationError
 from theloom.model import (
     CAUSAL_POLARITY_DEFAULTS,
+    CAUSAL_RELATION_TYPES,
+    Entity,
     EntityFilter,
+    EntityStatus,
     Polarity,
     RelationCreate,
     RelationFilter,
     RelationType,
     Strength,
 )
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
+from theloom.operations.entity import compact_entity_doc
 from theloom.store.multigraph import MultiGraph
-from theloom.verification.guards import relation_gate_errors
+from theloom.verification.guards import (
+    endpoint_error,
+    non_causal_polarity_error,
+    relation_gate_errors,
+)
 
 WILDCARD_GRAPH = "*"
 
@@ -82,8 +97,12 @@ class ReadRelationsInput(CommandInput):
 
 
 class UpdateRelationInput(CommandInput):
+    """``relationType`` is the *new* type; ``relationId`` selects which
+    parallel edge between the pair to update (default: the oldest)."""
+
     from_: UuidStr = Field(alias="from")
     to: UuidStr
+    relation_id: UuidStr | None = Field(default=None, alias="relationId")
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     polarity: Polarity | None = None
     strength: Strength | None = None
@@ -92,8 +111,14 @@ class UpdateRelationInput(CommandInput):
 
 
 class DeleteRelationInput(CommandInput):
+    """``relationType``/``relationId`` select which parallel edge between the
+    pair to retract (default: the oldest)."""
+
     from_: UuidStr = Field(alias="from")
     to: UuidStr
+    relation_id: UuidStr | None = Field(default=None, alias="relationId")
+    relation_type: RelationType | None = Field(default=None, alias="relationType")
+    hard: bool | None = None
     graph: str | None = None
 
 
@@ -107,19 +132,27 @@ class ListRelationsInput(CommandInput):
 
 
 class GetRelationsInput(CommandInput):
-    entity_id: UuidStr = Field(alias="entityId")
+    """Addressed by ``entityId`` or by ``name`` — exactly one."""
+
+    entity_id: UuidStr | None = Field(default=None, alias="entityId")
+    name: str | None = None
     direction: str | None = None
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     graph: str | None = None
     follow_bridges: bool | None = None
+    compact: bool | None = None
 
 
 class GetNeighborsInput(CommandInput):
-    entity_id: UuidStr = Field(alias="entityId")
+    """Addressed by ``entityId`` or by ``name`` — exactly one."""
+
+    entity_id: UuidStr | None = Field(default=None, alias="entityId")
+    name: str | None = None
     direction: str | None = None
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     graph: str | None = None
     follow_bridges: bool | None = None
+    compact: bool | None = None
 
 
 # =============================================================================
@@ -136,9 +169,19 @@ def _effective_polarity(item: RelationItem) -> str | None:
 def _gate_or_raise(item: RelationItem, multi: MultiGraph, polarity: str | None) -> None:
     store = multi.get_store(item.graph)
     errors = relation_gate_errors(store, item.from_, item.to, item.relation_type.value, polarity)
-    if errors:
-        message = f"Relation creation blocked by verification gate: {'; '.join(errors)}"
-        raise OperationError(message)
+    if not errors:
+        return
+    message = f"Relation creation blocked by verification gate: {'; '.join(errors)}"
+    # Whether to append the "verify both entities exist" hint is decided from
+    # the store directly — never by pattern-matching the gate's own prose,
+    # which could misfire on unrelated wording.
+    missing_endpoint = store.read_entity(item.from_) is None or store.read_entity(item.to) is None
+    if missing_endpoint:
+        raise OperationError(
+            f"Failed to create relation from {item.from_} to {item.to}: "
+            f"{message}. Use list_entities to verify both entities exist."
+        )
+    raise OperationError(f"Error creating relation: {message}")
 
 
 def _spec(item: RelationItem, polarity: str | None) -> RelationCreate:
@@ -157,16 +200,7 @@ def _spec(item: RelationItem, polarity: str | None) -> RelationCreate:
 
 def create_relation(params: CreateRelationInput, multi: MultiGraph) -> dict[str, Any]:
     polarity = _effective_polarity(params)
-    try:
-        _gate_or_raise(params, multi, polarity)
-    except OperationError as error:
-        message = str(error)
-        if "not found" in message or "exist" in message:
-            raise OperationError(
-                f"Failed to create relation from {params.from_} to {params.to}: "
-                f"{message}. Use list_entities to verify both entities exist."
-            ) from None
-        raise OperationError(f"Error creating relation: {message}") from None
+    _gate_or_raise(params, multi, polarity)
 
     # Gate passed → both endpoints exist in the resolved store, so this is a
     # same-graph relation; the bridge branch is unreachable with the gate on
@@ -192,32 +226,39 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
                 multi.get_store(graph).create_relations(specs)
         pending.clear()
 
-    # Prefetch existing entity ids per graph so the orphan gate is one query
-    # per graph instead of two reads per item.
-    known_ids: dict[str | None, set[str]] = {}
+    # Prefetch every endpoint's effective status per graph so the endpoint gate
+    # is one query per graph instead of two reads per item. Status, not just
+    # existence: the gate refuses a retracted endpoint (guards.endpoint_error),
+    # and the batch may not be the lenient way in.
+    known_status: dict[str | None, dict[str, EntityStatus]] = {}
 
-    def ids_for(graph: str | None) -> set[str]:
-        if graph not in known_ids:
+    def status_for(graph: str | None) -> dict[str, EntityStatus]:
+        if graph not in known_status:
             store = multi.get_store(graph)
-            known_ids[graph] = {e.id for e in store.list_entities(_ALL_STATUS_FILTER)}
-        return known_ids[graph]
+            known_status[graph] = {
+                e.id: e.effective_status for e in store.list_entities(_ALL_STATUS_FILTER)
+            }
+        return known_status[graph]
 
     for item in params.relations:
         polarity = _effective_polarity(item)
         gate_errors: list[str] = []
-        if item.relation_type in CAUSAL_POLARITY_DEFAULTS and polarity not in ("+", "-"):
-            gate_errors.append(
-                f"Causal relation type '{item.relation_type.value}' requires polarity"
-            )
+        if item.relation_type in CAUSAL_POLARITY_DEFAULTS:
+            if polarity not in ("+", "-"):
+                gate_errors.append(
+                    f"Causal relation type '{item.relation_type.value}' requires polarity"
+                )
+        elif polarity is not None:
+            gate_errors.append(non_causal_polarity_error(item.relation_type.value, polarity))
         if item.from_ == item.to:
             gate_errors.append(
                 f"Relation cannot reference the same entity as source and target: '{item.from_}'"
             )
-        graph_ids = ids_for(item.graph)
-        if item.from_ not in graph_ids:
-            gate_errors.append(f"Source entity '{item.from_}' does not exist")
-        if item.to not in graph_ids:
-            gate_errors.append(f"Target entity '{item.to}' does not exist")
+        graph_status = status_for(item.graph)
+        for role, endpoint in (("Source", item.from_), ("Target", item.to)):
+            error = endpoint_error(role, endpoint, graph_status.get(endpoint))
+            if error is not None:
+                gate_errors.append(error)
 
         if gate_errors:
             failed += 1
@@ -264,18 +305,54 @@ def read_relations(params: ReadRelationsInput, multi: MultiGraph) -> list[dict[s
     return [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
 
 
+def _gated_update_polarity(
+    params: UpdateRelationInput, multi: MultiGraph
+) -> tuple[bool, str | None]:
+    """The polarity the update must land on, and whether it has to be written.
+
+    The create-time partition (causal types carry polarity, everything else
+    carries none) is an invariant of the stored edge, not just of creation, so
+    an update that changes the type and/or the polarity is gated on the
+    *resulting* edge. Causal defaults are inferred exactly as on create.
+    """
+    if params.relation_type is None and not params.provided("polarity"):
+        return False, None
+    store = multi.get_store(params.graph)
+    existing = store.read_relations(params.from_, params.to)
+    if params.relation_id is not None:
+        existing = [r for r in existing if r.id == params.relation_id]
+    if not existing:
+        # No such edge — store.update_relation raises the NotFoundError.
+        return params.provided("polarity"), params.polarity
+    current = existing[0]
+    relation_type = params.relation_type or current.relation_type
+    polarity: str | None = params.polarity if params.provided("polarity") else current.polarity
+    if relation_type in CAUSAL_RELATION_TYPES:
+        if polarity is None:
+            polarity = CAUSAL_POLARITY_DEFAULTS.get(relation_type)
+    elif polarity is not None:
+        message = "Relation update blocked by verification gate: " + non_causal_polarity_error(
+            relation_type.value, polarity
+        )
+        raise OperationError(f"Error updating relation: {message}")
+    return polarity != current.polarity or params.provided("polarity"), polarity
+
+
 def update_relation(params: UpdateRelationInput, multi: MultiGraph) -> dict[str, Any]:
+    write_polarity, polarity = _gated_update_polarity(params, multi)
     updates: dict[str, Any] = {}
     if params.relation_type is not None:
         updates["relationType"] = params.relation_type.value
-    if params.provided("polarity"):
-        updates["polarity"] = params.polarity
+    if write_polarity:
+        updates["polarity"] = polarity
     if params.strength is not None:
         updates["strength"] = params.strength.value
     if params.provided("evidence"):
         updates["evidence"] = params.evidence
     try:
-        relation = multi.get_store(params.graph).update_relation(params.from_, params.to, updates)
+        relation = multi.get_store(params.graph).update_relation(
+            params.from_, params.to, updates, relation_id=params.relation_id
+        )
     except NotFoundError:
         raise NotFoundError(
             f"Relation not found from {params.from_} to {params.to}. "
@@ -285,14 +362,25 @@ def update_relation(params: UpdateRelationInput, multi: MultiGraph) -> dict[str,
 
 
 def delete_relation(params: DeleteRelationInput, multi: MultiGraph) -> str:
+    """Retract a relation: the edge leaves every read path but its final doc is
+    kept with a closed system-time interval, so history stays queryable.
+    ``hard: true`` erases the edge instead."""
+    hard = bool(params.hard)
     try:
-        multi.get_store(params.graph).delete_relation(params.from_, params.to)
+        multi.get_store(params.graph).delete_relation(
+            params.from_,
+            params.to,
+            params.relation_type.value if params.relation_type is not None else None,
+            relation_id=params.relation_id,
+            hard=hard,
+        )
     except NotFoundError:
         raise NotFoundError(
             f"Relation not found from {params.from_} to {params.to}. "
             "Use list_relations to verify the relation exists before deleting."
         ) from None
-    return f"Relation from {params.from_} to {params.to} deleted successfully."
+    verb = "deleted" if hard else "retracted"
+    return f"Relation from {params.from_} to {params.to} {verb} successfully."
 
 
 def list_relations(params: ListRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
@@ -330,6 +418,12 @@ def list_relations(params: ListRelationsInput, multi: MultiGraph) -> list[dict[s
 # =============================================================================
 
 
+def _wire_doc(raw: dict[str, Any]) -> dict[str, Any]:
+    """The wire projection of a stored doc — the same envelope ``read_entity``
+    plus ``model_dump`` produced, so batching the fetch cannot drift the shape."""
+    return Entity.model_validate(raw).model_dump(by_alias=True, exclude_unset=True)
+
+
 def _bridge_matches(
     bridge: dict[str, Any], entity_id: str, direction: str, relation_type: str | None
 ) -> bool:
@@ -348,22 +442,27 @@ def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
-    relations = store.get_relations(params.entity_id, direction, relation_type)  # type: ignore[arg-type]
+    entity_id = resolve_entity_ref(
+        store, entity_id=params.entity_id, name=params.name, id_field="entityId"
+    )
+    relations = store.get_relations(entity_id, direction, relation_type)  # type: ignore[arg-type]
     results = [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
 
-    for bridge in multi.bridges.list_bridges({"entity_id": params.entity_id}):
-        if not _bridge_matches(bridge, params.entity_id, direction, relation_type):
+    for bridge in multi.bridges.list_bridges({"entity_id": entity_id}):
+        if not _bridge_matches(bridge, entity_id, direction, relation_type):
             continue
         row = dict(bridge)
         if params.follow_bridges:
             from_store = multi.get_store(bridge["from_graph"])
             from_entity = from_store.read_entity(bridge["from"])
             if from_entity is not None:
-                row["from_entity"] = from_entity.model_dump(by_alias=True, exclude_unset=True)
+                doc = from_entity.model_dump(by_alias=True, exclude_unset=True)
+                row["from_entity"] = compact_entity_doc(doc) if params.compact else doc
             to_store = multi.get_store(bridge["to_graph"])
             to_entity = to_store.read_entity(bridge["to"])
             if to_entity is not None:
-                row["to_entity"] = to_entity.model_dump(by_alias=True, exclude_unset=True)
+                doc = to_entity.model_dump(by_alias=True, exclude_unset=True)
+                row["to_entity"] = compact_entity_doc(doc) if params.compact else doc
         results.append(row)
     return results
 
@@ -372,27 +471,90 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
-    neighbors = store.get_neighbors(params.entity_id, direction, relation_type)  # type: ignore[arg-type]
-    results = [n.model_dump(by_alias=True, exclude_unset=True) for n in neighbors]
+    entity_id = resolve_entity_ref(
+        store, entity_id=params.entity_id, name=params.name, id_field="entityId"
+    )
+    relations = store.get_relations(entity_id, direction, relation_type)  # type: ignore[arg-type]
 
-    seen_cross_graph: set[str] = set()
-    for bridge in multi.bridges.list_bridges({"entity_id": params.entity_id}):
-        if not _bridge_matches(bridge, params.entity_id, direction, relation_type):
-            continue
-        if bridge["from"] == params.entity_id:
-            neighbor_id, neighbor_graph = bridge["to"], bridge["to_graph"]
+    # One (relationType, direction) per unique neighbor id, first-seen — the
+    # same neighbor set/order the store's own dedup (filters.extract_neighbor_ids)
+    # has always produced, now keeping which edge made the connection.
+    edges: dict[str, tuple[str, str]] = {}
+    order: list[str] = []
+    for relation in relations:
+        if direction == "outgoing":
+            neighbor_id, edge_direction = relation.to, "out"
+        elif direction == "incoming":
+            neighbor_id, edge_direction = relation.from_, "in"
+        elif relation.from_ == entity_id:
+            neighbor_id, edge_direction = relation.to, "out"
         else:
-            neighbor_id, neighbor_graph = bridge["from"], bridge["from_graph"]
+            neighbor_id, edge_direction = relation.from_, "in"
+        if neighbor_id not in edges:
+            edges[neighbor_id] = (relation.relation_type.value, edge_direction)
+            order.append(neighbor_id)
+
+    # The whole neighbourhood is hydrated in ONE query: a single-id read costs a
+    # label scan, so a per-neighbour loop is a round trip per edge on exactly the
+    # hub entities that have the most of them.
+    neighbor_docs = store.read_entity_docs(order)
+    results: list[dict[str, Any]] = []
+    for neighbor_id in order:
+        raw = neighbor_docs.get(neighbor_id)
+        if raw is None:
+            continue
+        doc = _wire_doc(raw)
+        if params.compact:
+            doc = compact_entity_doc(doc)
+        edge_relation_type, edge_direction = edges[neighbor_id]
+        doc["relationType"] = edge_relation_type
+        doc["direction"] = edge_direction
+        results.append(doc)
+
+    # Cross-graph rows: collected first, then hydrated one query per remote
+    # graph rather than one per bridge.
+    bridge_rows: list[tuple[str, str, str, str]] = []
+    seen_cross_graph: set[str] = set()
+    for bridge in multi.bridges.list_bridges({"entity_id": entity_id}):
+        if not _bridge_matches(bridge, entity_id, direction, relation_type):
+            continue
+        if bridge["from"] == entity_id:
+            neighbor_id, neighbor_graph, edge_direction = bridge["to"], bridge["to_graph"], "out"
+        else:
+            neighbor_id, neighbor_graph, edge_direction = bridge["from"], bridge["from_graph"], "in"
         if neighbor_id in seen_cross_graph:
             continue
         seen_cross_graph.add(neighbor_id)
+        bridge_rows.append((neighbor_id, neighbor_graph, edge_direction, bridge["relationType"]))
 
-        if params.follow_bridges:
-            entity = multi.get_store(neighbor_graph).read_entity(neighbor_id)
-            if entity is not None:
-                doc = entity.model_dump(by_alias=True, exclude_unset=True)
-                doc["graph"] = neighbor_graph
-                results.append(doc)
-                continue
-        results.append({"id": neighbor_id, "graph": neighbor_graph, "stub": True})
+    cross_docs: dict[str, dict[str, dict[str, Any]]] = {}
+    if params.follow_bridges:
+        ids_by_graph: dict[str, list[str]] = {}
+        for neighbor_id, neighbor_graph, _, _ in bridge_rows:
+            ids_by_graph.setdefault(neighbor_graph, []).append(neighbor_id)
+        cross_docs = {
+            graph_name: multi.get_store(graph_name).read_entity_docs(ids)
+            for graph_name, ids in ids_by_graph.items()
+        }
+
+    for neighbor_id, neighbor_graph, edge_direction, bridge_type in bridge_rows:
+        raw = cross_docs.get(neighbor_graph, {}).get(neighbor_id)
+        if raw is not None:
+            doc = _wire_doc(raw)
+            if params.compact:
+                doc = compact_entity_doc(doc)
+            doc["graph"] = neighbor_graph
+            doc["relationType"] = bridge_type
+            doc["direction"] = edge_direction
+            results.append(doc)
+            continue
+        results.append(
+            {
+                "id": neighbor_id,
+                "graph": neighbor_graph,
+                "stub": True,
+                "relationType": bridge_type,
+                "direction": edge_direction,
+            }
+        )
     return results

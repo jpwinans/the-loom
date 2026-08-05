@@ -69,7 +69,9 @@ class EntityType(StrEnum):
 
 
 class RelationType(StrEnum):
-    """Structural (no polarity): related_to, instance_of, part_of, sources.
+    """Structural (no polarity): related_to, instance_of, part_of, sources,
+    calls, references (the last two are code structure: invocation and
+    non-invoking mention).
     Epistemic (no polarity): supports, contradicts, questions, supersedes.
     Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens.
     Plus crystallized_from (reification lineage)."""
@@ -78,6 +80,8 @@ class RelationType(StrEnum):
     INSTANCE_OF = "instance_of"
     PART_OF = "part_of"
     SOURCES = "sources"
+    CALLS = "calls"
+    REFERENCES = "references"
     SUPPORTS = "supports"
     CONTRADICTS = "contradicts"
     QUESTIONS = "questions"
@@ -89,6 +93,17 @@ class RelationType(StrEnum):
     AMPLIFIES = "amplifies"
     DAMPENS = "dampens"
     CRYSTALLIZED_FROM = "crystallized_from"
+
+
+class UsageOutcome(StrEnum):
+    """How a recorded piece of work actually turned out (the experiential
+    layer). ``useful`` is a positive citation of what it cited; ``dead_end``
+    and ``corrected`` are negative — the difference is that a correction says
+    the graph was wrong, a dead end says it led nowhere."""
+
+    USEFUL = "useful"
+    DEAD_END = "dead_end"
+    CORRECTED = "corrected"
 
 
 class MemoryType(StrEnum):
@@ -498,7 +513,10 @@ class EntityFilter(LoomModel):
     theloom/store/filters.py with the ordering:
     status → type → name → query → version → session; exclude wins over
     sourcedFrom. The session filter matches the first-class field or the
-    legacy "subgraph: {sid}-{qid}" observation tag."""
+    legacy "subgraph: {sid}-{qid}" observation tag.
+
+    ``limit`` caps the returned window *after* filtering, in the store's
+    deterministic order; the store also reports the untruncated match total."""
 
     entity_type: EntityType | None = Field(default=None, alias="entityType")
     name: str | None = None
@@ -514,6 +532,7 @@ class EntityFilter(LoomModel):
     durability: Durability | list[Durability] | None = None
     exclude_expired: bool | None = Field(default=None, alias="excludeExpired")
     session: str | None = None
+    limit: int | None = Field(default=None, ge=1)
 
 
 class RelationFilter(LoomModel):

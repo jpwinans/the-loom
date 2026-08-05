@@ -11,17 +11,28 @@ All Loom commands grouped by function. Commands use kebab-case (e.g., `create-en
 | Tool | Description | Key Params |
 |------|-------------|------------|
 | `create-entity` | Create entity | `name`, `entityType`, `observations`, `confidence?`, `provenance?`, `graph?` |
-| `read-entity` | Read by ID | `id`, `graph?` |
+| `read-entity` | Read by ID or name | `id?`, `name?`, `compact?`, `graph?` |
 | `update-entity` | Update fields | `id`, `name?`, `observations?`, `confidence?`, `status?`, `graph?` |
 | `delete-entity` | Delete entity | `id`, `graph?` |
-| `list-entities` | Filter entities | `entityType?`, `query?`, `name?`, `statusFilter?`, `graph?` |
+| `list-entities` | Filter entities | `entityType?`, `query?`, `name?`, `includeSuperseded?`/`includeDeprecated?`/`includeRetracted?`/`includeInvestigating?`, `limit?`, `compact?`, `graph?` |
 | `create-relation` | Create edge | `from`, `to`, `relationType`, `polarity`, `strength`, `evidence?`, `graph?` |
 | `read-relation` | Read relation | `id`, `graph?` |
 | `update-relation` | Update relation | `id`, `relationType?`, `strength?`, `graph?` |
 | `delete-relation` | Delete relation | `id`, `graph?` |
 | `list-relations` | Filter relations | `entityId?`, `relationType?`, `graph?` |
-| `get-relations` | Relations for entity | `entityId`, `direction?`, `relationType?`, `graph?` |
-| `get-neighbors` | Connected entities | `entityId`, `direction?`, `relationType?`, `graph?` |
+| `get-relations` | Relations for entity | `entityId?`, `name?`, `direction?`, `relationType?`, `compact?`, `graph?` |
+| `get-neighbors` | Connected entities (each annotated with the connecting `relationType`/direction) | `entityId?`, `name?`, `direction?`, `relationType?`, `compact?`, `graph?` |
+
+`read-entity`, `get-relations`, `get-neighbors`, `entity-deep-dive`, `find-shortest-path`,
+`explain-path`, `explore`, `find-callers`, `find-callees`, and `blast-radius` are all
+addressed by `id`/`entityId` **or** `name` — exactly one required; name resolution is
+exact-match first, then unique substring, else `VALIDATION_ERROR`.
+
+`compact: true` (on `read-entity`, `list-entities`, `get-neighbors`) projects to
+`{id, name, entityType, status, observations}`, off by default (byte-identical
+response when omitted). `list-entities` with `limit` returns
+`{items, truncated: {shown, total, hint}}` instead of the legacy bare array; without
+`limit` the bare-array shape is unchanged.
 
 ---
 
@@ -51,6 +62,7 @@ All Loom commands grouped by function. Commands use kebab-case (e.g., `create-en
 | `embedding-status` | Check coverage | `graph?` |
 | `flush-pending-embeddings` | Force pending | `graph?` |
 | `retry-failed-embeddings` | Retry failures | `graph?` |
+| `warm-embedder` | Pre-download the embedding model and run one query, ahead of a first `embed-entities`/search call | — |
 
 ---
 
@@ -85,7 +97,7 @@ All Loom commands grouped by function. Commands use kebab-case (e.g., `create-en
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
-| `analyze-centrality` | Hub detection (degree/betweenness/pagerank) | `algorithm`, `limit?`, `graph?` |
+| `analyze-centrality` | Hub detection (degree/betweenness/pagerank); returns ranked `[{id, name, entityType, score}]` | `algorithm`, `limit?`, `graph?` |
 | `detect-cycles` | Find circular dependencies | `includePaths?`, `causalOnly?`, `graph?` |
 | `detect-loops` | Find causal feedback loops | `graph?` |
 | `detect-components` | Find connected components | `graph?` |
@@ -210,6 +222,41 @@ Bundled multi-step analyses. **Prefer these over manual multi-step workflows.**
 | `extract-codebase` | SCIP-based TS/JS extraction | `projectPath`, `graph?`, `includeTests?`, `include?`, `exclude?`, `dryRun?` |
 | `update-codebase` | Incremental git diff update | `projectPath`, `graphName`, `gitRef?`, `embedAfterUpdate?`, `dryRun?` |
 | `extraction-status` | Check progress | `graph?` |
+
+---
+
+## Consumption (4 tools)
+
+One-call, token-budgeted comprehension answers over an extracted code graph. All four
+address their symbol by `entityId` **or** `name` (exactly one).
+
+| Tool | Description | Key Params |
+|------|-------------|------------|
+| `explore` | Everything about one symbol: definition, callers/callees (call-site anchored), imports/importedBy, contains/partOf, inheritance, and semantic-layer claims/patterns/tensions attached to it or its file — spent round-robin against a token budget | `entityId?`, `name?`, `budget?`, `graph?` |
+| `find-callers` | Ranked callers of a symbol, each anchored at its call site; rolls up by file past the cap | `entityId?`, `name?`, `limit?` (default 30), `graph?` |
+| `find-callees` | Ranked callees of a symbol, each anchored at its call site | `entityId?`, `name?`, `limit?` (default 30), `graph?` |
+| `blast-radius` | Reverse dependency reach over `calls`/`requires`/`instance_of`, grouped by module, with hub suppression (99th-percentile degree, floor 8) | `entityId?`, `name?`, `depth?` (max 10), `limit?`, `hubPercentile?`, `graph?` |
+
+`explore`'s response always keeps the queried entity and at least one row per populated
+section; a `truncation` block reports what was cut (`applied`, `shown`/`total` per
+section, `hint`). `blast-radius` reports `suppressedHubs` for any node it refused to
+expand through.
+
+---
+
+## Work Memory (2 tools)
+
+The experiential layer: what a piece of work concluded, which entities it leaned on,
+and how that held up — recorded natively as graph evidence, then distilled with decay.
+
+| Tool | Description | Key Params |
+|------|-------------|------------|
+| `record-outcome` | Record how a piece of work turned out, as a usage-tagged evidence entity citing the entities it used | `question`, `answer?`, `entityIds` (>=1), `outcome` (`useful`/`dead_end`/`corrected`), `correction?`, `graph?` |
+| `reflect` | Aggregate recorded outcomes with exponential time decay, corroboration thresholds, and file-fingerprint staleness into standing `usage_status`/`usage_stale` observations (composite) | `halfLifeDays?`, `minCorroboration?`, `projectPath?`, `asOf?`, `dryRun?`, `graph?` |
+
+`record-outcome` does not embed — run `embed-entities` afterward if the record needs to
+be semantically searchable. `reflect` writes through the versioned update path, so its
+standing observations are queryable history, not overwrites.
 
 ---
 

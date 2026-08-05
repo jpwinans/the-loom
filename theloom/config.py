@@ -6,9 +6,15 @@ highest wins:
     CLI flags > environment > ~/.loom/config.json > defaults
 
 Environment variables: GRAPH_HOST, GRAPH_PORT, DEFAULT_GRAPH, ANTHROPIC_API_KEY,
-LOOM_LLM_* (see below), and LOOM_CONFIG (alternate config-file path).
-Config-file keys are camelCase (defaultGraph, anthropicApiKey) plus
-graphHost/graphPort for the FalkorDB substrate.
+LOOM_LLM_* (see below), LOOM_MODEL_CACHE_DIR, and LOOM_CONFIG (alternate
+config-file path). Config-file keys are camelCase (defaultGraph,
+anthropicApiKey, modelCacheDir) plus graphHost/graphPort for the FalkorDB
+substrate.
+
+Embedding model cache: ``modelCacheDir`` (env ``LOOM_MODEL_CACHE_DIR``) pins
+where the embedder's HuggingFace/fastembed model files land, so the ~500MB
+first-use download happens once per machine instead of once per process cwd.
+Defaults to ``~/.loom/models``.
 
 LLM routing (optional, beyond the default Anthropic path): an
 optional ``llm`` config section routes synthesis LLM calls to any
@@ -38,18 +44,28 @@ import os
 import stat
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from theloom.errors import ConfigError
 
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 6379
 DEFAULT_GRAPH = "default"
 
 
-class LoomConfigError(Exception):
-    """A configuration error, carrying the CLI's typed error code."""
+def _default_model_cache_dir() -> str:
+    return str(Path.home() / ".loom" / "models")
 
-    code = "CONFIG_ERROR"
+
+class LoomConfigError(ConfigError):
+    """A configuration error, carrying the CLI's typed error code.
+
+    Routes through the shared typed-error hierarchy (``theloom.errors.LoomError``)
+    so the CLI's ``format_error`` recognizes it via ``isinstance`` and emits
+    ``CONFIG_ERROR`` instead of falling back to the untyped-exception default of
+    ``OPERATION_ERROR``.
+    """
 
 
 LLM_PROVIDERS = ("anthropic", "openai", "ollama", "mlx")
@@ -85,6 +101,7 @@ class LoomConfig:
     default_graph: str = DEFAULT_GRAPH
     anthropic_api_key: str | None = None
     llm: LlmConfig | None = None
+    model_cache_dir: str = field(default_factory=_default_model_cache_dir)
 
 
 def default_config_path(env: Mapping[str, str]) -> Path:
@@ -150,6 +167,7 @@ def load_config(
     port = DEFAULT_PORT
     default_graph = DEFAULT_GRAPH
     anthropic_api_key: str | None = None
+    model_cache_dir = _default_model_cache_dir()
 
     # Layer 1: config file
     if isinstance(file_config.get("graphHost"), str):
@@ -160,6 +178,8 @@ def load_config(
         default_graph = str(file_config["defaultGraph"])
     if isinstance(file_config.get("anthropicApiKey"), str):
         anthropic_api_key = str(file_config["anthropicApiKey"])
+    if isinstance(file_config.get("modelCacheDir"), str):
+        model_cache_dir = str(file_config["modelCacheDir"])
 
     llm = _resolve_llm(file_config.get("llm"), environment)
 
@@ -172,6 +192,8 @@ def load_config(
         default_graph = environment["DEFAULT_GRAPH"]
     if environment.get("ANTHROPIC_API_KEY"):
         anthropic_api_key = environment["ANTHROPIC_API_KEY"]
+    if environment.get("LOOM_MODEL_CACHE_DIR"):
+        model_cache_dir = environment["LOOM_MODEL_CACHE_DIR"]
 
     # Layer 3: CLI flags
     if flags:
@@ -183,6 +205,8 @@ def load_config(
             default_graph = str(flags["default_graph"])
         if isinstance(flags.get("anthropic_api_key"), str):
             anthropic_api_key = str(flags["anthropic_api_key"])
+        if isinstance(flags.get("model_cache_dir"), str):
+            model_cache_dir = str(flags["model_cache_dir"])
 
     return LoomConfig(
         host=host,
@@ -190,6 +214,7 @@ def load_config(
         default_graph=default_graph,
         anthropic_api_key=anthropic_api_key,
         llm=llm,
+        model_cache_dir=model_cache_dir,
     )
 
 

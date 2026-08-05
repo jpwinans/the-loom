@@ -129,7 +129,9 @@ class TestResolveCalls:
                 "path": "src/service.py",
                 "imports": [{"module": "src.models", "names": ["open_account"]}],
                 "symbols": {"onboard": "onboard (service)"},
-                "unresolvedCalls": [{"caller": "onboard (service)", "callee": "open_account"}],
+                "unresolvedCalls": [
+                    {"caller": "onboard (service)", "callee": "open_account", "line": 11}
+                ],
             },
             {
                 "path": "src/models.py",
@@ -139,9 +141,16 @@ class TestResolveCalls:
             },
         ]
         out = resolution.resolve_calls(per_file, FILES)
-        assert [(r["from"], r["to"]) for r in out["relations"]] == [
-            ("onboard (service)", "open_account (models)")
+        assert [(r["from"], r["to"], r["relationType"]) for r in out["relations"]] == [
+            ("onboard (service)", "open_account (models)", "calls")
         ]
+        # The anchor is the call site in the caller's file, not the callee's
+        # definition; the format is fixed so a reader can parse it.
+        assert (
+            out["relations"][0]["evidence"]
+            == "onboard (service) calls open_account at src/service.py:12"
+        )
+        assert out["relations"][0]["polarity"] is None
         assert out["relations"][0]["confidence"]["basis"] == "direct_observation"
         assert out["stats"]["importGuidedCalls"] == 1
 
@@ -153,7 +162,9 @@ class TestResolveCalls:
                 "imports": [],
                 "symbols": {"onboard": "onboard (service)"},
                 "symbolKinds": {"onboard": "procedure"},
-                "unresolvedCalls": [{"caller": "onboard (service)", "callee": "only_one"}],
+                "unresolvedCalls": [
+                    {"caller": "onboard (service)", "callee": "only_one", "line": 41}
+                ],
             },
             {
                 "path": "src/models.py",
@@ -166,6 +177,13 @@ class TestResolveCalls:
         ]
         out = resolution.resolve_calls(per_file, FILES)
         assert out["relations"][0]["to"] == "only_one (models)"
+        assert out["relations"][0]["relationType"] == "calls"
+        # A deduced edge is anchored the same way; only the confidence basis
+        # records that no import proved it.
+        assert (
+            out["relations"][0]["evidence"]
+            == "onboard (service) calls only_one at src/service.py:42"
+        )
         # No import names it, so the link is deduced rather than observed.
         assert out["relations"][0]["confidence"]["basis"] == "inference"
         assert out["stats"]["uniqueNameCalls"] == 1
@@ -213,8 +231,8 @@ class TestResolveCalls:
             {"path": "lib/helper.js", "imports": [], "symbols": {"run": "run (helper)"}},
         ]
         out = resolution.resolve_calls(per_file, FILES)
-        assert [(r["from"], r["to"]) for r in out["relations"]] == [
-            ("onboard (service)", "run (models)")
+        assert [(r["from"], r["to"], r["relationType"]) for r in out["relations"]] == [
+            ("onboard (service)", "run (models)", "calls")
         ]
 
 
@@ -224,7 +242,8 @@ class TestUniqueNameGuards:
     Without them a single project symbol that happens to share a common name
     absorbs every unqualified caller: 288 Python ``len()`` calls resolved to a
     lone TypeScript ``len`` constant, making it the most-connected node in the
-    graph and welding the frontend to the backend.
+    graph and welding the frontend to the backend. Typing these edges ``calls``
+    makes them easier to find, so the guards matter more, not less.
     """
 
     def _calls(self, callee: str, target_lang: str, target_kind: str) -> dict[str, object]:
@@ -236,7 +255,9 @@ class TestUniqueNameGuards:
                     "imports": [],
                     "symbols": {"onboard": "onboard (service)"},
                     "symbolKinds": {"onboard": "procedure"},
-                    "unresolvedCalls": [{"caller": "onboard (service)", "callee": callee}],
+                    "unresolvedCalls": [
+                        {"caller": "onboard (service)", "callee": callee, "line": 6}
+                    ],
                 },
                 {
                     "path": "lib/index.ts",
@@ -251,6 +272,7 @@ class TestUniqueNameGuards:
         )
 
     def test_a_language_builtin_never_resolves(self) -> None:
+        """No ``calls`` edge either — the guard drops the edge, not its type."""
         assert self._calls("len", "python", "procedure")["relations"] == []
 
     def test_a_call_does_not_cross_a_language_boundary(self) -> None:
@@ -263,9 +285,12 @@ class TestUniqueNameGuards:
 
     def test_a_same_language_callable_still_resolves(self) -> None:
         out = self._calls("helper", "python", "procedure")
-        assert [(r["from"], r["to"]) for r in out["relations"]] == [
-            ("onboard (service)", "helper (index)")
+        assert [(r["from"], r["to"], r["relationType"]) for r in out["relations"]] == [
+            ("onboard (service)", "helper (index)", "calls")
         ]
+        assert out["relations"][0]["evidence"] == (
+            "onboard (service) calls helper at src/service.py:7"
+        )
         assert out["relations"][0]["confidence"]["basis"] == "inference"
 
 
@@ -291,6 +316,12 @@ class TestResolveInheritances:
         assert [(r["from"], r["to"], r["relationType"]) for r in out["relations"]] == [
             ("Savings (service)", "Account (models)", "instance_of")
         ]
+        # Inheritance evidence is untouched by the call-site anchoring: a base
+        # class is named at the class header, not at a call site.
+        assert (
+            out["relations"][0]["evidence"]
+            == "Savings (service) extends Account, imported from src/models.py"
+        )
         assert out["stats"]["importGuidedInheritances"] == 1
 
     def test_an_ambiguous_base_class_resolves_to_nothing(self) -> None:
@@ -332,35 +363,70 @@ class TestEndToEnd:
 
         # Python: a dotted import and the call it enables
         assert ("file:src/service.py", "file:src/models.py", "requires") in edges
-        assert ("onboard (service)", "open_account (models)", "related_to") in edges
+        assert ("onboard (service)", "open_account (models)", "calls") in edges
         # TS -> JS: an extensionless specifier resolved across extensions, and a
         # call made from inside a method body
         assert ("file:lib/index.ts", "file:lib/helper.js", "requires") in edges
-        assert ("Reporter.summarize (index)", "formatBalance (helper)", "related_to") in edges
+        assert ("Reporter.summarize (index)", "formatBalance (helper)", "calls") in edges
         # Third-party imports become one package node
         assert ("file:src/models.py", "pkg:dataclasses", "requires") in edges
 
+    def test_structural_extraction_never_emits_related_to(self) -> None:
+        """``related_to`` is the semantic layer's grounding link. Structural
+        extraction used to spend it on call edges, which made the two
+        indistinguishable once both were in one graph."""
+        result = treesitter.extract_codebase("tests/fixtures/repo")
+        assert {r["relationType"] for r in result["relations"]} == {"part_of", "requires", "calls"}
+
+    def test_every_call_edge_is_anchored_at_its_call_site(self) -> None:
+        """One machine-stable format, whichever resolver produced the edge."""
+        result = treesitter.extract_codebase("tests/fixtures/repo")
+        evidence = sorted(
+            r["evidence"] for r in result["relations"] if r["relationType"] == "calls"
+        )
+        assert evidence == [
+            # cross-file, TS -> JS, resolved through the import
+            "Reporter.summarize (index) calls formatBalance at lib/index.ts:12",
+            # cross-file, resolved through the import
+            "onboard (service) calls open_account at src/service.py:12",
+            # same file: the site is where the call is written, not line 7
+            # where Account is defined
+            "open_account (models) calls Account at src/models.py:21",
+        ]
+
     def test_no_edge_points_at_a_nonexistent_entity(self) -> None:
         """The bug this module exists to fix: import edges named a raw module
-        string that was never created, so every one was dropped on import."""
+        string that was never created, so every one was dropped on import.
+
+        ``bulk_import`` drops an unresolvable relation with a per-item error
+        rather than failing the run, so a whole class of edge can vanish
+        unnoticed — 1,270 of them did. Every relation type gets checked, and
+        each type must actually be present, so a type that stops being emitted
+        cannot pass this test by having nothing to check.
+        """
         result = treesitter.extract_codebase("tests/fixtures/repo")
         names = {e["name"] for e in result["entities"]}
         dangling = [
-            (r["from"], r["to"])
+            (r["from"], r["to"], r["relationType"])
             for r in result["relations"]
             if r["from"] not in names or r["to"] not in names
         ]
         assert dangling == []
+        assert {r["relationType"] for r in result["relations"]} >= {"calls", "requires", "part_of"}
 
     def test_generated_entities_satisfy_the_domain_model(self) -> None:
-        """Extraction output crosses into the store through EntityCreate, so a
-        field the model rejects fails the whole import — a unit test that only
-        checks dict shape will not catch it."""
-        from theloom.model import EntityCreate
+        """Extraction output crosses into the store through EntityCreate and
+        RelationCreate, so a field the model rejects fails the whole import — a
+        unit test that only checks dict shape will not catch it. Relations go
+        through too, because an unregistered relationType (``calls`` before it
+        joined the enum) is exactly that kind of failure."""
+        from theloom.model import EntityCreate, RelationCreate
 
         result = treesitter.extract_codebase("tests/fixtures/repo")
         for entity in result["entities"]:
             EntityCreate.model_validate(entity)
+        for relation in result["relations"]:
+            RelationCreate.model_validate(relation)
 
     def test_resolution_stats_are_reported(self) -> None:
         result = treesitter.extract_codebase("tests/fixtures/repo")

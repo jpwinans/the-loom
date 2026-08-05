@@ -4,6 +4,12 @@ Comprehensive analysis of one entity: its details, relations (both directions),
 neighbors, centrality scores
 (degree, betweenness, pagerank exposed as ``eigenvector``), loop membership, and
 semantic neighbors. Every section runs inside :func:`time_section`.
+
+By default the relations and neighbors sections render one compact line per
+item — ``{name, entityType, relationType, direction, anchor}`` — instead of
+full relation/entity envelopes, keeping a typical file entity's payload well
+under the ~70KB a full dive used to cost. Pass ``"full": true`` to get the
+pre-compaction envelopes back.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from theloom.operations.analysis import (
     analyze_centrality,
     detect_loops,
 )
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.operations.entity import _entity_doc
 from theloom.operations.relations import (
     GetNeighborsInput,
@@ -33,8 +39,26 @@ from theloom.store.multigraph import MultiGraph
 
 
 class EntityDeepDiveInput(CommandInput):
-    entity_id: UuidStr = Field(alias="entityId")
+    """Addressed by ``entityId`` or by ``name`` — exactly one."""
+
+    entity_id: UuidStr | None = Field(default=None, alias="entityId")
+    name: str | None = None
     graph: str | None = None
+    full: bool | None = None
+
+
+# Anchor lines stay short — they exist to give an agent just enough context to
+# decide whether to follow up, not to replace a real read of the entity.
+ANCHOR_MAX_CHARS = 200
+
+
+def _anchor(observations: list[str] | None) -> str | None:
+    if not observations:
+        return None
+    text = observations[0]
+    if len(text) > ANCHOR_MAX_CHARS:
+        return text[:ANCHOR_MAX_CHARS].rstrip() + "…"
+    return text
 
 
 def _to_relation(r: dict[str, Any]) -> dict[str, Any]:
@@ -49,10 +73,35 @@ def _to_relation(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _score_for(centrality_response: dict[str, Any], entity_id: str) -> float:
+    return next(
+        (entry["score"] for entry in centrality_response["results"] if entry["id"] == entity_id),
+        0,
+    )
+
+
+def _relation_line(
+    relation: dict[str, Any],
+    other_id: str,
+    direction: str,
+    lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    other = lookup.get(other_id, {})
+    return {
+        "name": other.get("name", other_id),
+        "entityType": other.get("entityType", "unknown"),
+        "relationType": relation["relationType"],
+        "direction": direction,
+        "anchor": _anchor(other.get("observations")),
+    }
+
+
 def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str, Any]:
     start = time.perf_counter()
     graph = params.graph
-    entity_id = params.entity_id
+    entity_id = resolve_entity_ref(
+        multi.get_store(graph), entity_id=params.entity_id, name=params.name, id_field="entityId"
+    )
 
     def _entity() -> dict[str, Any]:
         doc = _entity_doc(multi.get_store(graph), entity_id)
@@ -85,6 +134,24 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
 
     entity_section = time_section(_entity)
 
+    # The relations and neighbors sections both need the same compact neighbor
+    # set; fetch it once and share it rather than paying two store round-trips.
+    compact_neighbors: list[dict[str, Any]] | None = None
+
+    def _compact_neighbors() -> list[dict[str, Any]]:
+        nonlocal compact_neighbors
+        if compact_neighbors is None:
+            compact_neighbors = get_neighbors(
+                GetNeighborsInput.model_validate(
+                    {"entityId": entity_id, "graph": graph, "compact": True}
+                ),
+                multi,
+            )
+        return compact_neighbors
+
+    def _neighbor_lookup() -> dict[str, dict[str, Any]]:
+        return {n["id"]: n for n in _compact_neighbors() if "id" in n}
+
     def _relations() -> dict[str, list[dict[str, Any]]]:
         outgoing = get_relations(
             GetRelationsInput.model_validate(
@@ -98,22 +165,40 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
             ),
             multi,
         )
+        if params.full:
+            return {
+                "outgoing": [_to_relation(r) for r in outgoing],
+                "incoming": [_to_relation(r) for r in incoming],
+            }
+        lookup = _neighbor_lookup()
         return {
-            "outgoing": [_to_relation(r) for r in outgoing],
-            "incoming": [_to_relation(r) for r in incoming],
+            "outgoing": [_relation_line(r, r["to"], "out", lookup) for r in outgoing],
+            "incoming": [_relation_line(r, r["from"], "in", lookup) for r in incoming],
         }
 
     def _neighbors() -> list[dict[str, Any]]:
-        result = get_neighbors(
-            GetNeighborsInput.model_validate({"entityId": entity_id, "graph": graph}), multi
-        )
+        if params.full:
+            result = get_neighbors(
+                GetNeighborsInput.model_validate({"entityId": entity_id, "graph": graph}),
+                multi,
+            )
+            return [
+                {
+                    "id": n["id"],
+                    "name": n.get("name", n["id"]),
+                    "entityType": n.get("entityType", "unknown"),
+                }
+                for n in result
+            ]
         return [
             {
-                "id": n["id"],
-                "name": n.get("name", n["id"]),
+                "name": n.get("name", n.get("id")),
                 "entityType": n.get("entityType", "unknown"),
+                "relationType": n.get("relationType"),
+                "direction": n.get("direction"),
+                "anchor": _anchor(n.get("observations")),
             }
-            for n in result
+            for n in _compact_neighbors()
         ]
 
     def _centrality() -> dict[str, Any]:
@@ -128,9 +213,9 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
             AnalyzeCentralityInput(algorithm="pagerank", graph=graph), multi
         )
         return {
-            "degree": degree["scores"].get(entity_id, 0),
-            "betweenness": betweenness["scores"].get(entity_id, 0),
-            "eigenvector": pagerank["scores"].get(entity_id, 0),
+            "degree": _score_for(degree, entity_id),
+            "betweenness": _score_for(betweenness, entity_id),
+            "eigenvector": _score_for(pagerank, entity_id),
         }
 
     def _loop_membership() -> list[dict[str, Any]]:

@@ -6,37 +6,61 @@ Storage model — one FalkorDB graph per named Loom graph:
   JSON (key presence preserved — the store serves exactly what was written,
   explicit nulls included). ``tx_from`` is the system time of the doc's current
   incarnation.
+- Entity read index = four *derived* properties on the same node, projected
+  from ``_doc`` on every write: ``_status`` (effective status — unset means
+  'active'), ``_type`` (entityType), ``_name`` (lowercased name) and
+  ``_search`` (lowercased name + observations). They carry no information
+  ``_doc`` doesn't already have; they exist so status/entityType/name/query
+  filtering runs server-side instead of shipping and validating the whole
+  graph per list call. Graphs written before the index existed are tolerated
+  (a missing ``_status`` always passes the prefilter) and migrated in place on
+  the first filtered read.
 - Relation = typed edge ``-[:<relationType> {id, _doc}]->`` between entity
   nodes; parallel edges between the same pair are native.
 - Version  = node ``:_EntityVersion {entity_id, _doc, tx_from, tx_to}`` — an
   invalidated prior incarnation. Updates snapshot, they never erase;
   ``read_entity_as_of`` reads these.
+- Closed-out relation = node ``:_RelationVersion {relation_id, _doc, tx_from,
+  tx_to}`` — the same bi-temporal shape for an edge that has left the live
+  projection (``invalidate_relation``). An edge carries no status field, so
+  retiring one means closing its system-time interval, not flipping a flag.
 - Metadata = singleton node ``:_GraphMeta {_doc}``.
 
-Every mutation is a single atomic Cypher query, followed by an event append
-to the graph's Redis stream (see events.py for the ordering guarantee).
-Status changes are validated against the lifecycle transition table here in
-the store.
+Every mutation goes through ``_commit``: ONE Cypher statement plus its event
+append, sent as one Redis MULTI/EXEC transaction, so the projection and the log
+move together (see ``_commit`` for the exact guarantee, and ``_commit_steps``
+for the single batch case that needs more than one statement and what it owes
+in return). Status changes are validated against the lifecycle transition table
+here in the store.
+
+Deletion invalidates. ``delete_entity`` retracts (status 'retracted', prior
+incarnation snapshotted, attached edges closed out bi-temporally, embedding
+vector dropped so the retracted entity leaves the semantic reads too) and
+``delete_relation`` closes the edge's system-time interval; both take
+``hard=True`` for true erasure, which is the only path that destroys history.
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from falkordb import FalkorDB
+from falkordb.query_result import QueryResult
 from redis import Redis
 
-from theloom.errors import NotFoundError, ValidationError
+from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.model import (
     ALL_ENTITY_TYPES,
     ALL_RELATION_TYPES,
     Entity,
     EntityCreate,
     EntityFilter,
+    EntityStatus,
     Relation,
     RelationCreate,
     RelationFilter,
@@ -49,11 +73,135 @@ from theloom.store.filters import (
     apply_relation_filters,
     extract_neighbor_ids,
 )
-from theloom.store.paging import fetch_all_rows
+from theloom.store.paging import PAGE_SIZE, fetch_all_rows
 from theloom.timeutil import iso_now
+
+_ENTITY_LABEL = "_Entity"
+_VECTOR_PROPERTY = "_embedding"
 
 _IMMUTABLE_ENTITY_FIELDS = ("id", "created_at")
 _IMMUTABLE_RELATION_FIELDS = ("id", "from", "to", "created_at")
+
+# The derived read-index properties, in wire-doc projection order. Named
+# without the leading underscore here; the node property is "_" + field.
+_INDEX_FIELDS = ("status", "type", "name", "search")
+
+# `_search` folds the name and every observation into one haystack with this
+# separator. filters.py tests the name and each observation *separately*, so a
+# query containing the separator can straddle two of them: it matches the
+# folded haystack and nothing at all in the oracle. That keeps the prefilter a
+# superset (which is all it promises) but makes it inexact — see
+# ``_pushdown_is_exact``.
+_SEARCH_SEPARATOR = "\n"
+
+
+def _index_props(doc: Mapping[str, Any]) -> dict[str, str]:
+    """Project a wire doc onto the derived read-index properties.
+
+    Mirrors theloom/store/filters.py exactly: effective status (unset means
+    'active'), and case-insensitive name / name+observations haystacks.
+    """
+    name = str(doc.get("name") or "")
+    observations = doc.get("observations") or []
+    return {
+        "status": str(doc.get("status") or "active"),
+        "type": str(doc.get("entityType") or ""),
+        "name": name.lower(),
+        "search": _SEARCH_SEPARATOR.join([name, *(str(obs) for obs in observations)]).lower(),
+    }
+
+
+def _index_params(doc: Mapping[str, Any], prefix: str) -> dict[str, str]:
+    """Query parameters for a doc's index projection, under a name prefix."""
+    return {f"{prefix}{field.capitalize()}": value for field, value in _index_props(doc).items()}
+
+
+def _index_literal(prefix: str) -> str:
+    """Cypher map entries for a CREATE pattern."""
+    return ", ".join(f"_{field}: ${prefix}{field.capitalize()}" for field in _INDEX_FIELDS)
+
+
+def _index_assignments(alias: str, prefix: str) -> str:
+    """Cypher SET assignments for an already-bound node."""
+    return ", ".join(f"{alias}._{field} = ${prefix}{field.capitalize()}" for field in _INDEX_FIELDS)
+
+
+def _pushdown_is_exact(filter: EntityFilter | None) -> bool:
+    """True when the Cypher prefilter alone decides membership — i.e. nothing
+    is left for the Python pass to reject. Only then may LIMIT/count run
+    server-side, because both are computed over the prefilter's candidate set.
+
+    Two ways a field can leave work behind: it has no server-side counterpart
+    at all (version/session/sourcedFrom), or its pushed-down predicate is only
+    a superset of the real one (a ``query`` straddling the ``_search`` fold).
+    """
+    if filter is None:
+        return True
+    if filter.query is not None and _SEARCH_SEPARATOR in filter.query:
+        return False
+    return (
+        filter.version is None
+        and filter.min_version is None
+        and filter.session is None
+        and not filter.sourced_from
+        and not filter.exclude_sourced_from
+    )
+
+
+def _entity_prefilter(filter: EntityFilter | None) -> tuple[str, dict[str, Any]]:
+    """The server-side WHERE clause + params for an entity list read.
+
+    Every predicate is written ``(prop IS NULL OR <test>)`` so a node that
+    predates the read index always survives into the candidate set and is
+    decided exactly by the Python pass.
+    """
+    statuses = (
+        [s.value for s in filter.status_filter]
+        if filter is not None and filter.status_filter is not None
+        else ["active"]
+    )
+    clauses = ["(n._status IS NULL OR n._status IN $fStatuses)"]
+    params: dict[str, Any] = {"fStatuses": statuses}
+    if filter is not None:
+        if filter.entity_type is not None:
+            clauses.append("(n._type IS NULL OR n._type = $fType)")
+            params["fType"] = filter.entity_type.value
+        if filter.name is not None:
+            clauses.append("(n._name IS NULL OR n._name CONTAINS $fName)")
+            params["fName"] = filter.name.lower()
+        if filter.query is not None:
+            clauses.append("(n._search IS NULL OR n._search CONTAINS $fQuery)")
+            params["fQuery"] = filter.query.lower()
+    return " AND ".join(clauses), params
+
+
+# The close-out snapshot for an edge leaving the live projection, as a clause
+# over an UNWIND'd ``row``. A fragment rather than a statement of its own: a
+# retraction closes out its edges in the same statement that retracts the
+# entity, because Redis MULTI does not roll back (see ``_commit``).
+_RELATION_VERSION_CLAUSE = (
+    "CREATE (:_RelationVersion {relation_id: row.id, _doc: row.doc, "
+    "tx_from: row.txFrom, tx_to: $now})"
+)
+
+
+def _relation_version_rows(docs: Sequence[Mapping[str, Any]], now: str) -> list[dict[str, Any]]:
+    """``$rows`` for ``_RELATION_VERSION_CLAUSE``."""
+    return [
+        {"id": doc["id"], "doc": json.dumps(dict(doc)), "txFrom": doc.get("created_at", now)}
+        for doc in docs
+    ]
+
+
+def _is_error(response: Any) -> bool:
+    """Redis returns per-command errors as exception *values* inside a
+    transaction's reply list (``raise_on_error=False``)."""
+    return isinstance(response, Exception)
+
+
+def _stream_id(response: Any) -> str:
+    """An XADD reply, decoded (the connection may or may not decode for us)."""
+    return response if isinstance(response, str) else str(response.decode())
 
 
 def _transition_error(from_status: str | None, to_status: str) -> str:
@@ -75,7 +223,93 @@ class FalkorGraphStore(GraphStore):
         self, db: FalkorDB, redis: Redis, graph_name: str, key_prefix: str = "loom"
     ) -> None:
         self._graph = db.select_graph(f"{key_prefix}:graph:{graph_name}")
+        self._redis = redis
         self._events = EventLog(redis, graph_name, key_prefix)
+
+    # -- the mutation primitive ---------------------------------------------------
+
+    def _commit(
+        self,
+        step: tuple[str, dict[str, Any]],
+        events: Sequence[tuple[str, dict[str, Any]]],
+    ) -> tuple[list[Any], list[str]]:
+        """Run ONE Cypher statement and append its events as one unit.
+
+        The signature is the guarantee: a mutation is a single ``GRAPH.QUERY``,
+        because that is the only unit FalkorDB rolls back. Anything that needs
+        several effects (snapshot + swap + close out attached edges) expresses
+        them as clauses of one statement, not as several statements — Redis
+        MULTI is *not* a rollback boundary, so a second statement failing would
+        leave the first one applied. See ``_commit_steps`` for the one place
+        that genuinely needs several statements, and what it owes in return.
+
+        FalkorDB is a Redis module, so ``GRAPH.QUERY`` and ``XADD`` are two
+        commands on one connection: both are queued into a single MULTI/EXEC
+        transaction and dispatched in one round trip. Precisely:
+
+        - Nothing reaches the server until ``EXEC``. Any failure while the
+          transaction is being built — serializing a payload, an injected
+          fault, the process dying — leaves the graph and the log both
+          untouched. This is the hole the old write-then-append order had: a
+          crash after the query lost the event forever.
+        - Redis runs the queued commands with no other client interleaved, and
+          the client cannot die between them.
+        - Redis has no rollback, so a *server-side* error in the Cypher (a
+          malformed query — a bug, since every domain precondition is checked
+          in Python first) still lets the queued ``XADD`` run. The query itself
+          applied nothing (FalkorDB aborts the statement), and that event is
+          compensated away by id before the error propagates — leaving the
+          caller with an exception and no trace in either place.
+
+        Returns ``(query results, appended event ids)``; the ids let a caller
+        that only learns the mutation was wrong *after* ``EXEC`` (see
+        ``create_relations``) discard the events it no longer earns.
+        """
+        return self._commit_steps([step], events)
+
+    def _commit_steps(
+        self,
+        steps: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[tuple[str, dict[str, Any]]],
+    ) -> tuple[list[Any], list[str]]:
+        """``_commit`` for the batch case: several Cypher statements in one
+        MULTI/EXEC.
+
+        Weaker than ``_commit`` by exactly one thing, and the caller owes the
+        difference: MULTI is not a rollback boundary, so if statement *k*
+        fails, statements before it have already applied. Only
+        ``create_relations`` uses this (edge types cannot be parametrized, so a
+        mixed-type batch is one statement per type), and it pays the debt by
+        checking every endpoint before committing and by deleting the edges it
+        did create if the reply still disagrees.
+        """
+        with self._redis.pipeline(transaction=True) as pipe:
+            for cypher, params in steps:
+                # The client's own parameter encoder, then the same command
+                # Graph.query() would have issued — buffered instead of sent.
+                pipe.execute_command(  # type: ignore[no-untyped-call]
+                    "GRAPH.QUERY",
+                    self._graph.name,
+                    self._graph._build_params_header(params) + cypher,
+                    "--compact",
+                )
+            for event_type, payload in events:
+                self._events.queue(pipe, event_type, payload)
+            responses: list[Any] = pipe.execute(raise_on_error=False)
+
+        query_responses, event_responses = responses[: len(steps)], responses[len(steps) :]
+        event_ids = [_stream_id(entry) for entry in event_responses if not _is_error(entry)]
+        query_failure = next((r for r in query_responses if _is_error(r)), None)
+        if query_failure is not None:
+            # The mutation did not happen, so its events are not earned.
+            self._events.discard(event_ids)
+            raise query_failure
+        event_failure = next((r for r in event_responses if _is_error(r)), None)
+        if event_failure is not None:
+            # The mutation did happen; the events that landed stay (discarding
+            # them would only widen the gap). Surface the loss instead.
+            raise event_failure
+        return [QueryResult(self._graph, response) for response in query_responses], event_ids
 
     # -- query helpers ----------------------------------------------------------
 
@@ -87,9 +321,12 @@ class FalkorGraphStore(GraphStore):
         rows: list[list[Any]] = result.result_set or []
         return rows
 
-    def _rows_paged(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        """All rows of an ORDER BY-carrying query, immune to RESULTSET_SIZE."""
-        return fetch_all_rows(self._rows, cypher, params)
+    def _rows_paged(
+        self, cypher: str, params: dict[str, Any] | None = None, limit: int | None = None
+    ) -> list[list[Any]]:
+        """All rows of an ORDER BY-carrying query, immune to RESULTSET_SIZE.
+        ``limit`` caps the window server-side (the paging loop stops there)."""
+        return fetch_all_rows(self._rows, cypher, params, limit)
 
     # -- entities ----------------------------------------------------------------
 
@@ -98,29 +335,107 @@ class FalkorGraphStore(GraphStore):
         doc = spec.model_dump(by_alias=True, exclude_unset=True)
         doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
         entity = Entity.model_validate(doc)
-        self._query(
-            "CREATE (n:_Entity {id: $id, _doc: $doc, tx_from: $now})",
-            {"id": doc["id"], "doc": json.dumps(doc), "now": now},
+        self._commit(
+            (
+                f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, "
+                f"{_index_literal('ix')}}})",
+                {
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                    "now": now,
+                    **_index_params(doc, "ix"),
+                },
+            ),
+            [("entity_created", {"entity": doc})],
         )
-        self._events.append("entity_created", {"entity": doc})
         return entity
 
     def import_entity_doc(self, doc: Mapping[str, Any]) -> None:
         """Write a pre-existing wire doc verbatim (migration path; no event)."""
         self._query(
-            "CREATE (n:_Entity {id: $id, _doc: $doc, tx_from: $tx})",
-            {"id": doc["id"], "doc": json.dumps(doc), "tx": doc.get("updated_at", iso_now())},
+            f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $tx, {_index_literal('ix')}}})",
+            {
+                "id": doc["id"],
+                "doc": json.dumps(doc),
+                "tx": doc.get("updated_at", iso_now()),
+                **_index_params(doc, "ix"),
+            },
         )
 
     # -- vectors (entity vectors live in the same store) ------------------------
 
+    def vector_index_dimension(self) -> int | None:
+        """The width of the entity vector index, or ``None`` if the graph has
+        no such index yet. The index is write-once — FalkorDB rejects a second
+        CREATE on the same property — so this is also the authority on whether
+        a vector already stored can ever be searched."""
+        rows = self._rows(
+            "CALL db.indexes() YIELD label, types, options RETURN label, types, options"
+        )
+        for label, types, options in rows:
+            if label != _ENTITY_LABEL:
+                continue
+            if "VECTOR" not in (dict(types or {}).get(_VECTOR_PROPERTY) or []):
+                continue
+            dimension = dict(dict(options or {}).get(_VECTOR_PROPERTY) or {}).get("dimension")
+            return int(dimension) if dimension is not None else None
+        return None
+
     def ensure_vector_index(self, dimension: int = 768) -> None:
-        """Create the entity vector index (idempotent)."""
-        with contextlib.suppress(Exception):  # already exists
+        """Create the entity vector index at ``dimension`` if the graph has none.
+
+        Idempotent, but not blind: an existing index keeps whatever width it was
+        created with (a re-CREATE is an error, not a reshape), and any other
+        failure is surfaced rather than swallowed. Swallowing it is what let a
+        wrong-width index sit there silently indexing nothing.
+        """
+        if self.vector_index_dimension() is not None:
+            return
+        try:
             self._query(
-                "CREATE VECTOR INDEX FOR (e:_Entity) ON (e._embedding) "
+                f"CREATE VECTOR INDEX FOR (e:_Entity) ON (e.{_VECTOR_PROPERTY}) "
                 f"OPTIONS {{dimension: {dimension}, similarityFunction: 'cosine'}}"
             )
+        except Exception:
+            # Lost a race with a concurrent create: the index exists, which is
+            # all this method promised. Anything else is a real failure.
+            if self.vector_index_dimension() is None:
+                raise
+        self._wait_vector_index_operational()
+
+    def _wait_vector_index_operational(self, timeout: float = 30.0) -> None:
+        """Block until the entity vector index reports OPERATIONAL.
+
+        CREATE VECTOR INDEX returns while FalkorDB populates the index in the
+        background, and queryNodes against an index still under construction
+        can be rejected outright — measured on the linux/amd64 build: k=1 fails
+        with "Invalid arguments for procedure 'db.idx.vector.queryNodes'" until
+        construction finishes (k>=2 happens to work, and Apple-silicon builds
+        construct too fast to observe it). A create followed by a query is only
+        correct with this barrier in between.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            rows = self._rows(
+                "CALL db.indexes() YIELD label, types, status RETURN label, types, status"
+            )
+            for label, types, status in rows:
+                if label != _ENTITY_LABEL:
+                    continue
+                if "VECTOR" not in (dict(types or {}).get(_VECTOR_PROPERTY) or []):
+                    continue
+                if status == "OPERATIONAL":
+                    return
+            time.sleep(0.05)
+        raise OperationError(f"Entity vector index did not become operational within {timeout}s")
+
+    def _stored_vector_dimension(self) -> int | None:
+        """The width of the vectors actually stored, or ``None`` if none are."""
+        rows = self._rows(
+            f"MATCH (n:_Entity) WHERE n.{_VECTOR_PROPERTY} IS NOT NULL "
+            f"RETURN n.{_VECTOR_PROPERTY} LIMIT 1"
+        )
+        return len(rows[0][0]) if rows else None
 
     def set_entity_vector(self, entity_id: str, vector: list[float]) -> None:
         """Attach/update an entity's embedding vector (same store, one query)."""
@@ -139,13 +454,34 @@ class FalkorGraphStore(GraphStore):
 
     def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
         """(entity id, cosine similarity) for the k nearest embedded entities.
-        FalkorDB returns cosine *distance*; similarity = 1 - distance."""
-        self.ensure_vector_index()
-        rows = self._rows(
+        FalkorDB returns cosine *distance*; similarity = 1 - distance.
+
+        If the graph has no vector index yet, one is created at the width of
+        the vectors already *stored* — never at the query vector's width, which
+        would let a single oddly-shaped query permanently fix the schema and
+        leave every real embedding unindexed. With nothing embedded there is
+        nothing to search and no index to guess at, so the answer is empty."""
+        if self.vector_index_dimension() is None:
+            stored = self._stored_vector_dimension()
+            if stored is None:
+                return []
+            self.ensure_vector_index(dimension=stored)
+        query = (
             "CALL db.idx.vector.queryNodes('_Entity', '_embedding', $k, vecf32($q)) "
-            "YIELD node, score RETURN node.id, score",
-            {"k": k, "q": query_vector},
+            "YIELD node, score RETURN node.id, score"
         )
+        try:
+            rows = self._rows(query, {"k": k, "q": query_vector})
+        except Exception as exc:
+            # An index created by another process can still be under
+            # construction here, and queryNodes against it is rejected with
+            # exactly this message (ensure_vector_index barriers only our own
+            # creates). Wait for construction once, retry once; anything else,
+            # or a second failure, is a real error and surfaces.
+            if "db.idx.vector.queryNodes" not in str(exc):
+                raise
+            self._wait_vector_index_operational()
+            rows = self._rows(query, {"k": k, "q": query_vector})
         return [(row[0], 1.0 - float(row[1])) for row in rows]
 
     def read_entity(self, entity_id: str) -> Entity | None:
@@ -188,30 +524,120 @@ class FalkorGraphStore(GraphStore):
             merged[field] = current[field]
         entity = Entity.model_validate(merged)
 
-        # One atomic query: snapshot the prior incarnation, then swap the doc.
-        self._query(
+        # One atomic query: snapshot the prior incarnation, then swap the doc
+        # (and its derived read-index projection).
+        event_type = "entity_status_changed" if status_changed else "entity_updated"
+        self._commit(
+            self._swap_doc_step(entity_id, merged, now),
+            [(event_type, {"entity": merged, "previous": current})],
+        )
+        return entity
+
+    def _swap_doc_step(
+        self, entity_id: str, doc: Mapping[str, Any], now: str
+    ) -> tuple[str, dict[str, Any]]:
+        """The invalidate-never-overwrite step: snapshot the entity's current
+        incarnation as a closed ``:_EntityVersion``, then swap in the new doc
+        and its derived read-index projection."""
+        return (
             "MATCH (n:_Entity {id: $id}) "
             "CREATE (:_EntityVersion {entity_id: $id, _doc: n._doc, "
             "tx_from: n.tx_from, tx_to: $now}) "
-            "SET n._doc = $doc, n.tx_from = $now",
-            {"id": entity_id, "doc": json.dumps(merged), "now": now},
+            f"SET n._doc = $doc, n.tx_from = $now, {_index_assignments('n', 'ix')}",
+            {
+                "id": entity_id,
+                "doc": json.dumps(dict(doc)),
+                "now": now,
+                **_index_params(doc, "ix"),
+            },
         )
-        event_type = "entity_status_changed" if status_changed else "entity_updated"
-        self._events.append(event_type, {"entity": merged, "previous": current})
-        return entity
 
-    def delete_entity(self, entity_id: str) -> Entity:
+    def delete_entity(self, entity_id: str, hard: bool = False) -> Entity:
+        """Retract an entity, or erase it outright with ``hard=True``.
+
+        Retraction is what "delete" means in an event-sourced store that never
+        overwrites: the doc moves to status 'retracted', its prior incarnation
+        is snapshotted as a closed ``:_EntityVersion``, every attached edge is
+        closed out bi-temporally (``:_RelationVersion``), and the entity's
+        embedding vector is dropped. The entity leaves every default read —
+        ``list_entities`` filters to active, and with no vector it is out of
+        the ANN index every semantic read goes through — while
+        ``read_entity_as_of`` can still reconstruct what the graph looked like
+        before, which a hard delete makes impossible. Retraction is terminal
+        (no transition leads back out of it), so the dropped vector can never
+        be wanted again; re-embedding would rebuild it regardless.
+
+        All of that is ONE Cypher statement: it is the whole point of the
+        retraction that the doc, its history and its edges move together.
+
+        Returns the record as it now stands: the retracted doc, or the erased
+        doc under ``hard``. Retracting an already-retracted entity is a no-op.
+        """
         doc = self._read_doc(entity_id)
         if doc is None:
             raise NotFoundError("Entity not found")
-        self._query("MATCH (n:_Entity {id: $id}) DETACH DELETE n", {"id": entity_id})
-        self._events.append("entity_deleted", {"entity": doc})
-        return Entity.model_validate(doc)
+        if hard:
+            self._commit(
+                ("MATCH (n:_Entity {id: $id}) DETACH DELETE n", {"id": entity_id}),
+                [("entity_deleted", {"entity": doc})],
+            )
+            return Entity.model_validate(doc)
+
+        status = doc.get("status")
+        if not is_valid_transition(status, EntityStatus.RETRACTED):
+            raise ValidationError(_transition_error(status, EntityStatus.RETRACTED.value))
+        now = iso_now()
+        retracted = {**doc, "status": EntityStatus.RETRACTED.value, "updated_at": now}
+        entity = Entity.model_validate(retracted)
+        attached = self._attached_relation_docs(entity_id)
+        cypher, params = self._swap_doc_step(entity_id, retracted, now)
+        # The vector is a derived index entry, like the four ``_index_*``
+        # props: it goes when the entity leaves the live projection.
+        cypher += f", n.{_VECTOR_PROPERTY} = NULL"
+        if attached:
+            cypher += (
+                f" WITH n UNWIND $rows AS row {_RELATION_VERSION_CLAUSE} "
+                "WITH DISTINCT n MATCH (n)-[r]-() DELETE r"
+            )
+            params["rows"] = _relation_version_rows(attached, now)
+        self._commit(
+            (cypher, params),
+            [
+                (
+                    "entity_retracted",
+                    {"entity": retracted, "previous": doc, "invalidatedRelations": attached},
+                )
+            ],
+        )
+        return entity
+
+    def _attached_relation_docs(self, entity_id: str) -> list[dict[str, Any]]:
+        """Wire docs of every live edge touching an entity, in insertion order."""
+        rows = self._rows_paged(
+            "MATCH (n:_Entity {id: $id})-[r]-() RETURN r._doc ORDER BY id(r)", {"id": entity_id}
+        )
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        return list({doc["id"]: doc for doc in docs}.values())
 
     def read_entity_doc(self, entity_id: str) -> dict[str, Any] | None:
         """The verbatim wire doc — key order preserved (synthesis `raw` output
         serializes docs into text, where JS object key order is contract)."""
         return self._read_doc(entity_id)
+
+    def read_entity_docs(self, entity_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+        """Wire docs for many ids in ONE query, keyed by id; ids with no live
+        node are simply absent. A single-id read costs a label scan, so any
+        command that hydrates a whole neighbourhood (the consumption commands
+        resolve hundreds of rows at once) must fetch the set, not the elements.
+        """
+        ids = list(dict.fromkeys(entity_ids))
+        if not ids:
+            return {}
+        rows = self._rows_paged(
+            "MATCH (n:_Entity) WHERE n.id IN $ids RETURN n._doc ORDER BY id(n)", {"ids": ids}
+        )
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        return {doc["id"]: doc for doc in docs}
 
     def apply_entity_merge(
         self,
@@ -239,7 +665,9 @@ class FalkorGraphStore(GraphStore):
             "tx_from: p.tx_from, tx_to: $now}) ",
             "CREATE (:_EntityVersion {entity_id: $secondaryId, _doc: s._doc, "
             "tx_from: s.tx_from, tx_to: $now}) ",
-            "SET p._doc = $primaryDoc, p.tx_from = $now, s._doc = $secondaryDoc, s.tx_from = $now",
+            "SET p._doc = $primaryDoc, p.tx_from = $now, ",
+            "s._doc = $secondaryDoc, s.tx_from = $now, ",
+            f"{_index_assignments('p', 'pIx')}, {_index_assignments('s', 'sIx')}",
         ]
         params: dict[str, Any] = {
             "primaryId": primary_id,
@@ -247,6 +675,8 @@ class FalkorGraphStore(GraphStore):
             "primaryDoc": json.dumps(dict(primary_doc)),
             "secondaryDoc": json.dumps(dict(secondary_doc)),
             "now": now,
+            **_index_params(primary_doc, "pIx"),
+            **_index_params(secondary_doc, "sIx"),
         }
         for i, doc in enumerate(redirects):
             rid, rdoc, other = f"r{i}Id", f"r{i}Doc", f"r{i}Other"
@@ -271,40 +701,83 @@ class FalkorGraphStore(GraphStore):
             )
             params["supersedesId"] = supersedes_doc["id"]
             params["supersedesDoc"] = json.dumps(dict(supersedes_doc))
-        self._query("".join(parts), params)
-        self._events.append(
-            "entities_merged",
-            {
-                "primary": dict(primary_doc),
-                "secondary": dict(secondary_doc),
-                "previousPrimary": dict(previous_primary),
-                "previousSecondary": dict(previous_secondary),
-                "redirectedRelations": [dict(doc) for doc in redirects],
-                "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
-            },
+        self._commit(
+            ("".join(parts), params),
+            [
+                (
+                    "entities_merged",
+                    {
+                        "primary": dict(primary_doc),
+                        "secondary": dict(secondary_doc),
+                        "previousPrimary": dict(previous_primary),
+                        "previousSecondary": dict(previous_secondary),
+                        "redirectedRelations": [dict(doc) for doc in redirects],
+                        "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
+                    },
+                )
+            ],
         )
 
     def list_entity_docs(self, filter: EntityFilter | None = None) -> list[dict[str, Any]]:
         """Verbatim wire docs, same filtering/order as list_entities."""
-        rows = self._rows_paged("MATCH (n:_Entity) RETURN n._doc ORDER BY id(n)")
-        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
-        by_id = {doc["id"]: doc for doc in docs}
-        return [by_id[e.id] for e in self.list_entities(filter)]
-
-    def list_relation_docs(self, filter: RelationFilter | None = None) -> list[dict[str, Any]]:
-        """Verbatim relation wire docs, same filtering/order as list_relations."""
-        rows = self._rows_paged("MATCH (:_Entity)-[r]->(:_Entity) RETURN r._doc ORDER BY id(r)")
-        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
-        by_id = {doc["id"]: doc for doc in docs}
-        return [by_id[r.id] for r in self.list_relations(filter)]
+        return self._entity_page(filter)[1]
 
     def list_entities(self, filter: EntityFilter | None = None) -> list[Entity]:
-        rows = self._rows_paged("MATCH (n:_Entity) RETURN n._doc ORDER BY id(n)")
-        entities = [Entity.model_validate(json.loads(row[0])) for row in rows]
+        return self._entity_page(filter)[0]
+
+    def list_entities_page(self, filter: EntityFilter | None = None) -> tuple[list[Entity], int]:
+        """``(entities, total)`` — the entities honour ``filter.limit``, the
+        total counts every match had the limit not been applied."""
+        entities, _, total = self._entity_page(filter)
+        return entities, total
+
+    def _entity_page(
+        self, filter: EntityFilter | None
+    ) -> tuple[list[Entity], list[dict[str, Any]], int]:
+        """The one entity read path: Cypher prefilter → Python confirmation
+        (filters.py stays the semantics oracle) → limit.
+
+        ``limit`` and the total are computed server-side only when the
+        prefilter alone decides membership (see ``_pushdown_is_exact``);
+        otherwise the candidate window is read whole and sliced after the
+        Python pass, so semantics never depend on which path ran.
+        """
+        where, params = _entity_prefilter(filter)
+        cypher = f"MATCH (n:_Entity) WHERE {where} RETURN n._doc, n._status ORDER BY id(n)"
+        limit = filter.limit if filter is not None else None
+        server_limit = limit if limit is not None and _pushdown_is_exact(filter) else None
+
+        if server_limit is not None and self._has_unindexed_entity():
+            # The NULL check below only sees the limited window, but the
+            # server-side count spans the whole graph — where an unmigrated
+            # node passes every ``(prop IS NULL OR ...)`` predicate regardless
+            # of its real status/type/name. Migrate before counting, not after.
+            self._migrate_entity_index()
+
+        rows = self._rows_paged(cypher, params, server_limit)
+        if any(row[1] is None for row in rows):
+            # A graph written before the read index existed. Migrate it in
+            # place, then re-read: the window above was a superset (and, under
+            # a server-side limit, possibly the wrong superset).
+            self._migrate_entity_index()
+            rows = self._rows_paged(cypher, params, server_limit)
+
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        entities = [Entity.model_validate(doc) for doc in docs]
+        entities = self._confirm_entity_filters(entities, filter)
+        total = len(entities) if server_limit is None else self._count_entities(where, params)
+        if limit is not None:
+            entities = entities[:limit]
+        by_id = {doc["id"]: doc for doc in docs}
+        return entities, [by_id[e.id] for e in entities], total
+
+    def _confirm_entity_filters(
+        self, entities: list[Entity], filter: EntityFilter | None
+    ) -> list[Entity]:
+        """Exact filter semantics over the candidate set."""
         entities = apply_entity_filters(entities, filter)
         if filter is None:
             return entities
-
         included = self._sources_of(filter.sourced_from)
         excluded = self._sources_of(filter.exclude_sourced_from)
         if included is not None:
@@ -312,6 +785,42 @@ class FalkorGraphStore(GraphStore):
         if excluded is not None:
             entities = [e for e in entities if e.id not in excluded]
         return entities
+
+    def _count_entities(self, where: str, params: dict[str, Any]) -> int:
+        rows = self._rows(f"MATCH (n:_Entity) WHERE {where} RETURN count(n)", params)
+        return int(rows[0][0]) if rows else 0
+
+    def _has_unindexed_entity(self) -> bool:
+        """Does any entity predate the derived read index? Stops at the first
+        hit, and is only asked on the server-limited path — where the window
+        that would otherwise reveal one is capped."""
+        return bool(self._rows("MATCH (n:_Entity) WHERE n._status IS NULL RETURN n.id LIMIT 1"))
+
+    def _migrate_entity_index(self) -> None:
+        """Backfill the derived read-index properties for every entity that
+        predates them. Batched (each batch removes itself from the predicate),
+        derived-only, so no event is appended — this changes no domain state."""
+        seen: set[str] = set()
+        while True:
+            rows = self._rows(
+                "MATCH (n:_Entity) WHERE n._status IS NULL RETURN n._doc LIMIT $batch",
+                {"batch": PAGE_SIZE},
+            )
+            docs = [json.loads(row[0]) for row in rows]
+            fresh = [doc for doc in docs if doc["id"] not in seen]
+            if not fresh:
+                return
+            seen.update(doc["id"] for doc in fresh)
+            self._query(
+                "UNWIND $rows AS row MATCH (n:_Entity {id: row.id}) "
+                "SET n._status = row.status, n._type = row.type, "
+                "n._name = row.name, n._search = row.search",
+                {"rows": [{"id": doc["id"], **_index_props(doc)} for doc in fresh]},
+            )
+
+    def list_relation_docs(self, filter: RelationFilter | None = None) -> list[dict[str, Any]]:
+        """Verbatim relation wire docs, same filtering/order as list_relations."""
+        return self._relation_page(filter)[1]
 
     def _sources_of(self, target_ids: list[str] | None) -> set[str] | None:
         """Ids of entities holding a 'sources' relation TO any of the targets."""
@@ -330,6 +839,16 @@ class FalkorGraphStore(GraphStore):
         return self.create_relations([spec])[0]
 
     def create_relations(self, specs: Sequence[RelationCreate]) -> list[Relation]:
+        """Create a batch of edges, all of them or none of them.
+
+        A batch spans one query per relation type (edge types cannot be
+        parametrized), and MULTI does not roll back — so "none of them" is
+        bought twice over: every endpoint is checked before anything is
+        committed, and if the reply still reports fewer edges than asked for
+        (an endpoint retracted by a concurrent writer between the check and the
+        EXEC) the edges that did land are deleted again before the error
+        propagates. Half a batch is never a resting state.
+        """
         docs: list[dict[str, Any]] = []
         now = iso_now()
         for spec in specs:
@@ -337,32 +856,70 @@ class FalkorGraphStore(GraphStore):
             doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
             docs.append(doc)
 
-        # One transactional query for the whole batch, grouped by relation type
-        # because edge types cannot be parametrized.
+        self._require_endpoints(docs)
+
         # One UNWIND query per relation type (edge types cannot be parametrized)
         # — a 10k-item batch is ≤15 queries + one pipelined event append.
         by_type: dict[str, list[dict[str, Any]]] = {}
         for doc in docs:
             by_type.setdefault(doc["relationType"], []).append(doc)
-        created = 0
+        steps: list[tuple[str, dict[str, Any]]] = []
         for relation_type, type_docs in by_type.items():
             rows = [
                 {"from": d["from"], "to": d["to"], "id": d["id"], "doc": json.dumps(d)}
                 for d in type_docs
             ]
-            result = self._query(
-                "UNWIND $rows AS row "
-                "MATCH (a:_Entity {id: row.from}), (b:_Entity {id: row.to}) "
-                f"CREATE (a)-[:{relation_type} {{id: row.id, _doc: row.doc}}]->(b)",
-                {"rows": rows},
+            steps.append(
+                (
+                    "UNWIND $rows AS row "
+                    "MATCH (a:_Entity {id: row.from}), (b:_Entity {id: row.to}) "
+                    f"CREATE (a)-[:{relation_type} {{id: row.id, _doc: row.doc}}]->(b)",
+                    {"rows": rows},
+                )
             )
-            created += int(result.relationships_created)
+        results, event_ids = self._commit_steps(
+            steps, [("relation_created", {"relation": doc}) for doc in docs]
+        )
+        created = sum(int(result.relationships_created) for result in results)
         if created != len(docs):
+            # Lost a race with a concurrent delete: the endpoints were there
+            # when checked and gone by EXEC. Undo both halves — the edges that
+            # did land and the events for the whole batch — so the caller's
+            # NOT_FOUND means what it says.
+            self._delete_relations_by_id([doc["id"] for doc in docs])
+            self._events.discard(event_ids)
             raise NotFoundError(
                 f"Entity not found: relation endpoints must exist (created {created}/{len(docs)})"
             )
-        self._events.append_many([("relation_created", {"relation": doc}) for doc in docs])
         return [Relation.model_validate(doc) for doc in docs]
+
+    def _require_endpoints(self, docs: Sequence[Mapping[str, Any]]) -> None:
+        """Raise NOT_FOUND unless every endpoint of a batch exists.
+
+        One query for the whole batch, ahead of the commit: a missing endpoint
+        makes its ``CREATE`` row silently produce nothing, which the reply only
+        reports as a count. Pre-empting beats compensating.
+        """
+        wanted = {str(doc["from"]) for doc in docs} | {str(doc["to"]) for doc in docs}
+        if not wanted:
+            return
+        rows = self._rows_paged(
+            "MATCH (n:_Entity) WHERE n.id IN $ids RETURN n.id ORDER BY id(n)",
+            {"ids": sorted(wanted)},
+        )
+        missing = sorted(wanted - {row[0] for row in rows})
+        if missing:
+            raise NotFoundError(
+                f"Entity not found: relation endpoints must exist (missing {', '.join(missing)})"
+            )
+
+    def _delete_relations_by_id(self, relation_ids: Sequence[str]) -> None:
+        """Erase edges by relation id — compensation only, never a domain
+        delete (those invalidate; see ``invalidate_relation``)."""
+        self._query(
+            "UNWIND $ids AS rid MATCH ()-[r]->() WHERE r.id = rid DELETE r",
+            {"ids": list(relation_ids)},
+        )
 
     def import_relation_doc(self, doc: Mapping[str, Any]) -> None:
         """Write a pre-existing relation doc verbatim (migration path; no event)."""
@@ -395,16 +952,38 @@ class FalkorGraphStore(GraphStore):
         return len(events)
 
     def _edge_rows(
-        self, from_id: str, to_id: str, relation_type: str | None
+        self, from_id: str, to_id: str, relation_type: str | None, relation_id: str | None = None
     ) -> list[tuple[int, dict[str, Any]]]:
-        """(internal edge id, doc) for directed edges from→to, insertion order."""
+        """(internal edge id, doc) for directed edges from→to, insertion order.
+
+        ``relation_id`` narrows to one specific edge — the only way to address
+        a parallel edge that shares its type with a sibling."""
         edge_type = f":{relation_type}" if relation_type else ""
+        id_clause = " WHERE r.id = $rid" if relation_id is not None else ""
+        params: dict[str, Any] = {"from": from_id, "to": to_id}
+        if relation_id is not None:
+            params["rid"] = relation_id
         rows = self._rows(
-            f"MATCH (a:_Entity {{id: $from}})-[r{edge_type}]->(b:_Entity {{id: $to}}) "
-            "RETURN id(r), r._doc ORDER BY id(r)",
-            {"from": from_id, "to": to_id},
+            f"MATCH (a:_Entity {{id: $from}})-[r{edge_type}]->(b:_Entity {{id: $to}})"
+            f"{id_clause} RETURN id(r), r._doc ORDER BY id(r)",
+            params,
         )
         return [(int(row[0]), json.loads(row[1])) for row in rows]
+
+    def _target_edge(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None,
+        relation_id: str | None,
+    ) -> tuple[int, dict[str, Any]]:
+        """The single edge a write addresses. Parallel typed edges are
+        first-class, so ``relation_id`` selects exactly one; without it the
+        oldest match wins (the historical behaviour)."""
+        edges = self._edge_rows(from_id, to_id, relation_type, relation_id)
+        if not edges:
+            raise NotFoundError("Relation not found")
+        return edges[0]
 
     def read_relation(
         self, from_id: str, to_id: str, relation_type: str | None = None
@@ -426,11 +1005,9 @@ class FalkorGraphStore(GraphStore):
         to_id: str,
         updates: Mapping[str, Any],
         relation_type: str | None = None,
+        relation_id: str | None = None,
     ) -> Relation:
-        edges = self._edge_rows(from_id, to_id, relation_type)
-        if not edges:
-            raise NotFoundError("Relation not found")
-        edge_id, current = edges[0]
+        edge_id, current = self._target_edge(from_id, to_id, relation_type, relation_id)
         merged = {**current, **dict(updates), "updated_at": iso_now()}
         for field in _IMMUTABLE_RELATION_FIELDS:
             merged[field] = current[field]
@@ -439,7 +1016,7 @@ class FalkorGraphStore(GraphStore):
             # relationType is an updatable field; the edge is
             # retyped structurally (delete + recreate, same id/doc) so Cypher
             # type-filtered traversals stay consistent with the doc.
-            self._query(
+            step = (
                 "MATCH (a:_Entity {id: $from})-[r]->(b:_Entity {id: $to}) "
                 "WHERE id(r) = $rid DELETE r "
                 f"CREATE (a)-[:{merged['relationType']} {{id: $eid, _doc: $doc}}]->(b)",
@@ -452,25 +1029,96 @@ class FalkorGraphStore(GraphStore):
                 },
             )
         else:
-            self._query(
+            step = (
                 "MATCH ()-[r]->() WHERE id(r) = $rid SET r._doc = $doc",
                 {"rid": edge_id, "doc": json.dumps(merged)},
             )
-        self._events.append("relation_updated", {"relation": merged, "previous": current})
+        self._commit(step, [("relation_updated", {"relation": merged, "previous": current})])
         return relation
 
-    def delete_relation(self, from_id: str, to_id: str, relation_type: str | None = None) -> None:
-        edges = self._edge_rows(from_id, to_id, relation_type)
-        if not edges:
-            raise NotFoundError("Relation not found")
-        edge_id, doc = edges[0]
-        self._query("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id})
-        self._events.append("relation_deleted", {"relation": doc})
+    def invalidate_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None = None,
+        relation_id: str | None = None,
+    ) -> Relation:
+        """Retire an edge bi-temporally: it leaves the live projection and its
+        final doc is snapshotted as ``:_RelationVersion`` with ``tx_to`` set.
+
+        The counterpart of an entity's ``superseded`` status. A relation has no
+        status field to flip, so its retirement is a closed system-time
+        interval instead: ``tx_from`` is the doc's own ``created_at`` and
+        ``tx_to`` is now. History is preserved — the edge is never erased —
+        while every read path (which matches live edges) stops seeing it.
+
+        Raises NotFoundError when no such edge exists.
+        """
+        edge_id, doc = self._target_edge(from_id, to_id, relation_type, relation_id)
+        now = iso_now()
+        self._commit(
+            (
+                "MATCH ()-[r]->() WHERE id(r) = $rid "
+                f"WITH r UNWIND $rows AS row {_RELATION_VERSION_CLAUSE} "
+                "WITH DISTINCT r DELETE r",
+                {"rid": edge_id, "rows": _relation_version_rows([doc], now), "now": now},
+            ),
+            [("relation_invalidated", {"relation": doc, "tx_to": now})],
+        )
+        return Relation.model_validate(doc)
+
+    def delete_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None = None,
+        relation_id: str | None = None,
+        hard: bool = False,
+    ) -> None:
+        """Retire the targeted edge, or erase it outright with ``hard=True``.
+
+        The default is ``invalidate_relation`` — deleting an edge in an
+        event-sourced store means closing its system-time interval, not
+        dropping the only record that it ever existed. ``hard=True`` really
+        removes it, taking its history with it."""
+        if not hard:
+            self.invalidate_relation(from_id, to_id, relation_type, relation_id)
+            return
+        edge_id, doc = self._target_edge(from_id, to_id, relation_type, relation_id)
+        self._commit(
+            ("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id}),
+            [("relation_deleted", {"relation": doc})],
+        )
 
     def list_relations(self, filter: RelationFilter | None = None) -> list[Relation]:
-        rows = self._rows_paged("MATCH (:_Entity)-[r]->(:_Entity) RETURN r._doc ORDER BY id(r)")
-        relations = [Relation.model_validate(json.loads(row[0])) for row in rows]
-        return apply_relation_filters(relations, filter)
+        return self._relation_page(filter)[0]
+
+    def _relation_page(
+        self, filter: RelationFilter | None
+    ) -> tuple[list[Relation], list[dict[str, Any]]]:
+        """The one relation read path. from/to/relationType are structural —
+        they push into the MATCH pattern exactly (endpoint ids, edge label) —
+        and polarity/session are confirmed in Python by filters.py."""
+        edge_type = ""
+        from_pattern, to_pattern = "(:_Entity)", "(:_Entity)"
+        params: dict[str, Any] = {}
+        if filter is not None:
+            if filter.relation_type is not None:
+                edge_type = f":{filter.relation_type.value}"
+            if filter.from_ is not None:
+                from_pattern = "(a:_Entity {id: $fFrom})"
+                params["fFrom"] = filter.from_
+            if filter.to is not None:
+                to_pattern = "(b:_Entity {id: $fTo})"
+                params["fTo"] = filter.to
+        rows = self._rows_paged(
+            f"MATCH {from_pattern}-[r{edge_type}]->{to_pattern} RETURN r._doc ORDER BY id(r)",
+            params,
+        )
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        relations = apply_relation_filters([Relation.model_validate(doc) for doc in docs], filter)
+        by_id = {doc["id"]: doc for doc in docs}
+        return relations, [by_id[r.id] for r in relations]
 
     def get_relations(
         self,

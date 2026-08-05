@@ -20,7 +20,7 @@ from theloom.graph.analytics import connected_components
 from theloom.graph.hydrate import hydrate_graph
 from theloom.graph.paths import bidirectional
 from theloom.model import EntityCreate, RelationCreate
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import fidelity as fidelity_mod
@@ -237,8 +237,12 @@ class VerifyFidelityInput(CommandInput):
 
 
 class ExplainPathInput(CommandInput):
-    source_id: UuidStr = Field(alias="sourceId")
-    target_id: UuidStr = Field(alias="targetId")
+    """Each endpoint is addressed by its id or its name — exactly one per end."""
+
+    source_id: UuidStr | None = Field(default=None, alias="sourceId")
+    target_id: UuidStr | None = Field(default=None, alias="targetId")
+    source_name: str | None = Field(default=None, alias="sourceName")
+    target_name: str | None = Field(default=None, alias="targetName")
     path: list[UuidStr] | None = None
     graph: GraphParam = None
 
@@ -508,15 +512,29 @@ def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:
 def explain_path(params: ExplainPathInput, multi: MultiGraph) -> Doc:
     resolved = _resolve_graph_param(params.graph, multi)
     store = resolved["store"]
+    source_id: str = resolve_entity_ref(
+        store,
+        entity_id=params.source_id,
+        name=params.source_name,
+        id_field="sourceId",
+        name_field="sourceName",
+    )
+    target_id: str = resolve_entity_ref(
+        store,
+        entity_id=params.target_id,
+        name=params.target_name,
+        id_field="targetId",
+        name_field="targetName",
+    )
     entities = store.list_entities()
     relations = store.list_relations()
 
     path_ids = params.path
     if path_ids is None:
         graph = hydrate_graph(entities, relations)
-        path_ids = bidirectional(graph, params.source_id, params.target_id)
+        path_ids = bidirectional(graph, source_id, target_id)
         if not path_ids:
-            raise OperationError(f"No path found from {params.source_id} to {params.target_id}")
+            raise OperationError(f"No path found from {source_id} to {target_id}")
     llm_client = create_synthesis_client()
     return realizer.explain_path(entities, relations, path_ids, llm_client)
 

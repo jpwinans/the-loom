@@ -36,6 +36,7 @@ from theloom.composites import influence_map as influence_map_composite
 from theloom.composites import multi_graph_landscape as multi_graph_landscape_composite
 from theloom.composites import propose_entities as propose_entities_composite
 from theloom.composites import provenance_audit as provenance_audit_composite
+from theloom.composites import reflect as reflect_composite
 from theloom.composites import self_improve as self_improve_composite
 from theloom.composites import semantic_landscape as semantic_landscape_composite
 from theloom.composites import simulate_change as simulate_change_composite
@@ -46,6 +47,7 @@ from theloom.model import LoomModel
 from theloom.operations import algebra as algebra_ops
 from theloom.operations import analysis as analysis_ops
 from theloom.operations import bulk as bulk_ops
+from theloom.operations import consumption as consumption_ops
 from theloom.operations import documents as document_ops
 from theloom.operations import entity as entity_ops
 from theloom.operations import epistemic as epistemic_ops
@@ -59,6 +61,7 @@ from theloom.operations import solve as solve_ops
 from theloom.operations import symbolic as symbolic_ops
 from theloom.operations import synthesis as synthesis_ops
 from theloom.operations import verification as verification_ops
+from theloom.operations import work_memory as work_memory_ops
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import cegis as cegis_module
 from theloom.viz import serve as viz_serve
@@ -226,7 +229,10 @@ def _entity_commands() -> list[CommandDescriptor]:
         CommandDescriptor(
             name="delete-entity",
             category="Entity Management",
-            summary="Delete an entity from the knowledge graph.",
+            summary=(
+                "Retract an entity and its relations, preserving history "
+                '(erase outright with "hard": true).'
+            ),
             input_model=entity_ops.DeleteEntityInput,
             handler=entity_ops.delete_entity,
         ),
@@ -305,7 +311,7 @@ def _relation_commands() -> list[CommandDescriptor]:
         CommandDescriptor(
             name="delete-relation",
             category="Relation Management",
-            summary="Delete a relation from the knowledge graph.",
+            summary=('Retract a relation, preserving history (erase outright with "hard": true).'),
             input_model=relation_ops.DeleteRelationInput,
             handler=relation_ops.delete_relation,
         ),
@@ -497,6 +503,14 @@ def _semantic_commands() -> list[CommandDescriptor]:
             "Embed all entities in a graph.",
             s.EmbedEntitiesInput,
             s.embed_entities,
+            True,
+        ),
+        (
+            "warm-embedder",
+            "Embeddings",
+            "Pre-download and warm the embedding model.",
+            s.WarmEmbedderInput,
+            s.warm_embedder,
             True,
         ),
         (
@@ -1294,6 +1308,66 @@ def _synthesis_commands() -> list[CommandDescriptor]:
     ]
 
 
+def _consumption_commands() -> list[CommandDescriptor]:
+    """Consumption: one-call comprehension answers, token-budgeted and honest
+    about what they had to cut."""
+    entries: list[tuple[str, str, Any, Any]] = [
+        (
+            "explore",
+            "Everything about one symbol in one call: definition, callers, callees, imports, "
+            "containment, inheritance and the semantic layer, within a token budget.",
+            consumption_ops.ExploreInput,
+            consumption_ops.explore,
+        ),
+        (
+            "find-callers",
+            "Ranked list of the symbols that call this one, each anchored at its call site.",
+            consumption_ops.FindCallsInput,
+            consumption_ops.find_callers,
+        ),
+        (
+            "find-callees",
+            "Ranked list of the symbols this one calls, each anchored at its call site.",
+            consumption_ops.FindCallsInput,
+            consumption_ops.find_callees,
+        ),
+        (
+            "blast-radius",
+            "Reverse dependency reach of a symbol over calls/requires/instance_of, grouped by "
+            "module, with hub suppression.",
+            consumption_ops.BlastRadiusInput,
+            consumption_ops.blast_radius,
+        ),
+    ]
+    return [
+        CommandDescriptor(
+            name=name,
+            category="Consumption",
+            summary=summary,
+            input_model=input_model,
+            handler=handler,
+        )
+        for name, summary, input_model, handler in entries
+    ]
+
+
+def _work_memory_commands() -> list[CommandDescriptor]:
+    """Work Memory: the experiential layer — what was tried, how it turned out,
+    and the standing lessons that fall out of it."""
+    return [
+        CommandDescriptor(
+            name="record-outcome",
+            category="Work Memory",
+            summary=(
+                "Record how a piece of work turned out as usage evidence citing the entities "
+                "it leaned on (supports when useful, questions when not)."
+            ),
+            input_model=work_memory_ops.RecordOutcomeInput,
+            handler=work_memory_ops.record_outcome,
+        )
+    ]
+
+
 def _composite_commands() -> list[CommandDescriptor]:
     """Composites: multi-section bundles over the core operations."""
     entries: list[tuple[str, str, Any, Any, bool]] = [
@@ -1316,6 +1390,15 @@ def _composite_commands() -> list[CommandDescriptor]:
             "Semantic analysis overview of a graph (composite).",
             semantic_landscape_composite.SemanticLandscapeInput,
             semantic_landscape_composite.semantic_landscape,
+            True,
+        ),
+        (
+            "reflect",
+            "Distil recorded outcomes into standing lessons: time-decayed usage scores, "
+            "preferred/contested/dead-end statuses, and staleness against changed files "
+            "(composite).",
+            reflect_composite.ReflectInput,
+            reflect_composite.reflect,
             True,
         ),
         (
@@ -1355,7 +1438,10 @@ def _composite_commands() -> list[CommandDescriptor]:
         ),
         (
             "enrichment-crawl",
-            "Crawl frontier nodes and propose enrichment relations (composite).",
+            "Crawl frontier nodes and propose enrichment relations (composite). "
+            "UNAVAILABLE with an LLM configured: the CISC N-sample crawl is not "
+            "implemented and returns OPERATION_ERROR; only the no-LLM template-mode "
+            "envelope works.",
             enrichment_crawl_composite.EnrichmentCrawlInput,
             enrichment_crawl_composite.enrichment_crawl,
             True,
@@ -1370,7 +1456,8 @@ def _composite_commands() -> list[CommandDescriptor]:
         (
             "creativity-loop",
             "Run the autonomous creativity loop: explore, retrieve, transfer, verify, learn "
-            "(composite).",
+            "(composite). UNAVAILABLE: the multi-cycle orchestration is not implemented, "
+            "so every call returns OPERATION_ERROR.",
             creativity_loop_composite.CreativityLoopInput,
             creativity_loop_composite.creativity_loop,
             True,
@@ -1392,7 +1479,9 @@ def _composite_commands() -> list[CommandDescriptor]:
         ),
         (
             "gap-fill-cycle",
-            "Automated gap-filling with validation (composite).",
+            "Automated gap-filling with validation (composite). WRITES: a suggestion "
+            "that clears the structural gate and the commitThreshold is created, so "
+            "commitThreshold is a real mutation switch, not a report-only score.",
             gap_fill_cycle_composite.GapFillCycleInput,
             gap_fill_cycle_composite.gap_fill_cycle,
             True,
@@ -1481,6 +1570,8 @@ COMMANDS: list[CommandDescriptor] = [
     *_symbolic_commands(),
     *_inference_commands(),
     *_verification_commands(),
+    *_consumption_commands(),
+    *_work_memory_commands(),
     *_composite_commands(),
     CommandDescriptor(
         name="reify-patterns",

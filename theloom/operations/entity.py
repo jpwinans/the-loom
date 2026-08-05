@@ -28,7 +28,7 @@ from theloom.model import (
     MemoryType,
     is_valid_transition,
 )
-from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -87,8 +87,12 @@ class CreateEntityInput(CommandInput):
 
 
 class ReadEntityInput(CommandInput):
-    id: UuidStr
+    """Addressed by ``id`` or by ``name`` — exactly one."""
+
+    id: UuidStr | None = None
+    name: str | None = None
     graph: str | None = None
+    compact: bool | None = None
 
 
 class UpdateEntityInput(CommandInput):
@@ -108,6 +112,7 @@ class UpdateEntityInput(CommandInput):
 
 class DeleteEntityInput(CommandInput):
     id: UuidStr
+    hard: bool | None = None
     graph: str | None = None
 
 
@@ -124,7 +129,9 @@ class ListEntitiesInput(CommandInput):
     version: int | None = Field(default=None, ge=1)
     min_version: int | None = Field(default=None, ge=1, alias="minVersion")
     session: str | None = None
+    limit: int | None = Field(default=None, ge=1)
     graph: str | None = None
+    compact: bool | None = None
 
 
 class ReadEntitiesByNameInput(CommandInput):
@@ -140,6 +147,20 @@ class ReadEntitiesByNameInput(CommandInput):
 def _entity_doc(store: FalkorGraphStore, entity_id: str) -> dict[str, Any] | None:
     entity = store.read_entity(entity_id)
     return entity.model_dump(by_alias=True, exclude_unset=True) if entity else None
+
+
+def compact_entity_doc(doc: dict[str, Any]) -> dict[str, Any]:
+    """Agent-shaped entity projection — id/name/entityType/status/observations
+    only, dropping confidence/provenance/embedding metadata/timestamps. Shared
+    by every command that can embed entities in its output (read-entity,
+    list-entities, get-neighbors, get-relations' bridge rows, entity-deep-dive)."""
+    return {
+        "id": doc["id"],
+        "name": doc["name"],
+        "entityType": doc["entityType"],
+        "status": doc.get("status"),
+        "observations": doc["observations"],
+    }
 
 
 def _confidence_doc(confidence: ConfidenceArg) -> dict[str, Any]:
@@ -201,12 +222,14 @@ def create_entity(params: CreateEntityInput, multi: MultiGraph) -> dict[str, Any
 
 
 def read_entity(params: ReadEntityInput, multi: MultiGraph) -> dict[str, Any]:
-    doc = _entity_doc(multi.get_store(params.graph), params.id)
+    store = multi.get_store(params.graph)
+    entity_id = resolve_entity_ref(store, entity_id=params.id, name=params.name)
+    doc = _entity_doc(store, entity_id)
     if doc is None:
         raise NotFoundError(
-            f"Entity not found with ID: {params.id}. Use list_entities to see available entities."
+            f"Entity not found with ID: {entity_id}. Use list_entities to see available entities."
         )
-    return doc
+    return compact_entity_doc(doc) if params.compact else doc
 
 
 def update_entity(params: UpdateEntityInput, multi: MultiGraph) -> dict[str, Any]:
@@ -293,9 +316,17 @@ def update_entity(params: UpdateEntityInput, multi: MultiGraph) -> dict[str, Any
 
 
 def delete_entity(params: DeleteEntityInput, multi: MultiGraph) -> dict[str, Any]:
+    """Retract an entity, returning the retracted record.
+
+    History is preserved: the entity keeps its id, gains status 'retracted',
+    and its attached relations are closed out bi-temporally, so a
+    point-in-time read still reconstructs the graph as it was. ``hard: true``
+    erases the entity and its edges outright — the only path that loses
+    history.
+    """
     store = multi.get_store(params.graph)
     try:
-        deleted = store.delete_entity(params.id)
+        deleted = store.delete_entity(params.id, hard=bool(params.hard))
     except NotFoundError:
         raise NotFoundError(
             f"Entity not found with ID: {params.id}. "
@@ -304,7 +335,19 @@ def delete_entity(params: DeleteEntityInput, multi: MultiGraph) -> dict[str, Any
     return deleted.model_dump(by_alias=True, exclude_unset=True)
 
 
-def list_entities(params: ListEntitiesInput, multi: MultiGraph) -> list[dict[str, Any]]:
+TRUNCATION_HINT = "raise limit or narrow with entityType/query"
+
+
+def list_entities(
+    params: ListEntitiesInput, multi: MultiGraph
+) -> list[dict[str, Any]] | dict[str, Any]:
+    """Entity docs in the store's deterministic order.
+
+    Output shape is behaviour-first: without ``limit`` the legacy bare array is
+    preserved; with ``limit`` the result is
+    ``{"items": [...], "truncated": {"shown", "total", "hint"}}`` so a capped
+    read always says how much it did not show.
+    """
     status_filter = ["active"]
     if params.include_superseded is True:
         status_filter.append("superseded")
@@ -325,23 +368,43 @@ def list_entities(params: ListEntitiesInput, multi: MultiGraph) -> list[dict[str
         ("version", "version"),
         ("min_version", "minVersion"),
         ("session", "session"),
+        ("limit", "limit"),
     ):
         value = getattr(params, field)
         if value is not None:
             filter_doc[key] = value
     entity_filter = EntityFilter.model_validate(filter_doc)
 
+    results: list[dict[str, Any]] = []
+    total = 0
     if params.graph == WILDCARD_GRAPH:
-        results: list[dict[str, Any]] = []
+        # Each graph is capped at `limit` and reports its own total; the
+        # concatenation is then re-capped, which is the same prefix a single
+        # uncapped concatenation would have produced.
         for graph_name in multi.graph_names():
-            for entity in multi.get_store(graph_name).list_entities(entity_filter):
+            entities, graph_total = multi.get_store(graph_name).list_entities_page(entity_filter)
+            total += graph_total
+            for entity in entities:
                 doc = entity.model_dump(by_alias=True, exclude_unset=True)
+                # Compact first, then stamp: `graph` is the wildcard
+                # disambiguator and must survive the projection.
+                if params.compact:
+                    doc = compact_entity_doc(doc)
                 doc["graph"] = graph_name
                 results.append(doc)
-        return results
+    else:
+        entities, total = multi.get_store(params.graph).list_entities_page(entity_filter)
+        results = [e.model_dump(by_alias=True, exclude_unset=True) for e in entities]
+        if params.compact:
+            results = [compact_entity_doc(doc) for doc in results]
 
-    entities = multi.get_store(params.graph).list_entities(entity_filter)
-    return [e.model_dump(by_alias=True, exclude_unset=True) for e in entities]
+    if params.limit is None:
+        return results
+    shown = results[: params.limit]
+    return {
+        "items": shown,
+        "truncated": {"shown": len(shown), "total": total, "hint": TRUNCATION_HINT},
+    }
 
 
 def read_entities_by_name(params: ReadEntitiesByNameInput, multi: MultiGraph) -> dict[str, Any]:

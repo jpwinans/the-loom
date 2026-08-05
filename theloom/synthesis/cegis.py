@@ -56,7 +56,7 @@ _CE_STRIDE = 104729
 
 # The Verifier's default Tier-1 guards (consistency checks).
 _ENTITY_GUARDS = ("confidenceBounds", "entityType", "observationsRequired")
-_RELATION_GUARDS = ("causalPolarity", "noSelfLoop")
+_RELATION_GUARDS = ("causalPolarity", "nonCausalPolarity", "noSelfLoop")
 
 
 # =============================================================================

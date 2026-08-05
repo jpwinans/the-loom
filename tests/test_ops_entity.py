@@ -5,7 +5,8 @@ warnings appended as observations, revision auto-population (version=1 /
 changeType / previousVersionId self-reference on update), confidence/provenance
 date auto-population, changeType auto-detection precedence, statusChangedAt,
 replacedById → auto supersedes relation, include* status flags, graph="*"
-wildcard, and read-entities-by-name partitioning.
+wildcard, list-entities' two output shapes (bare array without `limit`, the
+items/truncated envelope with it), and read-entities-by-name partitioning.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import pytest
 from falkordb import FalkorDB
 from redis import Redis
 
+from theloom.cli.registry import run_handler
 from theloom.errors import LoomError, NotFoundError
 from theloom.operations.entity import (
     CreateEntityInput,
@@ -124,12 +126,46 @@ def test_read_entity_not_found_raises(multi: MultiGraph) -> None:
         read_entity(ReadEntityInput.model_validate({"id": MISSING}), multi)
 
 
-def test_delete_returns_entity_then_not_found(multi: MultiGraph) -> None:
+def test_read_entity_compact_projects_to_five_fields(multi: MultiGraph) -> None:
     entity = make(multi)
-    deleted = delete_entity(DeleteEntityInput.model_validate({"id": entity["id"]}), multi)
+    result = read_entity(
+        ReadEntityInput.model_validate({"id": entity["id"], "compact": True}), multi
+    )
+    assert set(result) == {"id", "name", "entityType", "status", "observations"}
+    assert result["id"] == entity["id"]
+    assert result["name"] == entity["name"]
+
+
+def test_read_entity_without_compact_is_unchanged(multi: MultiGraph) -> None:
+    entity = make(multi)
+    result = read_entity(ReadEntityInput.model_validate({"id": entity["id"]}), multi)
+    assert result == entity
+
+
+def test_delete_retracts_by_default_and_preserves_the_record(multi: MultiGraph) -> None:
+    entity = make(multi)
+    retracted = delete_entity(DeleteEntityInput.model_validate({"id": entity["id"]}), multi)
+    assert retracted["id"] == entity["id"]
+    assert retracted["status"] == "retracted"
+    # still readable by id — history is preserved, not erased
+    assert (
+        read_entity(ReadEntityInput.model_validate({"id": entity["id"]}), multi)["id"]
+        == (entity["id"])
+    )
+    with pytest.raises(NotFoundError):
+        delete_entity(DeleteEntityInput.model_validate({"id": MISSING}), multi)
+
+
+def test_hard_delete_removes_the_entity(multi: MultiGraph) -> None:
+    entity = make(multi)
+    deleted = delete_entity(
+        DeleteEntityInput.model_validate({"id": entity["id"], "hard": True}), multi
+    )
     assert deleted["id"] == entity["id"]
     with pytest.raises(NotFoundError):
-        delete_entity(DeleteEntityInput.model_validate({"id": entity["id"]}), multi)
+        read_entity(ReadEntityInput.model_validate({"id": entity["id"]}), multi)
+    with pytest.raises(NotFoundError):
+        delete_entity(DeleteEntityInput.model_validate({"id": entity["id"], "hard": True}), multi)
 
 
 # =============================================================================
@@ -248,6 +284,115 @@ def test_list_wildcard_graph_annotates_graph(multi: MultiGraph) -> None:
     result = list_entities(ListEntitiesInput.model_validate({"graph": "*"}), multi)
     graphs = {e["name"]: e["graph"] for e in result}
     assert graphs == {"In Default": "default", "In Research": "research"}
+
+
+def test_list_wildcard_compact_keeps_the_graph_key(multi: MultiGraph) -> None:
+    """Compaction must not strip the wildcard disambiguator — two same-named
+    entities in different graphs stay distinguishable."""
+    multi.create_graph("research")
+    make(multi, "X")
+    make(multi, "X", graph="research")
+    result = list_entities(ListEntitiesInput.model_validate({"graph": "*", "compact": True}), multi)
+    assert isinstance(result, list)
+    assert {e["graph"] for e in result} == {"default", "research"}
+    fields = {"id", "name", "entityType", "status", "observations", "graph"}
+    assert all(set(e) == fields for e in result)
+
+
+def test_list_compact_projects_each_entity_to_five_fields(multi: MultiGraph) -> None:
+    make(multi, "One")
+    make(multi, "Two")
+    result = list_entities(ListEntitiesInput.model_validate({"compact": True}), multi)
+    assert isinstance(result, list)
+    assert [e["name"] for e in result] == ["One", "Two"]
+    assert all(set(e) == {"id", "name", "entityType", "status", "observations"} for e in result)
+
+
+def test_list_compact_composes_with_limit(multi: MultiGraph) -> None:
+    for name in ("One", "Two", "Three"):
+        make(multi, name)
+    result = list_entities(ListEntitiesInput.model_validate({"compact": True, "limit": 2}), multi)
+    assert isinstance(result, dict)
+    assert [e["name"] for e in result["items"]] == ["One", "Two"]
+    fields = {"id", "name", "entityType", "status", "observations"}
+    assert all(set(e) == fields for e in result["items"])
+    assert result["truncated"]["total"] == 3
+
+
+def test_list_without_limit_keeps_the_bare_array_shape(multi: MultiGraph) -> None:
+    make(multi, "One")
+    make(multi, "Two")
+    result = list_entities(ListEntitiesInput.model_validate({}), multi)
+    assert isinstance(result, list)
+    assert [e["name"] for e in result] == ["One", "Two"]
+
+
+def test_list_with_limit_returns_the_truncation_envelope(multi: MultiGraph) -> None:
+    for name in ("One", "Two", "Three"):
+        make(multi, name)
+    result = list_entities(ListEntitiesInput.model_validate({"limit": 2}), multi)
+    assert isinstance(result, dict)
+    assert set(result) == {"items", "truncated"}
+    assert [e["name"] for e in result["items"]] == ["One", "Two"]
+    assert result["truncated"] == {
+        "shown": 2,
+        "total": 3,
+        "hint": "raise limit or narrow with entityType/query",
+    }
+
+
+def test_list_with_a_generous_limit_reports_no_truncation(multi: MultiGraph) -> None:
+    make(multi, "Only")
+    result = list_entities(ListEntitiesInput.model_validate({"limit": 50}), multi)
+    assert isinstance(result, dict)
+    assert result["truncated"]["shown"] == result["truncated"]["total"] == 1
+
+
+def test_list_limit_composes_with_the_other_filters(multi: MultiGraph) -> None:
+    make(multi, "Concept A")
+    make(multi, "Concept B")
+    make(multi, "A Pattern", entityType="pattern")
+    result = list_entities(
+        ListEntitiesInput.model_validate({"entityType": "concept", "limit": 1}), multi
+    )
+    assert isinstance(result, dict)
+    assert [e["name"] for e in result["items"]] == ["Concept A"]
+    assert result["truncated"]["total"] == 2
+
+
+def test_list_limit_totals_across_the_wildcard_graph(multi: MultiGraph) -> None:
+    multi.create_graph("research")
+    make(multi, "In Default")
+    make(multi, "In Research", graph="research")
+    result = list_entities(ListEntitiesInput.model_validate({"graph": "*", "limit": 1}), multi)
+    assert isinstance(result, dict)
+    assert [e["name"] for e in result["items"]] == ["In Default"]
+    assert result["truncated"] == {
+        "shown": 1,
+        "total": 2,
+        "hint": "raise limit or narrow with entityType/query",
+    }
+
+
+def test_list_limit_rejects_zero(multi: MultiGraph) -> None:
+    with pytest.raises(ValueError):
+        ListEntitiesInput.model_validate({"limit": 0})
+
+
+def test_list_entities_shapes_through_the_registry(multi: MultiGraph) -> None:
+    make(multi, "One")
+    make(multi, "Two")
+    bare = run_handler("list-entities", {}, multi)
+    assert isinstance(bare, list)
+    assert [e["name"] for e in bare] == ["One", "Two"]
+    capped = run_handler("list-entities", {"limit": 1}, multi)
+    assert isinstance(capped, dict)
+    assert [e["name"] for e in capped["items"]] == ["One"]
+    assert capped["truncated"] == {
+        "shown": 1,
+        "total": 2,
+        "hint": "raise limit or narrow with entityType/query",
+    }
 
 
 def test_read_entities_by_name_partitions(multi: MultiGraph) -> None:

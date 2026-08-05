@@ -186,6 +186,12 @@ graph-stats (graph: "name")     → inspect specific graph
 | Batch create entities | `bulk-import` |
 | Verify graph integrity | `check-consistency`, `check-invariants` |
 | Simulate what-if changes | `simulate-change` |
+| Get everything about one code symbol in one call | `explore` |
+| Find who calls / is called by a symbol | `find-callers`, `find-callees` |
+| Find the reverse dependency reach of a symbol | `blast-radius` |
+| Record how a piece of work turned out | `record-outcome` |
+| Distil recorded outcomes into standing lessons | `reflect` |
+| Pre-download the embedding model | `warm-embedder` |
 
 ### Composite vs Manual
 
@@ -195,6 +201,31 @@ graph-stats (graph: "name")     → inspect specific graph
 - `semantic-landscape` over manual clusters + gaps + suggestions
 - `gap-fill-cycle` over manual gaps + suggest + create
 - `hypothesis-engine` over manual gaps + propose + filter + dedup + rank
+- `explore` over manually chaining `read-entity` + `get-relations` + `get-neighbors` +
+  `entity-deep-dive` for one code symbol — one budgeted call returns definition,
+  callers/callees, imports, containment, inheritance, and the attached semantic layer
+- `find-callers`/`find-callees` over filtering `get-relations` by `relationType: "calls"`
+  by hand — already ranked and anchored at the call site
+- `blast-radius` over manually walking `get-neighbors` — caps depth, suppresses hubs,
+  groups the result by module
+
+## Cheap Reads
+
+Keep responses small instead of fetching everything and filtering client-side:
+
+- **Name addressing.** `read-entity`, `get-relations`, `get-neighbors`,
+  `entity-deep-dive`, `find-shortest-path`, `explain-path`, `explore`, `find-callers`,
+  `find-callees`, and `blast-radius` all take a `name` in place of an id — exactly one
+  of `id`/`entityId` or `name` is required. Resolution is exact case-insensitive first,
+  then unique case-insensitive substring; an ambiguous name is a `VALIDATION_ERROR`
+  listing every candidate.
+- **`compact: true`** on `read-entity`, `list-entities`, and `get-neighbors` narrows the
+  response to `{id, name, entityType, status, observations}` — use it for any listing
+  you're about to filter or skim rather than read in full.
+- **`limit: N`** on `list-entities` (and on `find-callers`/`find-callees`, default 30)
+  caps how much comes back; `list-entities` with a `limit` returns
+  `{items, truncated: {shown, total, hint}}` instead of the legacy bare array, so check
+  for `truncated` when you pass one.
 
 ## References
 

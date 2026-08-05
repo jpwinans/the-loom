@@ -31,7 +31,12 @@ extraction and enrichment found; inventing structure here would bypass both.
 > camelCase JSON fields, plus `"graph": "GRAPH_NAME"` on every call. If `loom` is not on
 > `PATH`, prefix each call with `uv run --directory "$LOOM_DIR"` (`LOOM_DIR` defaults to
 > `~/Dropbox/Development/the-loom`). There is no MCP server. This agent is **read-only**
-> against the graph.
+> against the graph. Prefer the cheap paths: `analyze-centrality` already returns ranked
+> `{id, name, entityType, score}` rows, so a hub needs no id follow-up read; entity-addressed
+> commands (`read-entity`, `get-neighbors`, `get-relations`, `entity-deep-dive`,
+> `find-shortest-path`, `explain-path`) take a `name` instead of an id (exactly one of
+> `id`/`name`); and `list-entities` accepts `"compact": true` and `"limit": N` to keep a
+> listing small.
 
 ## Execution
 
@@ -50,27 +55,35 @@ loom detect-components '{"graph": "GRAPH_NAME"}'
 loom semantic-gaps '{"maxEntities": 500, "graph": "GRAPH_NAME"}'
 ```
 
+`analyze-centrality` returns a ranked `[{id, name, entityType, score}]` array — the
+name is already in hand, so no separate id-to-name lookup is needed for the load-bearing
+modules section.
+
 Also gather the structural layer's `system` entities — their observations carry
-`Language:` per file, the source for the stats table's language mix:
+`Language:` per file, the source for the stats table's language mix — compact and
+limited, since only name/entityType/observations are needed:
 
 ```bash
-loom list-entities '{"entityType": "system", "graph": "GRAPH_NAME"}'
+loom list-entities '{"entityType": "system", "compact": true, "limit": 2000, "graph": "GRAPH_NAME"}'
 ```
 
 Gather the semantic layer for the walkthrough (filter client-side to observations
-containing `map_layer: semantic`):
+containing `map_layer: semantic`), likewise compact:
 
 ```bash
-loom list-entities '{"entityType": "concept", "graph": "GRAPH_NAME"}'
-loom list-entities '{"entityType": "pattern", "graph": "GRAPH_NAME"}'
-loom list-entities '{"entityType": "claim", "graph": "GRAPH_NAME"}'
-loom list-entities '{"entityType": "tension", "graph": "GRAPH_NAME"}'
+loom list-entities '{"entityType": "concept", "compact": true, "limit": 500, "graph": "GRAPH_NAME"}'
+loom list-entities '{"entityType": "pattern", "compact": true, "limit": 500, "graph": "GRAPH_NAME"}'
+loom list-entities '{"entityType": "claim", "compact": true, "limit": 500, "graph": "GRAPH_NAME"}'
+loom list-entities '{"entityType": "tension", "compact": true, "limit": 500, "graph": "GRAPH_NAME"}'
 ```
 
-For a hub whose role is unclear from its neighbors' names, one deep dive explains it:
+For a hub whose role is unclear from its neighbors' names, `explore` gives the budgeted,
+one-call answer — definition, callers, callees, imports, containment, inheritance, and
+the semantic layer attached to it — addressed by the name `analyze-centrality` already
+returned:
 
 ```bash
-loom entity-deep-dive '{"entityId": "<hub_system_id>", "graph": "GRAPH_NAME"}'
+loom explore '{"name": "<hub_name>", "graph": "GRAPH_NAME"}'
 ```
 
 ### 2. Write `OUTPUT_DIR/ARCHITECTURE-MAP.md`
@@ -110,7 +123,28 @@ loom visualize '{"graph": "GRAPH_NAME", "scope": {"mode": "full"}, "include": {"
 On failure, halve `maxEntities` and retry (400 → 200 → 100). If it still fails, ship
 the map without the HTML, note it in Coverage, and return `vizPath: ""`.
 
-### 4. Write `OUTPUT_DIR/map-manifest.json`
+### 4. Write `OUTPUT_DIR/QUERYING.md`
+
+An agent-facing cheat sheet — the fast path for the next agent that needs an answer
+from this graph instead of grepping the repo. Open with a one-line note to that effect,
+then: the graph name, the module-group ids (from GROUPS_ENRICHED/GROUPS_UNENRICHED plus
+any ids visible in the manifest), and one canonical recipe per comprehension question,
+each a single `loom` command plus a realistic example of its output size (not the full
+output — a shape like "→ 6 callers, 1 file rollup"):
+
+| Question | Command |
+|---|---|
+| Where is `X` defined? | `loom explore '{"name": "X", "graph": "GRAPH_NAME"}'` → definition + callers/callees/imports in one call |
+| Who calls `X`? | `loom find-callers '{"name": "X", "graph": "GRAPH_NAME"}'` → ranked, anchored at each call site |
+| What does `X` call? | `loom find-callees '{"name": "X", "graph": "GRAPH_NAME"}'` |
+| What does module `Y` do? | `loom list-entities '{"query": "Y", "entityType": "concept", "compact": true, "graph": "GRAPH_NAME"}'` for its purpose, then `loom explore` on its key files |
+| What breaks if I change `Z`? | `loom blast-radius '{"name": "Z", "graph": "GRAPH_NAME"}'` → reverse dependency reach grouped by module |
+| What are the risks here? | `loom list-entities '{"entityType": "tension", "compact": true, "graph": "GRAPH_NAME"}'` |
+
+Close with: query the graph before grepping the repo — the graph already has the answer
+anchored to a file and line.
+
+### 5. Write `OUTPUT_DIR/map-manifest.json`
 
 ```json
 {
@@ -120,7 +154,7 @@ the map without the HTML, note it in Coverage, and return `vizPath: ""`.
   "mode": "MODE",
   "timestamp": "<ISO>",
   "groups": ["<group ids>"],
-  "outputs": {"map": "ARCHITECTURE-MAP.md", "viz": "codebase-map.html", "manifest": "map-manifest.json"}
+  "outputs": {"map": "ARCHITECTURE-MAP.md", "viz": "codebase-map.html", "queryingDoc": "QUERYING.md", "manifest": "map-manifest.json"}
 }
 ```
 
@@ -146,10 +180,11 @@ My FINAL message is a single JSON object conforming to the **Map** schema in
 
 ```json
 {
-  "type": "object", "required": ["mapPath", "vizPath", "stats", "keyFindings"],
+  "type": "object", "required": ["mapPath", "vizPath", "queryingDoc", "stats", "keyFindings"],
   "properties": {
     "mapPath": { "type": "string" },
     "vizPath": { "type": "string" },
+    "queryingDoc": { "type": "string" },
     "stats": { "type": "object", "required": ["entities", "relations", "cycles", "hubs"],
       "properties": {
         "entities": { "type": "integer" }, "relations": { "type": "integer" },
@@ -159,8 +194,8 @@ My FINAL message is a single JSON object conforming to the **Map** schema in
 }
 ```
 
-`vizPath` is `""` when rendering failed after retries. `keyFindings` are the 3–10
-things a reviewer should know first — cycles worth breaking, load-bearing hubs,
-worst tensions.
+`vizPath` is `""` when rendering failed after retries. `queryingDoc` is the path to
+`QUERYING.md`. `keyFindings` are the 3–10 things a reviewer should know first — cycles
+worth breaking, load-bearing hubs, worst tensions.
 
 Silence-default: emit only the structured object; do not narrate routine steps.

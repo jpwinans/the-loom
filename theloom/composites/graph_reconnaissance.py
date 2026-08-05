@@ -38,8 +38,16 @@ class GraphReconInput(CommandInput):
     centrality_limit: int | None = Field(default=None, alias="centralityLimit", gt=0)
 
 
-def _centrality_entries(scores: dict[str, float]) -> list[dict[str, Any]]:
-    return [{"entityId": entity_id, "score": score} for entity_id, score in scores.items()]
+def _centrality_entries(centrality_response: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "entityId": entry["id"],
+            "name": entry["name"],
+            "entityType": entry["entityType"],
+            "score": entry["score"],
+        }
+        for entry in centrality_response["results"]
+    ]
 
 
 def graph_reconnaissance(params: GraphReconInput, multi: MultiGraph) -> dict[str, Any]:
@@ -127,9 +135,9 @@ def graph_reconnaissance(params: GraphReconInput, multi: MultiGraph) -> dict[str
             AnalyzeCentralityInput(algorithm="pagerank", limit=centrality_limit, graph=graph), multi
         )
         return {
-            "degree": _centrality_entries(degree["scores"]),
-            "betweenness": _centrality_entries(betweenness["scores"]),
-            "eigenvector": _centrality_entries(pagerank["scores"]),
+            "degree": _centrality_entries(degree),
+            "betweenness": _centrality_entries(betweenness),
+            "eigenvector": _centrality_entries(pagerank),
         }
 
     def _components() -> dict[str, Any]:

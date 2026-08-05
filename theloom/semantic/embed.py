@@ -20,6 +20,8 @@ from typing import Any
 
 import numpy as np
 
+from theloom.config import load_config
+
 MODEL_ID = "nomic-ai/nomic-embed-text-v1.5"
 EMBEDDING_DIMENSIONS = 768
 EMBEDDING_VERSION = MODEL_ID
@@ -56,16 +58,22 @@ def truncate_text(text: str) -> str:
 
 
 class Embedder:
-    """Lazy fastembed wrapper; loads the model on first use."""
+    """Lazy fastembed wrapper; loads the model on first use.
 
-    def __init__(self) -> None:
+    ``cache_dir`` pins where fastembed stores the downloaded model files —
+    without it fastembed falls back to its own default (typically under the
+    process's cwd or a per-invocation temp location), so the one-shot CLI
+    would re-pay the ~500MB HuggingFace download on every invocation."""
+
+    def __init__(self, cache_dir: str | None = None) -> None:
         self._model: Any = None
+        self._cache_dir = cache_dir
 
     def _ensure_model(self) -> Any:
         if self._model is None:
             from fastembed import TextEmbedding
 
-            self._model = TextEmbedding(MODEL_ID)
+            self._model = TextEmbedding(MODEL_ID, cache_dir=self._cache_dir)
         return self._model
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
@@ -93,7 +101,9 @@ class Embedder:
 
 @lru_cache(maxsize=1)
 def get_embedder() -> Embedder:
-    return Embedder()
+    """The process-wide embedder, its model cache pinned via the single
+    config path (theloom/config.py: modelCacheDir / LOOM_MODEL_CACHE_DIR)."""
+    return Embedder(cache_dir=load_config().model_cache_dir)
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:

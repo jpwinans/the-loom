@@ -16,8 +16,10 @@ from pydantic import Field
 
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.extraction import treesitter
+from theloom.model import RelationFilter
 from theloom.operations.bulk import BulkImportInput, bulk_import
 from theloom.operations.common import CommandInput
+from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis.llm import create_synthesis_client
 
@@ -46,6 +48,8 @@ class UpdateCodebaseInput(CommandInput):
     include: list[str] | None = None
     exclude: list[str] | None = None
     dry_run: bool | None = Field(default=None, alias="dryRun")
+    # Override the shrink guard (a collapsed extraction is refused by default).
+    force: bool | None = None
 
 
 class SelfModelUpdateInput(CommandInput):
@@ -89,7 +93,71 @@ class ExtractionRollbackInput(CommandInput):
 # =============================================================================
 
 
+# Every pre-``calls`` call edge spelled its verb the same way, whichever pass
+# emitted it: "<caller> calls <callee>", optionally continued with ", imported
+# from ..." or ", the project's only symbol of that name". Nothing else the
+# extractor wrote as ``related_to`` carries that verb, and a match only counts
+# on a pair a fresh ``calls`` edge already joins.
+_LEGACY_CALL_VERB = " calls "
+
+
+def _retire_legacy_call_edges(
+    store: FalkorGraphStore,
+    relations: list[Doc],
+    mapping: dict[str, str],
+    *,
+    dry_run: bool,
+) -> int:
+    """Close out the ``related_to`` edges the fresh ``calls`` edges replace.
+
+    Bulk import is strictly additive — it skips an existing edge of the same
+    type and creates the rest — so on a graph extracted before call edges were
+    typed, a re-extract would otherwise leave every call as two parallel edges
+    (the legacy ``related_to`` plus the new ``calls``), doubling the degree that
+    cycles, centrality and components are computed from. Retirement is
+    bi-temporal (``invalidate_relation``): the edge leaves the live projection,
+    its history stays. ``dry_run`` counts without writing.
+    """
+    pairs = {
+        (mapping[relation["from"]], mapping[relation["to"]])
+        for relation in relations
+        if relation.get("relationType") == "calls"
+        and relation.get("from") in mapping
+        and relation.get("to") in mapping
+    }
+    if not pairs:
+        return 0
+
+    retired = 0
+    legacy_filter = RelationFilter.model_validate({"relationType": "related_to"})
+    for relation in store.list_relations(legacy_filter):
+        if (relation.from_, relation.to) not in pairs:
+            continue
+        if not relation.evidence or _LEGACY_CALL_VERB not in relation.evidence:
+            continue
+        retired += 1
+        if not dry_run:
+            store.invalidate_relation(
+                relation.from_, relation.to, "related_to", relation_id=relation.id
+            )
+    return retired
+
+
 def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
+    """Extract a codebase into a graph via tree-sitter.
+
+    Call edges are typed ``calls`` and anchored at their call site
+    (``<caller> calls <callee> at <file>:<line>``). Graphs extracted before that
+    change carry their call edges as ``related_to``, indistinguishable from the
+    semantic layer's grounding links; re-running this command over the project
+    *is* the migration (structural re-extraction of a repo this size takes about
+    two minutes). Import is additive, so the run also retires the legacy twins:
+    every ``related_to`` edge whose endpoints a fresh ``calls`` edge now joins
+    and whose evidence is the old extractor's call prose is closed out
+    bi-temporally (``legacyCallEdgesRetired``) rather than left to double the
+    call structure. After a re-extract, ``related_to`` means a semantic link and
+    nothing else.
+    """
     # The tool handler wraps failures as
     # "Error in codebase extraction: <msg>"; "does not exist" then classifies
     # as OPERATION_ERROR (not NOT_FOUND).
@@ -119,10 +187,24 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
             multi,
         )
         result["importResult"] = import_result
+        result["legacyCallEdgesRetired"] = _retire_legacy_call_edges(
+            multi.get_store(params.graph),
+            extraction["relations"],
+            import_result["mapping"],
+            dry_run=params.dry_run or False,
+        )
     return result
 
 
 def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
+    """Replay a git diff over an existing codebase graph.
+
+    Per changed file the update replaces what that file contributed: vanished
+    entities are superseded, edges it sourced are re-diffed and the stale ones
+    closed out bi-temporally. A collapsed extraction (a still-present file that
+    now yields nothing, or an update that would supersede more than half the
+    graph) is refused with OPERATION_ERROR unless ``force`` is set.
+    """
     from theloom.extraction.codebasediff import update_codebase_diff
 
     try:
@@ -132,6 +214,7 @@ def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
             git_ref=params.git_ref or "HEAD~1..HEAD",
             include_tests=params.include_tests if params.include_tests is not None else True,
             dry_run=params.dry_run or False,
+            force=params.force or False,
             multi=multi,
         )
     except FileNotFoundError as exc:
@@ -179,7 +262,9 @@ def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> D
         parts = relation_id.split("->")
         if len(parts) >= 2:
             try:
-                graph_store.delete_relation(parts[0], parts[1])
+                # A rollback undoes a run that should never have landed, so it
+                # erases rather than retracts — there is no history to keep.
+                graph_store.delete_relation(parts[0], parts[1], hard=True)
                 deleted_relations += 1
             except Exception:
                 pass
@@ -193,7 +278,7 @@ def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> D
     ]
     for entity_id in ordered_ids:
         try:
-            graph_store.delete_entity(entity_id)
+            graph_store.delete_entity(entity_id, hard=True)
             deleted_entities += 1
         except Exception:
             pass

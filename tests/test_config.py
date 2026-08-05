@@ -28,6 +28,7 @@ def test_defaults_when_no_file_no_env(tmp_path: Path) -> None:
     assert cfg.port == 6379
     assert cfg.default_graph == "default"
     assert cfg.anthropic_api_key is None
+    assert cfg.model_cache_dir == str(Path.home() / ".loom" / "models")
 
 
 def test_config_file_values_are_read(tmp_path: Path) -> None:
@@ -107,3 +108,25 @@ def test_invalid_port_raises_typed_config_error(tmp_path: Path) -> None:
     with pytest.raises(LoomConfigError) as excinfo:
         load_config(config_path=tmp_path / "missing.json", env={"GRAPH_PORT": "not-a-port"})
     assert excinfo.value.code == "CONFIG_ERROR"
+
+
+def test_model_cache_dir_from_config_file(tmp_path: Path) -> None:
+    path = write_config(tmp_path, {"modelCacheDir": "/opt/loom/models"})
+    cfg = load_config(config_path=path, env={})
+    assert cfg.model_cache_dir == "/opt/loom/models"
+
+
+def test_model_cache_dir_env_overrides_file(tmp_path: Path) -> None:
+    path = write_config(tmp_path, {"modelCacheDir": "/opt/loom/models"})
+    cfg = load_config(config_path=path, env={"LOOM_MODEL_CACHE_DIR": "/env/models"})
+    assert cfg.model_cache_dir == "/env/models"
+
+
+def test_model_cache_dir_flag_overrides_env_and_file(tmp_path: Path) -> None:
+    path = write_config(tmp_path, {"modelCacheDir": "/opt/loom/models"})
+    cfg = load_config(
+        flags={"model_cache_dir": "/flag/models"},
+        config_path=path,
+        env={"LOOM_MODEL_CACHE_DIR": "/env/models"},
+    )
+    assert cfg.model_cache_dir == "/flag/models"

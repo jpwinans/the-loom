@@ -59,10 +59,11 @@ the Enrich fan-out; `headCommit` stamps the manifest.
 
 ```json
 {
-  "type": "object", "required": ["mapPath", "vizPath", "stats", "keyFindings"],
+  "type": "object", "required": ["mapPath", "vizPath", "queryingDoc", "stats", "keyFindings"],
   "properties": {
     "mapPath": { "type": "string" },
     "vizPath": { "type": "string", "description": "empty string when viz rendering failed after retries" },
+    "queryingDoc": { "type": "string", "description": "path to QUERYING.md, the agent-facing query cheat sheet" },
     "stats": { "type": "object", "required": ["entities", "relations", "cycles", "hubs"],
       "properties": {
         "entities": { "type": "integer" }, "relations": { "type": "integer" },
@@ -73,6 +74,18 @@ the Enrich fan-out; `headCommit` stamps the manifest.
 ```
 
 ---
+
+## Embed phase and `--no-enrich`
+
+The workflow runs a single `embed-entities` pass after Enrich (or immediately after
+extraction when `--no-enrich` skips Enrich) instead of a per-group embed call inside
+each `codebase-enricher` invocation — one call in place of up to 29 redundant ones per
+run. It has no dedicated schema: the workflow issues it as a plain agent step and
+discards the reply. `--no-enrich` runs Setup, Embed, and Cartograph only, and the
+`Setup.mode` string the Cartograph agent receives is annotated inline
+(`"... (structural-only: --no-enrich skipped the Enrich phase, ...)"`) rather than
+carried as a separate schema field, so `enrichResults` stays legitimately empty without
+tripping the verification-block invariant below.
 
 ## Verification-block invariant (shared)
 

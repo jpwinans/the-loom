@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from typer.testing import CliRunner
 
 from theloom.cli.app import app
@@ -27,6 +29,15 @@ def test_cli_flag_prints_catalog_and_exits_zero() -> None:
     result = runner.invoke(app, ["--generate-docs"])
     assert result.exit_code == 0
     assert result.stdout == generate_docs()
+
+
+def test_commands_md_is_regenerated_from_the_registry() -> None:
+    """COMMANDS.md is generated, never hand-edited — a registry summary change
+    that isn't regenerated leaves the published catalog lying about a command."""
+    catalog = Path(__file__).resolve().parent.parent / "COMMANDS.md"
+    assert catalog.read_text() == generate_docs(), (
+        "COMMANDS.md is stale; regenerate with `uv run loom --generate-docs > COMMANDS.md`"
+    )
 
 
 def test_flag_does_not_break_subcommands() -> None:
