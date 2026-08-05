@@ -589,6 +589,14 @@ class FalkorGraphStore(GraphStore):
         docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
         return {doc["id"]: doc for doc in docs}
 
+    def read_entities(self, entity_ids: Iterable[str]) -> dict[str, Entity]:
+        """``read_entity_docs`` in the model dialect — the read port's bulk
+        entity read. One query, ids with no live node absent."""
+        return {
+            entity_id: Entity.model_validate(doc)
+            for entity_id, doc in self.read_entity_docs(entity_ids).items()
+        }
+
     def apply_entity_merge(
         self,
         primary_doc: Mapping[str, Any],

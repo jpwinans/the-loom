@@ -24,9 +24,10 @@ adapter in ``theloom/store/memory.py``.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
-from theloom.model import Entity
+from theloom.model import Entity, EntityFilter
 from theloom.store.base import Direction
 
 __all__ = ["Direction", "GraphReadPort"]
@@ -48,5 +49,24 @@ class GraphReadPort(Protocol):
 
         Returns the entity whatever its status — retracted entities are still
         readable by id; it is *listing* that defaults to active only.
+        """
+        ...
+
+    def read_entities(self, entity_ids: Iterable[str]) -> dict[str, Entity]:
+        """Many entities at once, keyed by id; ids with no entity are absent.
+
+        This is the form to reach for when hydrating a neighbourhood — a
+        per-id loop costs the backing store a scan each time. Duplicate ids
+        collapse; an empty request is an empty answer.
+        """
+        ...
+
+    def list_entities(self, filter: EntityFilter | None = None) -> list[Entity]:
+        """Entities matching the filter, in creation order.
+
+        Semantics are ``theloom/store/filters.py`` — status (defaulting to
+        active alone) → entityType → name → query → version → session — plus
+        the two that need edges, ``sourcedFrom`` / ``excludeSourcedFrom``,
+        where exclude wins. ``filter.limit`` caps the window after filtering.
         """
         ...

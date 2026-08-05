@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from theloom.model import Entity, EntityCreate, Relation, RelationCreate
+from theloom.model import Entity, EntityCreate, EntityFilter, Relation, RelationCreate
 from theloom.store.read_port import GraphReadPort
 
 
@@ -109,3 +109,97 @@ def test_read_entity_returns_none_for_an_unknown_id(harness: Harness) -> None:
     harness.entity("Feedback Loop")
 
     assert harness.reader.read_entity("no-such-id") is None
+
+
+# =============================================================================
+# read_entities (the bulk form)
+# =============================================================================
+
+
+def test_read_entities_keys_the_requested_entities_by_id(harness: Harness) -> None:
+    loop = harness.entity("Feedback Loop")
+    delay = harness.entity("Delay")
+    harness.entity("Unasked For")
+
+    found = harness.reader.read_entities([loop.id, delay.id])
+
+    assert set(found) == {loop.id, delay.id}
+    assert found[loop.id].name == "Feedback Loop"
+    assert found[delay.id].name == "Delay"
+
+
+def test_read_entities_omits_unknown_ids_and_tolerates_duplicates(harness: Harness) -> None:
+    loop = harness.entity("Feedback Loop")
+
+    found = harness.reader.read_entities([loop.id, "no-such-id", loop.id])
+
+    assert list(found) == [loop.id]
+
+
+def test_read_entities_of_nothing_is_empty(harness: Harness) -> None:
+    harness.entity("Feedback Loop")
+
+    assert harness.reader.read_entities([]) == {}
+
+
+# =============================================================================
+# list_entities
+# =============================================================================
+
+
+def test_list_entities_returns_active_entities_in_creation_order(harness: Harness) -> None:
+    harness.entity("First")
+    harness.entity("Second")
+    harness.entity("Retired", status="retracted")
+
+    listed = harness.reader.list_entities()
+
+    assert [e.name for e in listed] == ["First", "Second"]
+
+
+def test_list_entities_honours_an_explicit_status_filter(harness: Harness) -> None:
+    harness.entity("First")
+    harness.entity("Retired", status="retracted")
+
+    listed = harness.reader.list_entities(
+        EntityFilter.model_validate({"statusFilter": ["retracted"]})
+    )
+
+    assert [e.name for e in listed] == ["Retired"]
+
+
+def test_list_entities_matches_name_case_insensitively_and_partially(harness: Harness) -> None:
+    harness.entity("Feedback Loop")
+    harness.entity("Delay")
+
+    listed = harness.reader.list_entities(EntityFilter.model_validate({"name": "feedback"}))
+
+    assert [e.name for e in listed] == ["Feedback Loop"]
+
+
+def test_list_entities_query_searches_observations_as_well_as_name(harness: Harness) -> None:
+    harness.entity("Delay", observations=["dampens the reinforcing loop"])
+    harness.entity("Unrelated", observations=["nothing to see"])
+
+    listed = harness.reader.list_entities(EntityFilter.model_validate({"query": "REINFORCING"}))
+
+    assert [e.name for e in listed] == ["Delay"]
+
+
+def test_list_entities_narrows_by_entity_type(harness: Harness) -> None:
+    harness.entity("Feedback Loop")
+    harness.entity("Limits to Growth", entityType="source")
+
+    listed = harness.reader.list_entities(EntityFilter.model_validate({"entityType": "source"}))
+
+    assert [e.name for e in listed] == ["Limits to Growth"]
+
+
+def test_list_entities_limit_caps_the_window_after_filtering(harness: Harness) -> None:
+    harness.entity("First")
+    harness.entity("Second")
+    harness.entity("Third")
+
+    listed = harness.reader.list_entities(EntityFilter.model_validate({"limit": 2}))
+
+    assert [e.name for e in listed] == ["First", "Second"]
