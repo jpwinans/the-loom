@@ -48,3 +48,12 @@ def test_llm_configured_raises_typed_operation_error_not_bare_not_implemented(
     assert excinfo.value.code == "OPERATION_ERROR"
     assert not isinstance(excinfo.value, NotImplementedError)
     assert "not implemented" in str(excinfo.value).lower()
+
+
+def test_registered_summary_marks_the_llm_path_unavailable() -> None:
+    """The registry summary (and the COMMANDS.md catalog generated from it)
+    must flag that the LLM-configured path is unavailable."""
+    from theloom.cli.registry import COMMANDS
+
+    descriptor = next(c for c in COMMANDS if c.name == "enrichment-crawl")
+    assert "unavailable" in descriptor.summary.lower()

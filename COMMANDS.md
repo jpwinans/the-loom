@@ -15,8 +15,8 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 ## Composites
 
 - **`analogy-transfer`** — Generate novel entities via CWSG analogy transfer from cross-domain mappings (composite).
-- **`creativity-loop`** — Run the autonomous creativity loop: explore, retrieve, transfer, verify, learn (composite).
-- **`enrichment-crawl`** — Crawl frontier nodes and propose enrichment relations (composite).
+- **`creativity-loop`** — Run the autonomous creativity loop: explore, retrieve, transfer, verify, learn (composite). UNAVAILABLE: the multi-cycle orchestration is not implemented, so every call returns OPERATION_ERROR.
+- **`enrichment-crawl`** — Crawl frontier nodes and propose enrichment relations (composite). UNAVAILABLE with an LLM configured: the CISC N-sample crawl is not implemented and returns OPERATION_ERROR; only the no-LLM template-mode envelope works.
 - **`entity-deep-dive`** — Comprehensive analysis of a single entity (composite).
 - **`explore-frontier`** — Rank frontier regions by foraging signals with MVT advice and anti-pattern guards (composite).
 - **`far-analogy-retrieval`** — Run the full far-analogy retrieval pipeline: fingerprint, match, slip, transfer, score (composite).

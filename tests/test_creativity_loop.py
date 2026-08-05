@@ -55,3 +55,12 @@ def test_config_mapping_overrides_and_keeps_optionals() -> None:
     assert config["maxCycles"] == 5
     assert config["exploreTopK"] == 3
     assert config["purpose"] == "find analogies"
+
+
+def test_registered_summary_marks_the_command_unavailable() -> None:
+    """The registry summary (and the COMMANDS.md catalog generated from it)
+    must tell callers the command is unavailable — it raises on every call."""
+    from theloom.cli.registry import COMMANDS
+
+    descriptor = next(c for c in COMMANDS if c.name == "creativity-loop")
+    assert "unavailable" in descriptor.summary.lower()

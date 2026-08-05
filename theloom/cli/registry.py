@@ -1438,7 +1438,10 @@ def _composite_commands() -> list[CommandDescriptor]:
         ),
         (
             "enrichment-crawl",
-            "Crawl frontier nodes and propose enrichment relations (composite).",
+            "Crawl frontier nodes and propose enrichment relations (composite). "
+            "UNAVAILABLE with an LLM configured: the CISC N-sample crawl is not "
+            "implemented and returns OPERATION_ERROR; only the no-LLM template-mode "
+            "envelope works.",
             enrichment_crawl_composite.EnrichmentCrawlInput,
             enrichment_crawl_composite.enrichment_crawl,
             True,
@@ -1453,7 +1456,8 @@ def _composite_commands() -> list[CommandDescriptor]:
         (
             "creativity-loop",
             "Run the autonomous creativity loop: explore, retrieve, transfer, verify, learn "
-            "(composite).",
+            "(composite). UNAVAILABLE: the multi-cycle orchestration is not implemented, "
+            "so every call returns OPERATION_ERROR.",
             creativity_loop_composite.CreativityLoopInput,
             creativity_loop_composite.creativity_loop,
             True,
