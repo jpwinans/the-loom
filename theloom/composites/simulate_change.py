@@ -18,7 +18,7 @@ import uuid
 from math import log2
 from typing import Any, Literal
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite, time_section
 from theloom.graph.hydrate import hydrate_graph
 from theloom.model import ALL_ENTITY_STATUSES, EntityCreate, EntityFilter, RelationCreate
 from theloom.operations.analysis import (
@@ -294,18 +294,19 @@ def simulate_change(params: SimulateChangeInput, multi: MultiGraph) -> dict[str,
             )
         )
 
-        sections = {
-            "centralityDelta": centrality_delta,
-            "brokenLoops": broken_loops,
-            "newLoops": new_loops,
-            "componentChanges": component_changes,
-            "blastRadius": blast_radius,
-            "componentCountReduction": component_count_reduction,
-            "wlEntropyDelta": wl_entropy_delta,
-            "verdict": verdict,
-        }
-        total_ms = round((time.perf_counter() - start) * 1000)
-        return build_composite_result(sections, total_ms)
+        return run_composite(
+            [
+                ("centralityDelta", centrality_delta),
+                ("brokenLoops", broken_loops),
+                ("newLoops", new_loops),
+                ("componentChanges", component_changes),
+                ("blastRadius", blast_radius),
+                ("componentCountReduction", component_count_reduction),
+                ("wlEntropyDelta", wl_entropy_delta),
+                ("verdict", verdict),
+            ],
+            start=start,
+        )
     finally:
         if temp_name is not None:
             with contextlib.suppress(Exception):
