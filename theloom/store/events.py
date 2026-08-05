@@ -41,6 +41,19 @@ class Event:
     payload: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RepairResult:
+    """The outcome of ``EventLog.repair``: what landed, and what stopped it.
+
+    ``appended`` holds the ids of the leading events that were re-appended, in
+    order; ``error`` is the failure that halted the run (``None`` when every
+    event landed). The events at and after ``len(appended)`` are untouched.
+    """
+
+    appended: list[str]
+    error: Exception | None
+
+
 class EventLog:
     """The append-only event stream for one named graph."""
 
@@ -72,8 +85,8 @@ class EventLog:
         if entry_ids:
             self._redis.xdel(self.key, *entry_ids)
 
-    def repair(self, events: Sequence[tuple[str, dict[str, Any]]]) -> list[str]:
-        """Re-append events whose queued XADD errored at ``EXEC``; returns their ids.
+    def repair(self, events: Sequence[tuple[str, dict[str, Any]]]) -> RepairResult:
+        """Re-append events whose queued XADD errored at ``EXEC``.
 
         The mirror image of ``discard``. A runtime rejection of the append (the
         stream key holding a non-stream value, a server-side refusal of the
@@ -83,10 +96,21 @@ class EventLog:
         outside the transaction, is the only compensation the semantics allow.
 
         The retry is a plain ``XADD``, so a cause that outlives the transaction
-        (a permanently mistyped key) raises again; the caller turns that into a
-        typed error naming the gap rather than leaving the log silently short.
+        (a permanently mistyped key) raises again. A failure is *returned*
+        rather than raised, and the run stops at it: the ids already appended
+        stay visible to the caller (it owes them the same compensation as any
+        other event it wrote), and the events behind the failure are left alone
+        so nothing overtakes the one that could not land. The caller turns the
+        remainder into a typed error naming exactly that gap rather than
+        leaving the log silently short — or overstating it.
         """
-        return [self.append(event_type, payload) for event_type, payload in events]
+        appended: list[str] = []
+        for event_type, payload in events:
+            try:
+                appended.append(self.append(event_type, payload))
+            except Exception as exc:  # noqa: BLE001 — reported, not swallowed
+                return RepairResult(appended=appended, error=exc)
+        return RepairResult(appended=appended, error=None)
 
     def append_many(self, events: list[tuple[str, dict[str, Any]]]) -> None:
         """Append a batch of events in one pipelined round trip (batch mutations)."""

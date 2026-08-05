@@ -28,15 +28,19 @@ The guarantee, precisely:
     error propagates. No trace in either place.
   * the ``XADD`` failed: the mutation is applied and there is no inverse
     statement to take it back with, so the event it earned is true and is
-    appended again outside the transaction (see ``repair_log``). The caller
-    sees success. If that retry fails too the log gap is permanent, and the
-    caller gets an OPERATION_ERROR naming the missing events instead of
-    silence.
+    appended again outside the transaction (see ``repair_log``), along with
+    every event of the same mutation queued behind it, so the batch keeps its
+    order. The caller sees success. If that retry fails too the log gap is
+    permanent, and the caller gets an OPERATION_ERROR naming the events that
+    are actually missing instead of silence.
 
 The one thing this does *not* promise: a repaired event is appended after the
 ``EXEC``, so a concurrent writer can slip an entry in front of it. Events stay
-ordered within a mutation, but a repaired one may sit later in the stream than
-a mutation that really followed it.
+ordered within a mutation — the repair re-appends the whole tail behind the
+failure rather than only the failed appends — but a repaired one may sit later
+in the stream than a mutation that really followed it. The single exception is
+a repair that itself fails partway: the events it never reached keep their
+original places, so a mutation whose log is intact may still be out of order.
 
 MULTI is *not* a rollback boundary: passing several ``steps`` means that if
 statement *k* fails, the statements before it have already applied. A caller
@@ -105,38 +109,62 @@ def commit_steps(
         # The mutation did not happen, so its events are not earned.
         events_log.discard(event_ids)
         raise query_failure
-    unlogged = [
-        event for event, response in zip(events, event_responses, strict=True) if is_error(response)
+    failed_at = next((i for i, response in enumerate(event_responses) if is_error(response)), None)
+    if failed_at is None:
+        return [QueryResult(graph, response) for response in query_responses], event_ids
+    # The mutation did happen and cannot be undone, so the events it earned are
+    # true. Everything from the first failure on is re-appended in order — the
+    # ones that errored because they are absent, the ones that succeeded
+    # because a repair appended behind them would otherwise reverse the batch.
+    suffix = [
+        (event, None if is_error(response) else stream_id(response))
+        for event, response in zip(events[failed_at:], event_responses[failed_at:], strict=True)
     ]
-    if unlogged:
-        # The mutation did happen and cannot be undone, so the events it
-        # earned are true; append the ones that errored again.
-        event_ids.extend(repair_log(events_log, unlogged))
-    return [QueryResult(graph, response) for response in query_responses], event_ids
+    kept = [stream_id(response) for response in event_responses[:failed_at]]
+    return (
+        [QueryResult(graph, response) for response in query_responses],
+        kept + repair_log(events_log, suffix),
+    )
 
 
-def repair_log(events_log: EventLog, unlogged: Sequence[EventSpec]) -> list[str]:
-    """Re-append the events of a committed mutation whose XADD errored.
+def repair_log(events_log: EventLog, suffix: Sequence[tuple[EventSpec, str | None]]) -> list[str]:
+    """Re-append the tail of a committed mutation's events, in order; return their ids.
 
-    Only reachable for a *runtime* rejection of the append: a queue-time
-    rejection (unknown command, bad arity, out of memory) makes Redis abort the
-    whole transaction, so neither half runs and ``execute`` raises before any of
+    ``suffix`` is every event from the first failed append onwards, paired with
+    the stream id it already occupies (``None`` when its XADD errored). Only
+    reachable for a *runtime* rejection of the append: a queue-time rejection
+    (unknown command, bad arity, out of memory) makes Redis abort the whole
+    transaction, so neither half runs and ``execute`` raises before any of
     this. A runtime one — the stream key holding a non-stream value, a
     server-side refusal of the write — comes back as an error value beside a
     ``GRAPH.QUERY`` that has already applied, and Redis has no rollback to take
     it back with.
 
-    So compensation runs towards the log, not away from it. If the retry also
-    fails the gap is real and permanent; it is named in a typed OPERATION_ERROR
-    (with the raw Redis failure chained) rather than left for a replay to
-    discover as missing history.
+    So compensation runs towards the log, not away from it, and it moves the
+    events that *did* land rather than appending around them: an event is
+    re-appended first and its earlier copy deleted only once the replacement
+    exists, so no window has the event missing from the stream.
+
+    If the retry fails partway, the ids that did land are still returned to the
+    caller (they are as real as any other event it wrote) and only the events
+    genuinely absent are named in a typed OPERATION_ERROR, with the raw Redis
+    failure chained — an operator told "three events are missing" when one is
+    present would double-append it. When the halt leaves nothing missing (the
+    remaining events are all present, merely behind the repaired ones) there is
+    no gap to name: the mutation stands with its events intact and its order
+    degraded, which is strictly the weaker of the two losses.
     """
-    try:
-        return events_log.repair(unlogged)
-    except Exception as exc:
-        types = ", ".join(event_type for event_type, _ in unlogged)
+    result = events_log.repair([event for event, _ in suffix])
+    done = len(result.appended)
+    # Replacements are in the stream now; drop the copies they superseded.
+    events_log.discard([entry_id for _, entry_id in suffix[:done] if entry_id is not None])
+    stranded = [entry_id for _, entry_id in suffix[done:] if entry_id is not None]
+    missing = [event for event, entry_id in suffix[done:] if entry_id is None]
+    if result.error is not None and missing:
+        types = ", ".join(event_type for event_type, _ in missing)
         raise OperationError(
             "Mutation committed but the event log could not be repaired: "
-            f"{len(unlogged)} event(s) ({types}) are missing from the log and "
-            f"cannot be re-appended: {exc}"
-        ) from exc
+            f"{len(missing)} event(s) ({types}) are missing from the log and "
+            f"cannot be re-appended: {result.error}"
+        ) from result.error
+    return result.appended + stranded

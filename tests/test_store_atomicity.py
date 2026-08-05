@@ -334,6 +334,69 @@ def test_a_repaired_event_lands_in_batch_order(
     ]
 
 
+def test_a_repaired_event_keeps_batch_order_when_it_is_not_the_last(
+    store: FalkorGraphStore,
+    log: EventLog,
+    poisoned_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The *first* of two events fails: the repair still lands ahead of the
+    second, because the whole suffix behind the failure is re-appended in order
+    and the misplaced copies are dropped. Order within a mutation is a
+    guarantee, not an accident of which append happened to fail."""
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    break_queued_append(monkeypatch, poisoned_key, only_call=1)
+
+    relations = store.create_relations([rel_spec(a.id, b.id), rel_spec(b.id, a.id)])
+
+    events = log.read_all()
+    assert [event.type for event in events] == [
+        "entity_created",
+        "entity_created",
+        "relation_created",
+        "relation_created",
+    ]
+    assert [event.payload["relation"]["id"] for event in events[2:]] == [
+        relation.id for relation in relations
+    ]
+
+
+def test_a_partial_repair_names_only_the_events_still_missing(
+    store: FalkorGraphStore,
+    log: EventLog,
+    poisoned_key: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every queued append fails and the retry dies after the first re-append:
+    the error names the two events the log really lacks, not all three. An
+    operator acting on that message must not double-append event one."""
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    before = len(log.read_all())
+    break_queued_append(monkeypatch, poisoned_key)
+
+    real_append = EventLog.append
+    appends = itertools.count(1)
+
+    def append(self: EventLog, event_type: str, payload: dict[str, Any]) -> str:
+        if next(appends) > 1:
+            raise Boom("retry failed")
+        return str(real_append(self, event_type, payload))
+
+    monkeypatch.setattr(EventLog, "append", append)
+
+    with pytest.raises(OperationError) as raised:
+        store.create_relations([rel_spec(a.id, b.id), rel_spec(b.id, a.id), rel_spec(a.id, b.id)])
+
+    message = str(raised.value)
+    assert "2 event(s)" in message
+    assert message.count("relation_created") == 2
+    # ...and the one that did land is in the log exactly once.
+    events = log.read_all()[before:]
+    assert [event.type for event in events] == ["relation_created"]
+
+
 def test_an_unrepairable_event_append_names_the_gap(
     store: FalkorGraphStore, log: EventLog, redis_client: Redis
 ) -> None:
