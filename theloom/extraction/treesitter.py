@@ -193,7 +193,8 @@ def _one_line(text: str, limit: int) -> str | None:
     return collapsed or None
 
 
-def _clean_python_docstring(raw: str) -> str | None:
+def _strip_string_literal(raw: str) -> str | None:
+    """The text inside a Python string literal, quotes and prefix removed."""
     match = _STRING_PREFIX_RE.match(raw)
     if match is None:
         return None
@@ -201,6 +202,13 @@ def _clean_python_docstring(raw: str) -> str | None:
     body = raw[match.end() :]
     if body.endswith(quote):
         body = body[: -len(quote)]
+    return body
+
+
+def _clean_python_docstring(raw: str) -> str | None:
+    body = _strip_string_literal(raw)
+    if body is None:
+        return None
     return _one_line(body, DOCSTRING_MAX_CHARS)
 
 
@@ -223,9 +231,21 @@ def _python_docstring(container: Any, source: bytes) -> str | None:
     if first.type != "expression_statement":
         return None
     inner = _named(first)
-    if not inner or inner[0].type != "string":
+    if not inner:
         return None
-    return _clean_python_docstring(_text(inner[0], source))
+    literal = inner[0]
+    if literal.type == "string":
+        return _clean_python_docstring(_text(literal, source))
+    if literal.type == "concatenated_string":
+        # ``"""a""" """b"""`` is one docstring to Python but two literals to the
+        # parser; joining the parts is what keeps it from being dropped.
+        parts = [
+            stripped
+            for part in _named(literal)
+            if part.type == "string" and (stripped := _strip_string_literal(_text(part, source)))
+        ]
+        return _one_line("".join(parts), DOCSTRING_MAX_CHARS) if parts else None
+    return None
 
 
 def _python_signature(node: Any, name: str, source: bytes) -> str | None:

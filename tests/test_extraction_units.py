@@ -193,6 +193,50 @@ class TestSignaturesAndDocstrings:
         result = treesitter.extract_from_source("def f():\n    pass\n", "c.py", "python")
         assert [o for o in _observations(result, "f (c)") if o.startswith("docstring:")] == []
 
+    def test_an_undocumented_function_still_carries_its_signature(self) -> None:
+        """The two observations are independent: a function with no docstring in
+        source keeps its signature and simply gains no docstring observation.
+        Most of this repo's own public operations are written this way, so a
+        missing docstring observation is the correct output, not a dropped one."""
+        source = "def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:\n"
+        source += "    return {}\n"
+        result = treesitter.extract_from_source(source, "theloom/operations/bulk.py", "python")
+        obs = _observations(result, "bulk_import (bulk)")
+        assert (
+            "signature: bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]"
+            in obs
+        )
+        assert [o for o in obs if o.startswith("docstring:")] == []
+
+    def test_decorated_and_async_functions_keep_their_docstrings(self) -> None:
+        """A decorator wraps the definition in a ``decorated_definition`` node and
+        ``async def`` changes the keyword, but neither moves the docstring."""
+        source = (
+            "def deco(f):\n    return f\n\n\n"
+            "@deco\ndef wrapped(a: int) -> int:\n"
+            '    """Wrapped function."""\n    return a\n\n\n'
+            "async def fetch(url: str) -> str:\n"
+            '    """Fetch a url."""\n    return url\n\n\n'
+            "class C:\n    @property\n    def prop(self) -> int:\n"
+            '        """A property."""\n        return 1\n'
+        )
+        result = treesitter.extract_from_source(source, "src/a.py", "python")
+        assert "docstring: Wrapped function." in _observations(result, "wrapped (a)")
+        assert "docstring: Fetch a url." in _observations(result, "fetch (a)")
+        assert "docstring: A property." in _observations(result, "C.prop (a)")
+
+    def test_implicitly_concatenated_docstring_is_captured(self) -> None:
+        """Adjacent string literals are one docstring to Python, but tree-sitter
+        parses them as ``concatenated_string`` rather than ``string``."""
+        source = 'def f() -> None:\n    """Part one, """ """part two."""\n'
+        result = treesitter.extract_from_source(source, "c.py", "python")
+        assert "docstring: Part one, part two." in _observations(result, "f (c)")
+
+    def test_implicitly_concatenated_module_docstring_is_captured(self) -> None:
+        source = '"""Module one, """ """module two."""\n\nX = 1\n'
+        result = treesitter.extract_from_source(source, "src/m.py", "python")
+        assert "docstring: Module one, module two." in _observations(result, "file:src/m.py")
+
     def test_long_docstrings_are_truncated_to_one_line(self) -> None:
         body = "word " * 200
         source = f'def f():\n    """{body}"""\n    pass\n'
