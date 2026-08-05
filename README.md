@@ -55,6 +55,41 @@ uv run loom graph-stats '{}'
 uv run loom hybrid-search '{"query": "early computing", "limit": 5}'
 ```
 
+### Example skills built on the Loom
+
+The repository ships three [Claude Code](https://claude.com/claude-code) agent
+skills that use the Loom as their substrate — worked examples of what the CLI
+is for. They live in `.claude/` (skills, workflows, agents, schemas) and run
+from the repo root with FalkorDB up:
+
+```
+/deep-research TOPIC     # autonomous research that builds a knowledge graph
+/hyper-research DOC      # parallel deep-research per question from a document
+/map-codebase PATH       # explained architecture map of a codebase
+```
+
+- **`/deep-research`** — autonomous multi-iteration research on one question:
+  orientation → a quality-gated loop (research → synthesis → verify →
+  consolidate, with red-team and expedition passes in parallel) →
+  documentation. Builds source/evidence/claim entities with calibrated
+  confidence and provenance into a Loom graph; session artifacts land under
+  `research/sessions/{id}/`.
+- **`/hyper-research`** — the meta-orchestrator: reads a context document,
+  extracts independent questions, runs deep-research per question *in
+  parallel* onto one shared graph, then consolidates and synthesizes a
+  cross-cutting report into `research/reports/`.
+- **`/map-codebase`** — extracts a repository (tree-sitter: Python, TS/JS, Go,
+  Rust) into a graph of typed call/import/containment edges anchored to
+  file:line, layers on an LLM-written semantic pass (module purposes,
+  patterns, invariant claims, risks), and emits `ARCHITECTURE-MAP.md`, an
+  interactive `codebase-map.html`, and a `QUERYING.md` cheat sheet. Re-runs
+  are incremental. Afterwards agents answer "who calls X?" or "what breaks if
+  I change Z?" from the graph — `loom explore`, `loom find-callers`,
+  `loom blast-radius` — instead of grepping.
+
+Each skill launches its multi-agent workflow in the background and reports on
+completion; the graph persists for follow-up queries.
+
 ## CLI contract
 
 - **Input:** a single JSON argument per command; results print as JSON to stdout.
@@ -112,7 +147,18 @@ regardless of `asOf` (see below). `include` toggles the `analytics`,
 returns the same assembled JSON without writing HTML, for piping into other
 tooling.
 
-![Tapestry Graph Explorer, showing a small force-directed graph with search, filters, path mode, and a minimap](docs/images/tapestry-explorer.png)
+The screenshots below all show one real graph — a `/deep-research` run on
+preventing cognitive debt in AI-assisted development: 97 entities across ten
+types (sources, evidence, claims, hypotheses, tensions, convergences) joined
+by 212 relations, 70 of them `supports` and 41 `contradicts`.
+
+![The Loom Graph Explorer on the cognitive-debt research graph, with a hub hypothesis selected and the inspector showing its prior and current probability, expected confirming and disconfirming evidence, and per-iteration reasoning](docs/images/tapestry-explorer.png)
+
+The Overview dashboard summarizes the same bundle — composition by entity and
+relation type, graph health (contradictions, dangling relations, unscored
+entities), and a confidence histogram:
+
+![The Loom Overview dashboard, showing stat tiles, composition bars for entity and relation types, a graph-health panel flagging 41 contradictions, and a confidence histogram](docs/images/tapestry-overview.png)
 
 Three more tabs read the same bundle as a systems-dynamics model, a history,
 and an embedding space, rather than a knowledge graph:
@@ -148,11 +194,15 @@ nodes are draggable: press and hold one to reposition it, Obsidian-style, and
 its edges follow while it stays where you drop it (in the Explorer and Systems
 the force layout pauses for the drag and resumes only if it was running).
 
-![Tapestry Systems view, showing a causal-loop diagram with a balancing loop isolated, polarity glyphs on each edge, and a leverage-point badge on the targeted variable](docs/images/tapestry-systems.png)
+![The Loom Systems view on a causal model of cognitive debt, with the six-variable skill-atrophy balancing loop isolated and labeled, polarity glyphs on each edge, the comprehension-gating leverage point highlighted, and all five detected feedback loops classified in the right rail](docs/images/tapestry-systems.png)
 
-![Tapestry Chronicle view in diff mode, showing the event stream, a time scrubber with a diff anchor, and nodes colored by added, changed, and invalidated](docs/images/tapestry-chronicle.png)
+The Systems shot uses a companion causal model distilled from the same
+research — ten variables and fourteen signed edges, in which the loop
+detector finds one reinforcing and four balancing loops.
 
-![Tapestry Semantic Map, showing entity embeddings scattered by a PCA projection with a labeled cluster hull around a tight group of near-duplicate concepts](docs/images/tapestry-semantic.png)
+![The Loom Chronicle view replaying the research graph's construction, with the 469-event stream, named source and claim events, and the time scrubber with play and diff controls](docs/images/tapestry-chronicle.png)
+
+![The Loom Semantic Map of the research graph, 97 entity embeddings scattered by PCA projection and colored by type, with labeled cluster hulls around evidence and convergence groups](docs/images/tapestry-semantic.png)
 
 Every view — Explorer, Overview, Systems, Chronicle, and the Semantic Map
 alike — can also be bounded to a moment in the graph's own history with the
@@ -325,3 +375,6 @@ uv run pytest                    # tests
 uv run ruff check . && uv run ruff format .
 uv run mypy --strict theloom
 ```
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full quality gate, the
+architecture invariants every change must respect, and the PR workflow.
