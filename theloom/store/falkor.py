@@ -402,6 +402,12 @@ class FalkorGraphStore(GraphStore):
         )
         return {row[0]: [float(x) for x in row[1]] for row in rows}
 
+    def has_entity_vectors(self) -> bool:
+        """True when at least one entity carries an embedding — a LIMIT 1 probe
+        rather than ``get_entity_vectors()``, for callers that only need to know
+        whether searching this graph is worth embedding a query for."""
+        return self._stored_vector_dimension() is not None
+
     def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
         """(entity id, cosine similarity) for the k nearest embedded entities.
         FalkorDB returns cosine *distance*; similarity = 1 - distance.
