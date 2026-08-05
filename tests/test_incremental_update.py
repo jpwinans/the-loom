@@ -94,8 +94,15 @@ def names(store: FalkorGraphStore) -> set[str]:
 
 
 def edges(store: FalkorGraphStore) -> set[tuple[str, str, str]]:
-    """Live (fromName, toName, relationType) triples."""
-    by_id = {e.id: e.name for e in store.list_entities()}
+    """Live (fromName, toName, relationType) triples.
+
+    Names are resolved across *every* entity status, not just `active`. An edge
+    onto a superseded symbol is still in the projection until it is invalidated,
+    and naming it is the whole point of the retraction assertions — resolving
+    names from active entities only would silently drop exactly those edges and
+    make "the edge is gone" unfalsifiable.
+    """
+    by_id = {e.id: e.name for e in store.list_entities(_all_statuses())}
     live: set[tuple[str, str, str]] = set()
     for doc in store.list_relation_docs():
         from_name, to_name = by_id.get(doc["from"]), by_id.get(doc["to"])
@@ -125,6 +132,27 @@ def onboard(name: str) -> bool:
 
 
 # NOTE: transfers are not atomic yet; the fix is tracked in ADR-0011.
+'''
+
+
+# A module nothing in the fixture references yet, plus the rewrite of an
+# *importer* of it. Committed separately so a diff can name one without the
+# other, which is how an inbound cross-file edge gets tested.
+AUDIT_MODULE = '''"""Audit helpers."""
+
+
+def audit(amount: float) -> bool:
+    """Check one amount."""
+    return amount > 0
+'''
+
+SERVICE_USING_AUDIT = '''"""Transfer service built on the audit module."""
+
+from src.audit import audit
+
+
+def onboard(name: str) -> bool:
+    return audit(1.0)
 '''
 
 
@@ -179,6 +207,28 @@ def test_invalidate_relation_keeps_history(
     events = multi.event_log(GRAPH).read_all()
     assert events[-1].type == "relation_invalidated"
     assert events[-1].payload["relation"]["id"] == relation.id
+
+
+def test_edges_helper_still_names_edges_onto_superseded_entities(
+    store: FalkorGraphStore,
+) -> None:
+    """The retraction assertions below are only meaningful if this holds."""
+    a = store.create_entity(
+        EntityCreate.model_validate({"name": "A", "entityType": "concept", "observations": []})
+    )
+    b = store.create_entity(
+        EntityCreate.model_validate({"name": "B", "entityType": "concept", "observations": []})
+    )
+    store.create_relation(
+        RelationCreate.model_validate({"from": a.id, "to": b.id, "relationType": "calls"})
+    )
+    store.update_entity(b.id, {"status": "superseded", "statusReason": "source_retracted"})
+
+    assert "B" not in names(store)
+    assert ("A", "B", "calls") in edges(store)
+
+    store.invalidate_relation(a.id, b.id, "calls")
+    assert ("A", "B", "calls") not in edges(store)
 
 
 def test_invalidate_missing_relation_raises_not_found(store: FalkorGraphStore) -> None:
@@ -281,10 +331,56 @@ def test_deleted_file_supersedes_its_entities_and_edges(
     assert {e.change_reason for e in superseded} == {"file deleted"}
 
     assert result["stats"]["entitiesRetracted"] == 3
-    # Both part_of edges the deleted file sourced are closed out.
-    assert result["stats"]["relationsRemoved"] == 2
+    # Both part_of edges the deleted file sourced, plus both cross-file edges
+    # pointing *into* it from the untouched lib/index.ts, are closed out.
+    assert result["stats"]["relationsRemoved"] == 4
     assert ("formatBalance (helper)", "file:lib/helper.js", "part_of") not in edges(store)
     assert {d["status"] for d in result["entityDiffs"]} == {"superseded"}
+
+
+def test_deleted_file_retracts_edges_pointing_into_it(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """Inbound cross-file edges are the deleted file's business too.
+
+    `lib/index.ts` is untouched by the diff, but both of its edges into
+    `lib/helper.js` describe code that no longer exists. Leaving them would
+    dangle live edges onto superseded entities forever.
+    """
+    inbound = {
+        ("file:lib/index.ts", "file:lib/helper.js", "requires"),
+        ("Reporter.summarize (index)", "formatBalance (helper)", "calls"),
+    }
+    assert inbound <= edges(store)
+
+    (seeded / "lib" / "helper.js").unlink()
+    commit(seeded, "drop the helper module")
+
+    update(seeded, multi)
+
+    assert edges(store).isdisjoint(inbound)
+
+
+def test_added_file_gains_edges_pointing_into_it(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """The inverse: a new module's inbound edges are created, not dropped.
+
+    The importer (`src/service.py`) is rewritten in its own commit, so the diff
+    under test names only `src/audit.py` — yet the fresh whole-project
+    resolution pass states edges from the untouched importer into the new file.
+    """
+    (seeded / "src" / "audit.py").write_text(AUDIT_MODULE, encoding="utf-8")
+    commit(seeded, "add the audit module")
+    (seeded / "src" / "service.py").write_text(SERVICE_USING_AUDIT, encoding="utf-8")
+    commit(seeded, "rewrite the service on top of audit")
+
+    result = update(seeded, multi, git_ref="HEAD~2..HEAD~1")
+
+    assert result["changedFiles"] == ["src/audit.py"]
+    live = edges(store)
+    assert ("file:src/service.py", "file:src/audit.py", "requires") in live
+    assert ("onboard (service)", "audit (audit)", "calls") in live
 
 
 def test_removed_symbol_in_a_changed_file_is_superseded(
@@ -422,6 +518,34 @@ def test_guard_refuses_superseding_more_than_half_the_graph(
     forced = update(seeded, multi, force=True)
     assert forced["stats"]["entitiesRetracted"] == 13
     assert "file:lib/index.ts" in names(store)
+
+
+def test_guard_is_not_diluted_by_the_semantic_layer(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """A semantic layer sharing the graph must not buy the structural layer a
+    free collapse: the guard measures against the entities an update *can*
+    supersede, not against every active node in the graph."""
+    for index in range(40):
+        store.create_entity(
+            EntityCreate.model_validate(
+                {
+                    "name": f"Pattern {index}",
+                    "entityType": "pattern",
+                    "observations": ["map_layer: semantic"],
+                }
+            )
+        )
+
+    for path in ("src/models.py", "src/service.py", "src/policy.py", "lib/helper.js"):
+        (seeded / path).unlink()
+    commit(seeded, "delete most of the project")
+
+    before = names(store)
+    with pytest.raises(OperationError) as excinfo:
+        update(seeded, multi)
+    assert "more than half" in str(excinfo.value)
+    assert names(store) == before
 
 
 def test_guard_runs_before_a_dry_run_reports(seeded: Path, multi: MultiGraph) -> None:

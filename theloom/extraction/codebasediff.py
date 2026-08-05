@@ -10,23 +10,28 @@ semantics are *replace on re-extract*:
   for one whose code changed, with the human reason on ``changeReason``;
 * an entity whose observations changed is updated, and a new one is created
   carrying the same provenance and confidence the full extractor writes;
-* every **structural** relation sourced from a changed file is diffed by
+* every **structural** relation *touching* a changed file is diffed by
   ``(fromName, toName, relationType)``: edges the fresh extraction no longer
   states are closed out bi-temporally (``invalidate_relation`` — the edge
   leaves the projection, its final doc is kept), and edges it now states are
-  created. Edges sourced from untouched files, and the semantic layer's
+  created. Edges between two untouched files, and the semantic layer's
   ``related_to`` links into code, are left alone.
 
 Ownership is by the file an entity was extracted from ("File path: " for a
-symbol, the ``file:`` prefix for a file entity), and an edge belongs to the
-file its **source** endpoint belongs to — the per-file pass and the resolution
-pass both emit every edge from a symbol (or file) in the file being read.
+symbol, the ``file:`` prefix for a file entity). An edge belongs to a changed
+file when **either** endpoint does: cross-file edges are emitted by the
+resolution pass over the whole project, so an edge pointing *into* a changed
+file is just as much that file's business as one pointing out of it. Scoping
+by the source endpoint alone would strand inbound edges — leaving stale ones
+dangling onto superseded symbols and never creating newly-resolvable ones.
 
 The stats are the plan's real numbers, and ``dryRun`` reports that plan
 without writing. A shrink guard refuses the whole update when the fresh
 extraction has visibly collapsed — a still-present file that now extracts to
-nothing, or an update that would supersede more than half the graph —
-overridable with ``force``.
+nothing, or an update that would supersede more than half of the graph's
+*file-owned* population (the only entities an update can supersede, so a
+semantic layer sharing the graph cannot dilute the guard) — overridable with
+``force``.
 """
 
 from __future__ import annotations
@@ -147,9 +152,11 @@ class _Plan:
     create_relations: list[Doc] = field(default_factory=list)
     name_to_id: dict[str, str] = field(default_factory=dict)
     # Guard inputs: still-present files that now extract to nothing, and the
-    # size of the live projection the supersessions are measured against.
+    # size of the population the supersessions are measured against — the
+    # active entities that belong to a file, which is exactly the set an
+    # update is able to supersede.
     vanished: list[tuple[str, int]] = field(default_factory=list)
-    active_total: int = 0
+    supersedable_total: int = 0
 
 
 def _plan_update(changed: list[Doc], extraction: Doc, store: FalkorGraphStore) -> _Plan:
@@ -168,7 +175,7 @@ def _plan_update(changed: list[Doc], extraction: Doc, store: FalkorGraphStore) -
 
     plan = _Plan(
         name_to_id={name: entity.id for name, entity in existing_by_name.items()},
-        active_total=len(existing),
+        supersedable_total=sum(1 for e in existing if existing_file.get(e.name) is not None),
     )
 
     for doc in fresh_entities:
@@ -211,9 +218,12 @@ def _plan_relations(
     fresh_file: dict[str, str | None],
     fresh_by_name: dict[str, Doc],
 ) -> None:
-    """Diff the structural edges *sourced from* the changed files."""
+    """Diff the structural edges *touching* the changed files (either endpoint)."""
     id_to_name = {entity.id: entity.name for entity in existing}
     owner = {entity.name: _file_of(entity.name, entity.observations) for entity in existing}
+
+    def touches(*files: str | None) -> bool:
+        return any(path in changed_set for path in files)
 
     live: dict[RelationKey, Doc] = {}
     for doc in store.list_relation_docs():
@@ -221,7 +231,9 @@ def _plan_relations(
             continue
         from_name = id_to_name.get(doc["from"])
         to_name = id_to_name.get(doc["to"])
-        if from_name is None or to_name is None or owner.get(from_name) not in changed_set:
+        if from_name is None or to_name is None:
+            continue
+        if not touches(owner.get(from_name), owner.get(to_name)):
             continue
         live.setdefault((from_name, to_name, doc["relationType"]), doc)
 
@@ -229,7 +241,7 @@ def _plan_relations(
     for relation in extraction["relations"]:
         if relation["relationType"] not in _STRUCTURAL_RELATION_TYPES:
             continue
-        if fresh_file.get(relation["from"]) not in changed_set:
+        if not touches(fresh_file.get(relation["from"]), fresh_file.get(relation["to"])):
             continue
         fresh.setdefault((relation["from"], relation["to"], relation["relationType"]), relation)
 
@@ -266,10 +278,10 @@ def _diagnose(plan: _Plan) -> str | None:
             "unparseable, or no longer collected. Applying the update would supersede "
             "every entity it has."
         )
-    if plan.supersedes and len(plan.supersedes) * 2 > plan.active_total:
+    if plan.supersedes and len(plan.supersedes) * 2 > plan.supersedable_total:
         return (
-            f"the update would supersede {len(plan.supersedes)} of {plan.active_total} "
-            "entities — more than half the graph."
+            f"the update would supersede {len(plan.supersedes)} of {plan.supersedable_total} "
+            "entities extracted from files — more than half the graph's structural layer."
         )
     return None
 
