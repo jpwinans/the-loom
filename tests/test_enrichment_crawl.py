@@ -193,3 +193,154 @@ def test_registered_summary_no_longer_marks_the_command_unavailable() -> None:
     descriptor = next(c for c in COMMANDS if c.name == "enrichment-crawl")
     assert "unavailable" not in descriptor.summary.lower()
     assert "writes" in descriptor.summary.lower()
+
+
+def _seed_causal_graph(multi: MultiGraph) -> dict[str, str]:
+    """A causal-modelling graph: every concept→concept edge is ``causes``."""
+    store = multi.get_store()
+
+    def entity(name: str, observations: list[str]) -> str:
+        created = store.create_entity(
+            EntityCreate.model_validate(
+                {"name": name, "entityType": "concept", "observations": observations}
+            )
+        )
+        return created.id
+
+    alpha = entity("Alpha", ["well described", "second note", "third note"])
+    beta = entity("Beta", ["thin note"])
+    gamma = entity("Gamma", [])
+
+    for target in (beta, gamma):
+        store.create_relation(
+            RelationCreate.model_validate(
+                {
+                    "from": alpha,
+                    "to": target,
+                    "relationType": "causes",
+                    "polarity": "+",
+                    "strength": "moderate",
+                    "evidence": "seed",
+                }
+            )
+        )
+    return {"alpha": alpha, "beta": beta, "gamma": gamma}
+
+
+def test_symmetric_evidence_never_infers_a_causal_relation(multi: MultiGraph) -> None:
+    """Closure/semantic evidence is symmetric and directionless, so it cannot
+    justify a causal claim — which would also invent a polarity."""
+    ids = _seed_causal_graph(multi)
+
+    result = enrichment_crawl(EnrichmentCrawlInput.model_validate({"dryRun": False}), multi)
+
+    candidates = result["result"]["crawl"]["data"]["candidates"]
+    assert candidates
+    assert all(c["relationType"] == "related_to" for c in candidates), (
+        "the graph's causal habits must not be copied onto directionless evidence"
+    )
+    pair = {ids["beta"], ids["gamma"]}
+    written = [r for r in multi.get_store().list_relations() if {r.from_, r.to} == pair]
+    assert written
+    assert all(r.relation_type == "related_to" and r.polarity is None for r in written)
+
+
+def test_same_type_pairs_stay_symmetric_but_cross_type_habits_are_kept(multi: MultiGraph) -> None:
+    """Direction is arbitrary for a same-type pair, so only the symmetric
+    fallback is allowed there; an ordered cross-type precedent survives."""
+    from theloom.composites.enrichment_crawl import _infer_relation_type
+
+    frequencies = {
+        "concept→concept": {"part_of": 9},
+        "concept→system": {"part_of": 4, "causes": 9},
+        "system→concept": {"related_to": 2},
+    }
+    assert _infer_relation_type(frequencies, "concept", "concept") == "related_to"
+    assert _infer_relation_type(frequencies, "concept", "system") == "part_of"
+    assert _infer_relation_type(frequencies, "system", "concept") == "related_to"
+    assert _infer_relation_type(frequencies, "concept", "unknown") == "related_to"
+
+
+def test_semantic_failure_degrades_instead_of_losing_the_structural_half(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _seed_frontier(multi)
+    store = multi.get_store()
+    store.set_entity_vector(ids["beta"], [1.0, 0.0, 0.0])
+    store.set_entity_vector(ids["gamma"], [0.99, 0.14, 0.0])
+
+    def _boom(*_args: object, **_kwargs: object) -> list[dict[str, object]]:
+        raise RuntimeError("embedding model unavailable")
+
+    monkeypatch.setattr("theloom.composites.enrichment_crawl.semantic_neighbors", _boom)
+
+    result = enrichment_crawl(EnrichmentCrawlInput(), multi)
+
+    assert result["result"]["crawl"]["error"] is None
+    crawl = result["result"]["crawl"]["data"]
+    assert crawl["semanticContextAvailable"] is False
+    assert "embedding model unavailable" in crawl["semanticContextReason"]
+    assert crawl["candidates"], "structural closure must survive a semantic failure"
+    assert all(c["sources"] == ["common-neighbors"] for c in crawl["candidates"])
+
+
+def test_upstream_failure_does_not_fabricate_clean_downstream_zeros(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_frontier(multi)
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("hydrate exploded")
+
+    monkeypatch.setattr("theloom.composites.enrichment_crawl.hydrate_graph", _boom)
+
+    result = enrichment_crawl(EnrichmentCrawlInput.model_validate({"dryRun": False}), multi)
+
+    sections = result["result"]
+    assert sections["prioritize"]["error"] is not None
+    for name in ("crawl", "enrich", "summary"):
+        assert sections[name]["data"] is None, f"{name} must not report fabricated zeros"
+        assert sections[name]["error"] is not None
+    assert result["metadata"]["sectionsFailed"] == 4
+    assert result["metadata"]["enrichedCount"] is None
+
+
+def test_candidate_budget_is_not_burned_by_already_merged_pairs(multi: MultiGraph) -> None:
+    store = multi.get_store()
+
+    def entity(name: str) -> str:
+        created = store.create_entity(
+            EntityCreate.model_validate({"name": name, "entityType": "concept", "observations": []})
+        )
+        return created.id
+
+    alpha = entity("Alpha")
+    leaves = {name: entity(name) for name in ("Beta", "Delta", "Gamma")}
+    for leaf in leaves.values():
+        store.create_relation(
+            RelationCreate.model_validate(
+                {
+                    "from": alpha,
+                    "to": leaf,
+                    "relationType": "related_to",
+                    "polarity": None,
+                    "strength": "moderate",
+                    "evidence": "seed",
+                }
+            )
+        )
+
+    result = enrichment_crawl(EnrichmentCrawlInput.model_validate({"maxCandidates": 1}), multi)
+
+    crawl = result["result"]["crawl"]["data"]
+    pairs = {frozenset({c["from"]["id"], c["to"]["id"]}) for c in crawl["candidates"]}
+    expected = {
+        frozenset({leaves[a], leaves[b]})
+        for a, b in (("Beta", "Delta"), ("Beta", "Gamma"), ("Delta", "Gamma"))
+    }
+    assert pairs == expected, "a merged pair must not consume the other endpoint's budget"
+    by_name = {row["name"]: row for row in crawl["context"]}
+    assert [by_name[name]["candidatesProposed"] for name in ("Beta", "Delta", "Gamma")] == [1, 1, 1]
+    assert by_name["Alpha"]["candidatesProposed"] == 0, (
+        "candidatesProposed must count real proposals, not skipped duplicates"
+    )

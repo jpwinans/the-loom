@@ -32,7 +32,22 @@ declined, rather than silently honoured.
 The relation type of a candidate is inferred from the graph's own habits: the
 most frequent existing relation type between that ordered pair of entity types
 (``related_to`` when the graph has no precedent). Nothing is invented that the
-graph does not already say.
+graph does not already say — and because the evidence behind a candidate
+(neighbour-set Jaccard, embedding similarity) is *symmetric and directionless*,
+inference is restricted to what such evidence can carry:
+
+* **No causal types.** ``causes``/``enables``/``requires``/``inhibits``/
+  ``amplifies``/``dampens`` carry a polarity the evidence does not supply, so
+  they are never inferred even on a graph made entirely of them.
+* **Same-type pairs stay symmetric.** When both endpoints share an entity type
+  the crawl direction is an artefact of which node it reached first, so only
+  the symmetric fallback ``related_to`` is allowed. A cross-type precedent is
+  still honoured, since the frequency table is keyed by the *ordered* type pair
+  and therefore already encodes the graph's own direction.
+
+Sections degrade rather than lie: a failed section never lets its dependants
+report clean zeros, and a semantic-neighbour failure loses only the semantic
+half of the context — structural closure still applies.
 """
 
 from __future__ import annotations
@@ -45,10 +60,12 @@ from pydantic import Field
 from theloom.composites.framework import (
     SectionResult,
     build_composite_result,
+    failed_section,
     time_section,
 )
 from theloom.exploration import embeddings_available
 from theloom.graph.hydrate import LoomGraph, hydrate_graph
+from theloom.model import CAUSAL_RELATION_TYPES
 from theloom.operations.common import CommandInput
 from theloom.operations.relations import (
     CreateRelationInput,
@@ -67,6 +84,10 @@ DEFAULT_NUM_SAMPLES = 1
 DEFAULT_MIN_CONFIDENCE = 0.5
 FALLBACK_RELATION_TYPE = "related_to"
 
+# Types a symmetric, directionless candidate can never justify: every causal
+# type carries a polarity the evidence does not supply.
+_UNINFERABLE_RELATION_TYPES = frozenset(str(t) for t in CAUSAL_RELATION_TYPES)
+
 # Weight split between the two under-description signals (observations, edges).
 _OBSERVATION_WEIGHT = 0.5
 _RELATION_WEIGHT = 0.5
@@ -75,6 +96,7 @@ _NO_EMBEDDINGS_REASON = (
     "no entity vectors in this graph — the embedding pipeline has not run, so "
     "semantic-neighbor context was skipped; structural closure still applies"
 )
+_UPSTREAM_FAILED = "Skipped: the {section} section failed, so this section has nothing to report"
 _NO_VOTING_REASON = (
     "CISC N-sample voting needs an LLM provider and no enrichment LLM path exists in "
     "this build; candidates are ranked deterministically instead and no samples were spent"
@@ -88,6 +110,15 @@ class EnrichmentCrawlInput(CommandInput):
     min_confidence: float | None = Field(default=None, ge=0, le=1, alias="minConfidence")
     dry_run: bool | None = Field(default=None, alias="dryRun")
     graph: str | None = None
+
+
+def _semantic_failure_reason(err: Exception) -> str:
+    """Why semantic context stopped mid-crawl (structural closure still applies)."""
+    detail = str(err) or err.__class__.__name__
+    return (
+        f"semantic-neighbor context failed and was skipped for the rest of the crawl "
+        f"({detail}); structural closure still applies"
+    )
 
 
 def _priority_score(observation_count: int, relation_count: int) -> float:
@@ -116,8 +147,20 @@ def _infer_relation_type(
     frequencies: dict[str, dict[str, int]], from_type: str, to_type: str
 ) -> str:
     """The graph's most frequent relation type for this ordered type pair
-    (ties broken by name for determinism), else ``related_to``."""
-    bucket = frequencies.get(f"{from_type}→{to_type}")
+    (ties broken by name for determinism), else ``related_to``.
+
+    The evidence behind a candidate is symmetric, so causal types (which would
+    need an invented polarity) are never inferred, and a same-type pair — whose
+    direction is decided only by which endpoint the crawl reached first — falls
+    back to the symmetric ``related_to``.
+    """
+    if from_type == to_type:
+        return FALLBACK_RELATION_TYPE
+    bucket = {
+        relation_type: count
+        for relation_type, count in (frequencies.get(f"{from_type}→{to_type}") or {}).items()
+        if relation_type not in _UNINFERABLE_RELATION_TYPES
+    }
     if not bucket:
         return FALLBACK_RELATION_TYPE
     return max(sorted(bucket), key=lambda relation_type: bucket[relation_type])
@@ -228,7 +271,7 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
         graph: LoomGraph = state["graph"]
         frequencies: dict[str, dict[str, int]] = state.get("relationTypeFrequencies", {})
         semantic_ok = embeddings_available(store)
-        state["semanticAvailable"] = semantic_ok
+        semantic_reason = None if semantic_ok else _NO_EMBEDDINGS_REASON
 
         merged: dict[tuple[str, str], Doc] = {}
         context: list[Doc] = []
@@ -246,7 +289,15 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             for other_id, score in _closure_candidates(graph, entity_id):
                 scored[other_id] = {"confidence": score, "sources": ["common-neighbors"]}
             if semantic_ok:
-                for other_id, score in _semantic_candidates(entity_id):
+                try:
+                    semantic = _semantic_candidates(entity_id)
+                except Exception as err:  # noqa: BLE001 — semantic context is optional.
+                    # Losing the embedder must cost only the semantic half of
+                    # the context, not the structural closure of every node.
+                    semantic_ok = False
+                    semantic_reason = _semantic_failure_reason(err)
+                    semantic = []
+                for other_id, score in semantic:
                     entry = scored.get(other_id)
                     if entry is None:
                         scored[other_id] = {"confidence": score, "sources": ["semantic-neighbors"]}
@@ -267,9 +318,11 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
                 if other is None:
                     continue
                 key = (entity_id, other_id) if entity_id < other_id else (other_id, entity_id)
-                accepted += 1
                 if key in merged:
+                    # Already proposed from the other endpoint — it is not a new
+                    # candidate, so it must not consume this node's budget.
                     continue
+                accepted += 1
                 merged[key] = {
                     "from": {
                         "id": entity_id,
@@ -305,6 +358,7 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             merged.values(), key=lambda c: (-float(c["confidence"]), str(c["from"]["name"]))
         )
         state["candidates"] = candidates
+        state["semanticAvailable"] = semantic_ok
         return {
             "nodesCrawled": len(context),
             "candidatesProposed": len(candidates),
@@ -312,12 +366,18 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             "minConfidence": min_confidence,
             "maxCandidatesPerNode": max_candidates,
             "semanticContextAvailable": semantic_ok,
-            "semanticContextReason": None if semantic_ok else _NO_EMBEDDINGS_REASON,
+            "semanticContextReason": semantic_reason,
             "context": context,
             "candidates": candidates,
         }
 
-    crawl_section = time_section(_crawl)
+    # A failed upstream section must not let its dependants report clean zeros:
+    # an empty crawl and a *skipped* crawl are different facts.
+    crawl_section = (
+        failed_section(_UPSTREAM_FAILED.format(section="prioritize"))
+        if prioritize_section["error"] is not None
+        else time_section(_crawl)
+    )
 
     # -- Section 3: enrich ----------------------------------------------------
     def _enrich() -> Doc:
@@ -365,13 +425,17 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             "failures": failures,
         }
 
-    enrich_section = time_section(_enrich)
+    enrich_section = (
+        failed_section(_UPSTREAM_FAILED.format(section="crawl"))
+        if crawl_section["error"] is not None
+        else time_section(_enrich)
+    )
 
     # -- Section 4: summary ---------------------------------------------------
     def _summary() -> Doc:
-        prioritize_data = prioritize_section["data"] or {}
-        crawl_data = crawl_section["data"] or {}
-        enrich_data = enrich_section["data"] or {}
+        prioritize_data: Doc = prioritize_section["data"]
+        crawl_data: Doc = crawl_section["data"]
+        enrich_data: Doc = enrich_section["data"]
         counts = {
             "frontierSize": prioritize_data.get("frontierSize", 0),
             "nodesCrawled": crawl_data.get("nodesCrawled", 0),
@@ -394,7 +458,11 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             "text": _build_summary(counts, state["candidates"], dry_run, voting),
         }
 
-    summary_section = time_section(_summary)
+    summary_section = (
+        failed_section(_UPSTREAM_FAILED.format(section="enrich"))
+        if enrich_section["error"] is not None
+        else time_section(_summary)
+    )
 
     sections: dict[str, SectionResult] = {
         "prioritize": prioritize_section,
@@ -404,8 +472,11 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
     }
     total_ms = round((time.perf_counter() - start) * 1000)
     result = build_composite_result(sections, total_ms)
-    enrich_data = enrich_section["data"] or {}
-    result["metadata"]["enrichedCount"] = enrich_data.get("created", 0)
+    enrich_result: Doc | None = enrich_section["data"]
+    # null, not 0: nothing was written *and* nothing was attempted.
+    result["metadata"]["enrichedCount"] = (
+        None if enrich_result is None else enrich_result.get("created", 0)
+    )
     result["metadata"]["dryRun"] = dry_run
     return result
 
