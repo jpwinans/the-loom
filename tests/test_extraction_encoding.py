@@ -36,6 +36,23 @@ class TestFileEntityName:
         assert encoding.is_file_entity_name("theloom.model.LoomModel (model)") is False
 
 
+class TestFindObservation:
+    """The raw-observation lookup other prefix-based readers (e.g. the
+    name-resolver's ambiguity hint) build on, distinct from the ``parse_*``
+    functions: it returns the whole matched line, not just the value."""
+
+    def test_returns_the_observation_verbatim_prefix_and_all(self) -> None:
+        observations = ["Language: python", "File path: theloom/x.py", "docstring: hi"]
+        assert encoding.find_observation(observations, "File path") == "File path: theloom/x.py"
+
+    def test_case_insensitive(self) -> None:
+        observations = ["file path: theloom/x.py"]
+        assert encoding.find_observation(observations, "File path") == "file path: theloom/x.py"
+
+    def test_no_match_is_none(self) -> None:
+        assert encoding.find_observation(["Language: python"], "File path") is None
+
+
 class TestFilePathObservation:
     def test_round_trip(self) -> None:
         for path in ["theloom/model.py", "src/a/b/c.ts"]:

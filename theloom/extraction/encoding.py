@@ -71,15 +71,29 @@ def _observation_prefixed(prefix: str, value: str) -> str:
     return f"{prefix}: {value}"
 
 
-def _parse_observation_prefix(observations: Iterable[Any], prefix: str) -> str | None:
-    """The value after the first observation matching ``prefix`` (case
-    insensitive), or ``None`` if none matches."""
+def find_observation(observations: Iterable[Any], prefix: str) -> str | None:
+    """The first observation starting with ``prefix`` (case insensitive),
+    verbatim — including the prefix, in whatever case it was actually
+    written. ``None`` if none matches.
+
+    For callers that want the parsed *value* rather than the raw line, see
+    the per-prefix ``parse_*`` functions below (``parse_file_path`` etc.),
+    which are built on this."""
     lowered_prefix = f"{prefix.lower()}:"
     for observation in observations:
         text = str(observation)
         if text.lower().startswith(lowered_prefix):
-            return text[len(lowered_prefix) :].strip()
+            return text
     return None
+
+
+def _parse_observation_prefix(observations: Iterable[Any], prefix: str) -> str | None:
+    """The value after the first observation matching ``prefix`` (case
+    insensitive), or ``None`` if none matches."""
+    text = find_observation(observations, prefix)
+    if text is None:
+        return None
+    return text[len(prefix) + 1 :].strip()
 
 
 FILE_PATH_PREFIX = "File path"
