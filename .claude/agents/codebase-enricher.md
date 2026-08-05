@@ -87,7 +87,25 @@ Collect the `system` entity id for each file (these are the link targets).
 Only create what the source justifies — a pattern you cannot point to in a file is a
 guess, not an observation. Every entity carries `map_layer: semantic` and
 `module_group: <GROUP.id>` observations plus provenance
-(`sourceType: "observation"`, `extractor: "map-codebase"`).
+(`sourceType: "observation"`, `extractor: "map-codebase"`). `module_group` MUST be the
+literal `GROUP.id` value you were given in the Input Parameters — never `GROUP.label`,
+never a name inferred from the group's content, and never another group's id. When a
+directory has split into multiple size-capped groups (`GROUP.id` like
+`theloom-composites-1` vs `theloom-composites-2`), the two parts have different ids —
+copy your own, not the sibling part's.
+
+Creation must be idempotent: because step 1 already superseded this group's prior
+semantic entities, any live entity you find now stamped `module_group: <GROUP.id>` and
+`extractor: map-codebase` is from *this* run, not a stale one. Before creating an entity,
+check one is not already sitting there under the same name and group — a duplicate
+create is not a retry, it is a second entity:
+
+```bash
+loom list-entities '{"entityType": "<type>", "query": "<exact entity name>", "compact": true, "limit": 5, "graph": "GRAPH_NAME"}'
+```
+
+Skip the create and reuse the existing id if an active (non-superseded) result matches
+the name and `module_group: <GROUP.id>` exactly; otherwise create as below.
 
 ```bash
 # ONE module-purpose concept for the group
@@ -119,7 +137,20 @@ group has enriched, not per group):
 loom read-entity '{"id": "<entity_id>", "graph": "GRAPH_NAME"}'   # per created entity
 ```
 
-Failed create → retry once → record in `failedCreations` and continue.
+A `read-entity` that returns is not yet "verified" — confirm its observations include
+`module_group: <GROUP.id>` exactly (your own id, per the note in step 4). A wrong stamp
+is a defect even though the create succeeded: supersede it (`status: "superseded"`,
+`statusReason: "mis-stamped"`) and recreate with the correct `module_group`, the same as
+any other correction under Constraint 1.
+
+Retry scope is per CREATE call, not per batch: if one `create-entity` (or
+`create-relation`) call fails or its verification read fails, retry that one call once,
+then record it in `failedCreations` and continue — never re-issue the create calls that
+already succeeded earlier in this same step because a later one failed or a verify
+timed out. A batch that partially landed stays partially landed; the idempotency check
+in step 4 means a legitimate re-run of the whole group is also safe, but re-running
+inside one pass over a transient verify hiccup is what produced the duplicate notes
+this constraint exists to prevent.
 
 ## Constraints
 
@@ -143,6 +174,14 @@ Failed create → retry once → record in `failedCreations` and continue.
    those files; note them in a tension only if the evidence is in your own files.
 6. **Verify every creation; operate autonomously; never spawn agents or ask the user
    questions.**
+7. **`module_group` is always your own `GROUP.id`, copied verbatim, on every entity you
+   create — never `GROUP.label`, never a value guessed from the group's content or
+   copied from another group's part.** Verification (step 5) must check this stamp, not
+   just that the entity exists.
+8. **Never write files into the project tree — not PROJECT_PATH, not the repo root, not
+   anywhere under it.** Any scratch or bookkeeping file this agent's own tooling needs
+   (batch results, retry state, dedupe notes) goes under `/tmp`, never the repo being
+   mapped. The only writes this agent makes to the repo are through the `loom` CLI.
 
 ## Structured Output Contract
 

@@ -172,6 +172,11 @@ This file is the incremental anchor — the next run reads `commit` as its `gitR
 3. **Unenriched groups appear in Coverage by name** — a silent gap reads as "nothing
    interesting here", which is a lie.
 4. **Operate autonomously; never spawn agents or ask the user questions.**
+5. **The only files this agent writes anywhere are the four named in OUTPUT_DIR**
+   (`ARCHITECTURE-MAP.md`, `codebase-map.html`, `QUERYING.md`, `map-manifest.json`).
+   Any scratch or intermediate file the analysis needs (raw command output, working
+   notes) goes under `/tmp`, never PROJECT_PATH, never the repo root, never anywhere
+   else in the repo tree.
 
 ## Structured Output Contract
 
