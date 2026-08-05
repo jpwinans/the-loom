@@ -22,15 +22,19 @@ production code path constructs one. Writes exist only to set a scene.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Any
 
+from theloom.errors import NotFoundError
 from theloom.model import (
     Entity,
     EntityCreate,
     EntityFilter,
+    Relation,
+    RelationCreate,
+    RelationFilter,
 )
-from theloom.store.filters import apply_entity_filters
+from theloom.store.filters import apply_entity_filters, apply_relation_filters
 from theloom.timeutil import iso_now
 
 
@@ -41,6 +45,9 @@ class InMemoryGraphStore:
         # id -> wire doc, in creation order (dicts preserve insertion order,
         # which is exactly what FalkorDB's `ORDER BY id(n)` gives us).
         self._entities: dict[str, dict[str, Any]] = {}
+        # Relation wire docs in creation order; parallel edges between the same
+        # pair are as first-class here as they are in the graph.
+        self._relations: list[dict[str, Any]] = []
 
     # -- writes (scene setting; deliberately outside the port) -----------------
 
@@ -52,6 +59,28 @@ class InMemoryGraphStore:
         entity = Entity.model_validate(doc)
         self._entities[entity.id] = doc
         return entity
+
+    def create_relation(self, spec: RelationCreate) -> Relation:
+        return self.create_relations([spec])[0]
+
+    def create_relations(self, specs: Sequence[RelationCreate]) -> list[Relation]:
+        """Create edges, all of them or none — a missing endpoint raises
+        ``NotFoundError`` before anything is stored, as in the real store."""
+        now = iso_now()
+        docs: list[dict[str, Any]] = []
+        for spec in specs:
+            doc = spec.model_dump(by_alias=True, exclude_unset=True)
+            doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
+            docs.append(doc)
+        missing = sorted(
+            {str(doc[end]) for doc in docs for end in ("from", "to")} - set(self._entities)
+        )
+        if missing:
+            raise NotFoundError(
+                f"Entity not found: relation endpoints must exist (missing {', '.join(missing)})"
+            )
+        self._relations.extend(docs)
+        return [Relation.model_validate(doc) for doc in docs]
 
     # -- reads (the port) ------------------------------------------------------
 
@@ -72,3 +101,25 @@ class InMemoryGraphStore:
         if filter is None:
             return entities
         return entities[: filter.limit] if filter.limit is not None else entities
+
+    def list_relations(self, filter: RelationFilter | None = None) -> list[Relation]:
+        return apply_relation_filters(
+            [Relation.model_validate(doc) for doc in self._relations], filter
+        )
+
+    def read_relation(
+        self, from_id: str, to_id: str, relation_type: str | None = None
+    ) -> Relation | None:
+        edges = self.read_relations(from_id, to_id, relation_type)
+        return edges[0] if edges else None
+
+    def read_relations(
+        self, from_id: str, to_id: str, relation_type: str | None = None
+    ) -> list[Relation]:
+        return [
+            Relation.model_validate(doc)
+            for doc in self._relations
+            if doc["from"] == from_id
+            and doc["to"] == to_id
+            and (relation_type is None or doc["relationType"] == relation_type)
+        ]

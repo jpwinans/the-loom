@@ -19,7 +19,14 @@ from dataclasses import dataclass
 
 import pytest
 
-from theloom.model import Entity, EntityCreate, EntityFilter, Relation, RelationCreate
+from theloom.model import (
+    Entity,
+    EntityCreate,
+    EntityFilter,
+    Relation,
+    RelationCreate,
+    RelationFilter,
+)
 from theloom.store.read_port import GraphReadPort
 
 
@@ -203,3 +210,103 @@ def test_list_entities_limit_caps_the_window_after_filtering(harness: Harness) -
     listed = harness.reader.list_entities(EntityFilter.model_validate({"limit": 2}))
 
     assert [e.name for e in listed] == ["First", "Second"]
+
+
+# =============================================================================
+# read_relation / read_relations
+# =============================================================================
+
+
+def test_read_relation_returns_the_edge_between_two_entities(harness: Harness) -> None:
+    source = harness.entity("Delay")
+    target = harness.entity("Feedback Loop")
+    created = harness.relation(source.id, target.id, relationType="causes")
+
+    found = harness.reader.read_relation(source.id, target.id)
+
+    assert found is not None
+    assert found.id == created.id
+    assert found.from_ == source.id
+    assert found.to == target.id
+    assert found.relation_type.value == "causes"
+
+
+def test_read_relation_is_directed(harness: Harness) -> None:
+    source = harness.entity("Delay")
+    target = harness.entity("Feedback Loop")
+    harness.relation(source.id, target.id)
+
+    assert harness.reader.read_relation(target.id, source.id) is None
+
+
+def test_read_relation_narrows_by_relation_type(harness: Harness) -> None:
+    source = harness.entity("Delay")
+    target = harness.entity("Feedback Loop")
+    harness.relation(source.id, target.id, relationType="causes")
+    contradicts = harness.relation(source.id, target.id, relationType="contradicts")
+
+    found = harness.reader.read_relation(source.id, target.id, "contradicts")
+
+    assert found is not None
+    assert found.id == contradicts.id
+
+
+def test_read_relations_returns_every_parallel_edge_in_creation_order(harness: Harness) -> None:
+    source = harness.entity("Delay")
+    target = harness.entity("Feedback Loop")
+    first = harness.relation(source.id, target.id, relationType="causes")
+    second = harness.relation(source.id, target.id, relationType="contradicts")
+
+    found = harness.reader.read_relations(source.id, target.id)
+
+    assert [r.id for r in found] == [first.id, second.id]
+
+
+def test_read_relations_is_empty_when_the_pair_is_unconnected(harness: Harness) -> None:
+    source = harness.entity("Delay")
+    target = harness.entity("Feedback Loop")
+
+    assert harness.reader.read_relations(source.id, target.id) == []
+
+
+# =============================================================================
+# list_relations
+# =============================================================================
+
+
+def test_list_relations_returns_every_edge_in_creation_order(harness: Harness) -> None:
+    a = harness.entity("A")
+    b = harness.entity("B")
+    c = harness.entity("C")
+    first = harness.relation(a.id, b.id)
+    second = harness.relation(b.id, c.id)
+
+    listed = harness.reader.list_relations()
+
+    assert [r.id for r in listed] == [first.id, second.id]
+
+
+def test_list_relations_narrows_by_endpoint_and_type(harness: Harness) -> None:
+    a = harness.entity("A")
+    b = harness.entity("B")
+    c = harness.entity("C")
+    causes = harness.relation(a.id, b.id, relationType="causes")
+    harness.relation(a.id, c.id, relationType="causes")
+    harness.relation(a.id, b.id, relationType="contradicts")
+
+    listed = harness.reader.list_relations(
+        RelationFilter.model_validate({"from": a.id, "to": b.id, "relationType": "causes"})
+    )
+
+    assert [r.id for r in listed] == [causes.id]
+
+
+def test_list_relations_narrows_by_polarity(harness: Harness) -> None:
+    a = harness.entity("A")
+    b = harness.entity("B")
+    positive = harness.relation(a.id, b.id, relationType="causes", polarity="+")
+    harness.relation(a.id, b.id, relationType="causes", polarity="-")
+
+    listed = harness.reader.list_relations(RelationFilter.model_validate({"polarity": "+"}))
+
+    assert [r.id for r in listed] == [positive.id]

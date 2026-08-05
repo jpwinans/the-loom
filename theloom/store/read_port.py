@@ -27,7 +27,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Protocol, runtime_checkable
 
-from theloom.model import Entity, EntityFilter
+from theloom.model import Entity, EntityFilter, Relation, RelationFilter
 from theloom.store.base import Direction
 
 __all__ = ["Direction", "GraphReadPort"]
@@ -68,5 +68,32 @@ class GraphReadPort(Protocol):
         active alone) → entityType → name → query → version → session — plus
         the two that need edges, ``sourcedFrom`` / ``excludeSourcedFrom``,
         where exclude wins. ``filter.limit`` caps the window after filtering.
+        """
+        ...
+
+    # -- relations ------------------------------------------------------------
+
+    def read_relation(
+        self, from_id: str, to_id: str, relation_type: str | None = None
+    ) -> Relation | None:
+        """The first directed edge from→to (optionally of a type), or None.
+
+        Direction is meant literally: an edge to→from is not a match. Where
+        parallel edges exist, "first" is the oldest.
+        """
+        ...
+
+    def read_relations(
+        self, from_id: str, to_id: str, relation_type: str | None = None
+    ) -> list[Relation]:
+        """Every directed edge from→to, oldest first, optionally of a type."""
+        ...
+
+    def list_relations(self, filter: RelationFilter | None = None) -> list[Relation]:
+        """Relations matching the filter, in creation order.
+
+        Semantics are ``theloom/store/filters.py``: from / to / relationType /
+        polarity / session, ANDed. A null polarity in the filter is no filter
+        at all — only an explicit value narrows.
         """
         ...
