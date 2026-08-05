@@ -30,7 +30,6 @@ After :func:`build_composite_result`, the aggregate metadata is extended with
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -41,7 +40,7 @@ from theloom.analysis.interestingness import (
     compute_structural_novelty,
     compute_subjective_information_density,
 )
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite, time_section
 from theloom.operations.common import CommandInput
 from theloom.operations.relations import CreateRelationInput, create_relation
 from theloom.operations.semantic import (
@@ -105,7 +104,6 @@ def _compute_multiplicative_interestingness(
 
 
 def gap_fill_cycle(params: GapFillCycleInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     graph = params.graph
     auto_create = params.auto_create if params.auto_create is not None else False
     commit_threshold = params.commit_threshold
@@ -266,14 +264,14 @@ def gap_fill_cycle(params: GapFillCycleInput, multi: MultiGraph) -> dict[str, An
 
     verification_section = time_section(_verification)
 
-    sections = {
-        "gaps": gaps_section,
-        "suggestions": suggestions_section,
-        "validation": validation_section,
-        "verification": verification_section,
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    result = build_composite_result(sections, total_ms)
+    result = run_composite(
+        [
+            ("gaps", gaps_section),
+            ("suggestions", suggestions_section),
+            ("validation", validation_section),
+            ("verification", verification_section),
+        ]
+    )
     result["metadata"]["committed"] = counters["committed"]
     result["metadata"]["skipped"] = counters["skipped"]
     return result

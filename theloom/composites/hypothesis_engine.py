@@ -36,7 +36,7 @@ from theloom.analysis.interestingness import (
     compute_interestingness,
     compute_structural_novelty,
 )
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite
 from theloom.operations.common import CommandInput
 from theloom.operations.entity_proposal import EntityProposalOptions
 from theloom.operations.semantic import SemanticGapsInput, semantic_gaps
@@ -265,8 +265,6 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
         state["detectedGaps"] = gap_results
         return {"count": len(gap_results), "gaps": gap_results}
 
-    gaps_section = time_section(_gaps)
-
     # -- Section 2: proposals ----------------------------------------------
     def _proposals() -> dict[str, Any]:
         store = multi.get_store(graph)
@@ -285,8 +283,6 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
             "strategyCounts": propose_result["strategyCounts"],
         }
 
-    proposals_section = time_section(_proposals)
-
     # -- Section 3: filter --------------------------------------------------
     def _filter() -> dict[str, Any]:
         before_count = len(state["allProposals"])
@@ -299,8 +295,6 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
             "afterCount": after_count,
             "removedCount": before_count - after_count,
         }
-
-    filter_section = time_section(_filter)
 
     # -- Section 4: dedup ---------------------------------------------------
     def _dedup() -> dict[str, Any]:
@@ -334,8 +328,6 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
             "mode": result["mode"],
             "matches": result["matches"],
         }
-
-    dedup_section = time_section(_dedup)
 
     # -- Section 5: rank ----------------------------------------------------
     def _rank() -> dict[str, Any]:
@@ -388,23 +380,23 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
         scored.sort(key=lambda h: -h["overallScore"])
         return {"hypotheses": scored[:max_results]}
 
-    rank_section = time_section(_rank)
-
     # -- Assemble -----------------------------------------------------------
-    total_ms = round((time.perf_counter() - start) * 1000)
-    sections = {
-        "gaps": gaps_section,
-        "proposals": proposals_section,
-        "filter": filter_section,
-        "dedup": dedup_section,
-        "rank": rank_section,
-    }
-    composite = build_composite_result(sections, total_ms)
+    composite = run_composite(
+        [
+            ("gaps", _gaps),
+            ("proposals", _proposals),
+            ("filter", _filter),
+            ("dedup", _dedup),
+            ("rank", _rank),
+        ],
+        start=start,
+    )
+    total_ms = composite["metadata"]["totalDurationMs"]
 
-    rank_data = rank_section["data"]
+    rank_data = composite["result"]["rank"]["data"]
     hypotheses: list[dict[str, Any]] = rank_data["hypotheses"] if rank_data is not None else []
 
-    dedup_data = dedup_section["data"]
+    dedup_data = composite["result"]["dedup"]["data"]
     dedup_info = {
         "afterCount": (
             dedup_data["afterCount"] if dedup_data is not None else len(state["filteredProposals"])
