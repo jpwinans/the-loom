@@ -14,7 +14,8 @@ the compensation in each direction). The events land in their own stream —
 ``{prefix}:_chunks:events``, keyed by the same reserved name as the chunk graph
 — because chunks are not graph-scoped, so document history replays independently
 of any knowledge graph's log. Events: ``chunk_created`` per upserted chunk,
-``chunk_deleted`` per removed chunk, ``chunks_deleted`` for a whole document.
+``chunk_deleted`` per removed chunk, ``chunks_deleted`` for a document (naming
+the exact chunk ids the delete was pinned to — see ``delete_where_source``).
 Payloads carry ids (chunk, source) and the ingestion coordinates, not the chunk
 text — the chunk row is the store of record for content.
 
@@ -63,9 +64,11 @@ class ChunkStore:
         self,
         step: tuple[str, dict[str, Any]],
         events: list[tuple[str, dict[str, Any]]],
-    ) -> None:
-        """One Cypher statement plus its events, as one transaction."""
-        commit_steps(self._redis, self._graph, self.events, [step], events)
+    ) -> Any:
+        """One Cypher statement plus its events, as one transaction; the
+        statement's result (so a caller can report what actually changed)."""
+        results, _ = commit_steps(self._redis, self._graph, self.events, [step], events)
+        return results[0]
 
     def ensure_vector_index(self, dimension: int = 768) -> None:
         with contextlib.suppress(Exception):
@@ -132,7 +135,19 @@ class ChunkStore:
         return result
 
     def delete_where_source(self, source_id: str) -> int:
-        """Delete every chunk of one document; returns how many went."""
+        """Delete the document's chunks named by one snapshot; how many went.
+
+        The ids are read first so the event can name them, and the delete is
+        then *pinned to that snapshot* rather than re-matching on ``sourceId``:
+        the statement removes exactly the chunks the event names, so a chunk
+        written against the same document between the read and the commit is
+        neither deleted nor claimed, and replaying the log reproduces what the
+        live store did. (Re-matching would delete such a chunk for real while
+        the event stayed silent about it.) The pinned form is idempotent under
+        replay, so a racing deleter that takes a chunk first costs nothing —
+        the count returned is what this call actually removed, read back from
+        the delete itself rather than from the hopeful snapshot.
+        """
         rows = fetch_all_rows(
             self._rows,
             "MATCH (c:_Chunk {sourceId: $sid}) RETURN c.id ORDER BY id(c)",
@@ -142,8 +157,8 @@ class ChunkStore:
         chunk_ids = [str(row[0]) for row in rows]
         if not chunk_ids:
             return 0
-        self._commit(
-            ("MATCH (c:_Chunk {sourceId: $sid}) DELETE c", {"sid": source_id}),
+        result = self._commit(
+            ("MATCH (c:_Chunk) WHERE c.id IN $ids DELETE c", {"ids": chunk_ids}),
             [
                 (
                     "chunks_deleted",
@@ -151,7 +166,7 @@ class ChunkStore:
                 )
             ],
         )
-        return len(chunk_ids)
+        return int(result.nodes_deleted)
 
     def delete_chunk(self, chunk_id: str) -> None:
         self._commit(

@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 from falkordb import FalkorDB
 from redis import Redis
 
+from theloom.documents import chunkstore
 from theloom.documents.chunkstore import CHUNK_GRAPH_SUFFIX, ChunkStore
 from theloom.documents.ingestion import DocumentIngestion
 from theloom.errors import OperationError
@@ -103,6 +105,56 @@ def test_deleting_a_document_names_every_chunk_it_removed(
 def test_deleting_an_absent_document_appends_nothing(chunks: ChunkStore, log: EventLog) -> None:
     assert chunks.delete_where_source("missing") == 0
     assert log.read_all() == []
+
+
+def race_during_snapshot(monkeypatch: pytest.MonkeyPatch, interference: Callable[[], None]) -> None:
+    """Run ``interference`` in the window between the delete's snapshot read of
+    the document's chunk ids and the transaction that removes them."""
+    real = chunkstore.fetch_all_rows
+
+    def snapshot_then_interfere(*args: Any, **kwargs: Any) -> Any:
+        rows = real(*args, **kwargs)
+        interference()
+        return rows
+
+    monkeypatch.setattr(chunkstore, "fetch_all_rows", snapshot_then_interfere)
+
+
+def test_a_concurrent_insert_during_a_document_delete_is_not_silently_removed(
+    chunks: ChunkStore, log: EventLog, db: FalkorDB, namespace: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The delete removes exactly the chunks its event names — a chunk written
+    after the snapshot is neither deleted nor claimed, so replaying the log
+    reproduces what the live store did."""
+    for index in range(3):
+        chunks.upsert_chunk(f"chunk-{index}", metadata(f"chunk-{index}", index=index), None)
+    other = ChunkStore(db, key_prefix=namespace)
+
+    race_during_snapshot(
+        monkeypatch, lambda: other.upsert_chunk("chunk-9", metadata("chunk-9", index=9), None)
+    )
+    assert chunks.delete_where_source("doc-1") == 3
+
+    deleted = [event for event in log.read_all() if event.type == "chunks_deleted"]
+    assert deleted[0].payload["chunkIds"] == ["chunk-0", "chunk-1", "chunk-2"]
+    assert deleted[0].payload["count"] == 3
+    # The interloper survives, exactly as the log says.
+    assert [doc["id"] for doc in chunks.query_chunks()] == ["chunk-9"]
+
+
+def test_a_concurrent_delete_during_a_document_delete_is_not_double_counted(
+    chunks: ChunkStore, log: EventLog, db: FalkorDB, namespace: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A racing deleter takes a chunk first: the count returned is what this
+    call actually removed, not what its snapshot hoped to remove."""
+    for index in range(3):
+        chunks.upsert_chunk(f"chunk-{index}", metadata(f"chunk-{index}", index=index), None)
+    other = ChunkStore(db, key_prefix=namespace)
+
+    race_during_snapshot(monkeypatch, lambda: other.delete_chunk("chunk-2"))
+    assert chunks.delete_where_source("doc-1") == 2
+
+    assert chunks.query_chunks() == []
 
 
 def test_ingestion_appends_one_event_per_chunk(chunks: ChunkStore, log: EventLog) -> None:
