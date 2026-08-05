@@ -254,12 +254,30 @@ class FalkorGraphStore(GraphStore):
           crash after the query lost the event forever.
         - Redis runs the queued commands with no other client interleaved, and
           the client cannot die between them.
-        - Redis has no rollback, so a *server-side* error in the Cypher (a
-          malformed query — a bug, since every domain precondition is checked
-          in Python first) still lets the queued ``XADD`` run. The query itself
-          applied nothing (FalkorDB aborts the statement), and that event is
-          compensated away by id before the error propagates — leaving the
-          caller with an exception and no trace in either place.
+        - A command Redis rejects while *queueing* it (unknown command, bad
+          arity, out of memory) aborts the whole transaction: ``EXEC`` runs
+          nothing and ``execute`` raises. Both halves stay untouched.
+        - Redis has no rollback, so a command rejected at *run* time still
+          leaves its neighbour applied — and exactly one of the two halves can
+          be the casualty, each compensated in the only direction its
+          semantics allow:
+
+          * the Cypher failed (a malformed query — a bug, since every domain
+            precondition is checked in Python first): the query applied
+            nothing, so the ``XADD`` that ran beside it is unearned and is
+            deleted by id before the error propagates. No trace in either
+            place.
+          * the ``XADD`` failed: the mutation is applied and there is no
+            inverse statement to take it back with, so the event it earned is
+            true and is appended again outside the transaction (see
+            ``_repair_log``). The caller sees success. If that retry fails too
+            the log gap is permanent, and the caller gets an
+            OPERATION_ERROR naming the missing events instead of silence.
+
+        The one thing this does *not* promise: a repaired event is appended
+        after the ``EXEC``, so a concurrent writer can slip an entry in front
+        of it. Events stay ordered within a mutation, but a repaired one may
+        sit later in the stream than a mutation that really followed it.
 
         Returns ``(query results, appended event ids)``; the ids let a caller
         that only learns the mutation was wrong *after* ``EXEC`` (see
@@ -304,12 +322,42 @@ class FalkorGraphStore(GraphStore):
             # The mutation did not happen, so its events are not earned.
             self._events.discard(event_ids)
             raise query_failure
-        event_failure = next((r for r in event_responses if _is_error(r)), None)
-        if event_failure is not None:
-            # The mutation did happen; the events that landed stay (discarding
-            # them would only widen the gap). Surface the loss instead.
-            raise event_failure
+        unlogged = [
+            event
+            for event, response in zip(events, event_responses, strict=True)
+            if _is_error(response)
+        ]
+        if unlogged:
+            # The mutation did happen and cannot be undone, so the events it
+            # earned are true; append the ones that errored again.
+            event_ids.extend(self._repair_log(unlogged))
         return [QueryResult(self._graph, response) for response in query_responses], event_ids
+
+    def _repair_log(self, unlogged: Sequence[tuple[str, dict[str, Any]]]) -> list[str]:
+        """Re-append the events of a committed mutation whose XADD errored.
+
+        Only reachable for a *runtime* rejection of the append: a queue-time
+        rejection (unknown command, bad arity, out of memory) makes Redis
+        abort the whole transaction, so neither half runs and ``execute``
+        raises before any of this. A runtime one — the stream key holding a
+        non-stream value, a server-side refusal of the write — comes back as
+        an error value beside a ``GRAPH.QUERY`` that has already applied, and
+        Redis has no rollback to take it back with.
+
+        So compensation runs towards the log, not away from it. If the retry
+        also fails the gap is real and permanent; it is named in a typed
+        OPERATION_ERROR (with the raw Redis failure chained) rather than left
+        for a replay to discover as missing history.
+        """
+        try:
+            return self._events.repair(unlogged)
+        except Exception as exc:
+            types = ", ".join(event_type for event_type, _ in unlogged)
+            raise OperationError(
+                "Mutation committed but the event log could not be repaired: "
+                f"{len(unlogged)} event(s) ({types}) are missing from the log and "
+                f"cannot be re-appended: {exc}"
+            ) from exc
 
     # -- query helpers ----------------------------------------------------------
 
