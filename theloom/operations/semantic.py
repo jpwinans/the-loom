@@ -27,7 +27,7 @@ from pydantic import Field
 from theloom.config import load_config
 from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
-from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityStatus, EntityType
+from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityType
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
@@ -36,6 +36,7 @@ from theloom.semantic.embed import (
     compute_content_hash,
     get_embedder,
 )
+from theloom.semantic.search import search_entities
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -112,11 +113,6 @@ def _empty_pipeline_status() -> dict[str, Any]:
     }
 
 
-def _lance_score(cos: float) -> float:
-    """L2-distance similarity: 1/(1+L2), with L2 = sqrt(2-2cos) for unit vectors."""
-    return 1.0 / (1.0 + math.sqrt(max(0.0, 2.0 - 2.0 * cos)))
-
-
 def _entity_docs(store: FalkorGraphStore, filter: EntityFilter | None = None) -> list[Doc]:
     return [e.model_dump(by_alias=True, exclude_unset=True) for e in store.list_entities(filter)]
 
@@ -126,12 +122,6 @@ def _query_text(entity: Doc) -> str:
     return f"{entity['name']} {observations}"
 
 
-# Neither the status nor the entityType filter can be pushed into the ANN
-# index, so a filtered call reads a candidate window and widens it by this
-# factor whenever the window ran out before `limit` was met.
-_CANDIDATE_GROWTH = 4
-
-
 def _search_similar(
     store: FalkorGraphStore,
     query_text: str,
@@ -139,66 +129,20 @@ def _search_similar(
     min_score: float | None = None,
     entity_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Similarity search over the entity vector index: embeds the query
-    (QUERY prefix), asks FalkorDB's ANN index for the nearest candidates
-    (``FalkorGraphStore.vector_knn``), scores 1/(1+L2) — L2 = sqrt(2-2cos) for
-    the cosine the index reports — filters, and truncates.
+    """Deprecated alias for :func:`theloom.semantic.search.search_entities`.
 
-    Only active entities are returned. A superseded or deprecated entity keeps
-    its embedding (mutations invalidate, they never overwrite), so the index
-    still offers it and the filter has to happen here — the same filter every
-    other default read applies. Retraction is the exception: it drops the
-    vector outright, so a retracted entity is not even a candidate.
-
-    No per-call full vector or entity scan. Entity metadata is a point lookup
-    per candidate. The ANN window is approximate: its *scores* are exact but
-    its membership and ordering are best-effort (observed on the emulated
-    linux/amd64 build: a k-window holding the farthest nodes while the true
-    nearest sat outside it), so candidates are re-sorted by our own computed
-    score, and the only thing treated as proof of exhaustion is the index
-    returning fewer than ``k`` rows. Filters the index can't answer (status,
-    entityType, ``min_score`` over an unlucky window) can starve a fixed-size
-    window, so the window *grows* until ``limit`` is met or the index is
-    exhausted: a rare type stays findable instead of silently returning fewer
-    hits than exist.
+    Kept so ``viz/scope.py`` keeps importing a stable name while it is flipped
+    over to the public seam. The embedder is resolved here, from this module's
+    ``get_embedder``, so nothing that patched it changes behaviour.
     """
-    query_vector = get_embedder().embed_query(query_text)
-    resolved: dict[str, Any] = {}
-    k = max(limit, 1)
-    while True:
-        candidates = store.vector_knn(query_vector, k)
-        results: list[dict[str, Any]] = []
-        exhausted = len(candidates) < k
-        scored = sorted(
-            ((entity_id, _lance_score(cosine)) for entity_id, cosine in candidates),
-            key=lambda pair: -pair[1],
-        )
-        for entity_id, score in scored:
-            if min_score is not None and score < min_score:
-                break  # sorted: the rest of THIS window is below; growth decides the rest
-            if entity_id not in resolved:
-                resolved[entity_id] = store.read_entity(entity_id)
-            entity = resolved[entity_id]
-            if entity is None or entity.effective_status != EntityStatus.ACTIVE:
-                continue
-            if entity_types and entity.entity_type.value not in entity_types:
-                continue
-            results.append(
-                {
-                    "id": entity_id,
-                    "score": score,
-                    "metadata": {
-                        "name": entity.name,
-                        "entityType": entity.entity_type.value,
-                        "entryType": "entity",
-                    },
-                }
-            )
-            if len(results) >= limit:
-                break
-        if exhausted or len(results) >= limit:
-            return results
-        k *= _CANDIDATE_GROWTH
+    return search_entities(
+        store,
+        query_text,
+        limit,
+        min_score,
+        entity_types,
+        embedder=get_embedder(),
+    )
 
 
 def _spread_sample(items: list[Doc], max_items: int, seed: int | None = None) -> list[Doc]:
