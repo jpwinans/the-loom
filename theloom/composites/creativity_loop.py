@@ -61,7 +61,7 @@ from theloom.composites.far_analogy_retrieval import (
     FarAnalogyRetrievalInput,
     far_analogy_retrieval,
 )
-from theloom.composites.framework import SectionResult, build_composite_result, time_section
+from theloom.composites.framework import SectionResult, run_composite, time_section
 from theloom.operations.common import CommandInput
 from theloom.operations.reification import TriggerStatusInput, trigger_status
 from theloom.store.multigraph import MultiGraph
@@ -383,43 +383,44 @@ def creativity_loop(params: CreativityLoopInput, multi: MultiGraph) -> dict[str,
     loop_ms = round((time.perf_counter() - loop_start) * 1000)
     archive_list = sorted(archive.values(), key=lambda entry: str(entry["pairKey"]))
 
-    sections: dict[str, SectionResult] = {
-        "cycles": {
-            "data": {
-                "cyclesRun": len(cycles),
-                "maxCycles": max_cycles,
-                "stopReason": stop_reason,
-                "cycles": cycles,
-            },
-            "durationMs": loop_ms,
-            "error": None,
+    cycles_section: SectionResult = {
+        "data": {
+            "cyclesRun": len(cycles),
+            "maxCycles": max_cycles,
+            "stopReason": stop_reason,
+            "cycles": cycles,
         },
-        "accept": {
-            "data": {
-                "acceptedCount": len(accepted_all),
-                "rejectedCount": sum(int(c["accept"]["rejected"]) for c in cycles),
-                "duplicateCount": sum(int(c["accept"]["duplicates"]) for c in cycles),
-                "offFrontierCount": sum(int(c["accept"]["offFrontier"]) for c in cycles),
-                "threshold": threshold,
-                "generalizationBias": bias,
-            },
-            "durationMs": 0,
-            "error": None,
+        "durationMs": loop_ms,
+        "error": None,
+    }
+    accept_section: SectionResult = {
+        "data": {
+            "acceptedCount": len(accepted_all),
+            "rejectedCount": sum(int(c["accept"]["rejected"]) for c in cycles),
+            "duplicateCount": sum(int(c["accept"]["duplicates"]) for c in cycles),
+            "offFrontierCount": sum(int(c["accept"]["offFrontier"]) for c in cycles),
+            "threshold": threshold,
+            "generalizationBias": bias,
         },
-        "learn": {
-            "data": {
-                "archiveSize": len(archive_list),
-                "namesSeen": len(seen_names),
-                "plateauDetected": plateau_detected,
-                "componentPairArchive": archive_list,
-            },
-            "durationMs": 0,
-            "error": None,
+        "durationMs": 0,
+        "error": None,
+    }
+    learn_section: SectionResult = {
+        "data": {
+            "archiveSize": len(archive_list),
+            "namesSeen": len(seen_names),
+            "plateauDetected": plateau_detected,
+            "componentPairArchive": archive_list,
         },
+        "durationMs": 0,
+        "error": None,
     }
 
-    total_ms = round((time.perf_counter() - start) * 1000)
-    composite = build_composite_result(sections, total_ms)
+    composite = run_composite(
+        [("cycles", cycles_section), ("accept", accept_section), ("learn", learn_section)],
+        start=start,
+    )
+    total_ms = composite["metadata"]["totalDurationMs"]
     return {
         "composite": composite,
         "cycles": cycles,
