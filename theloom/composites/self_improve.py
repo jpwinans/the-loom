@@ -11,8 +11,9 @@ The capstone composite chains every preceding feature into a six-section cycle:
 
 Human-in-the-loop by default (autoApply=false), which keeps the whole cycle
 deterministic: the apply section returns an empty result and never mutates the
-graph. Every section runs inside :func:`time_section` for fault isolation.
-Within apply, each proposal's entity write is one atomic mutation, but its
+graph. Every section runs through :func:`run_composite`'s
+:func:`time_section` for fault isolation. Within apply, each proposal's
+entity write is one atomic mutation, but its
 relation writes are independent per-edge attempts against an already-committed
 entity: a failing relation (e.g. a targetId retracted between propose and
 apply) is reported in ``failedWrites`` with a reason rather than swallowed —
@@ -28,13 +29,12 @@ summary}``.
 from __future__ import annotations
 
 import contextlib
-import time
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite
 from theloom.composites.graph_reconnaissance import GraphReconInput, graph_reconnaissance
 from theloom.composites.simulate_change import (
     SimulateChangeInput,
@@ -183,7 +183,6 @@ def _build_summary(
 
 def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
     """Execute detect -> reason -> propose -> simulate -> rank -> apply."""
-    start = time.perf_counter()
     graph = params.graph
     max_proposals = min(
         max(
@@ -206,8 +205,6 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
         result: Doc = graph_reconnaissance(GraphReconInput(graph=graph), multi)["result"]
         return result
 
-    reconnaissance = time_section(_reconnaissance)
-
     # -- Section 2: Capability Check ------------------------------------------
     def _capability_check() -> Doc:
         store = multi.get_store(graph)
@@ -217,13 +214,13 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
             spec.require_test_coverage()
             st["cap_spec"] = spec
         cap_result = st["cap_spec"].validate(store)
-        return {
+        result = {
             "pass": cap_result["pass"],
             "totalViolations": len(cap_result["violations"]),
             "violations": cap_result["violations"],
         }
-
-    capability_check = time_section(_capability_check)
+        st["capability_check_data"] = result
+        return result
 
     # -- Section 3: Propose ----------------------------------------------------
     def _propose() -> Doc:
@@ -243,8 +240,6 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
             "totalProposals": len(propose_result["proposals"]),
             "strategyCounts": propose_result["strategyCounts"],
         }
-
-    propose = time_section(_propose)
 
     # -- Section 4: Simulate ---------------------------------------------------
     def _simulate() -> Doc:
@@ -280,11 +275,9 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
             "degrades": degrades,
         }
 
-    simulate = time_section(_simulate)
-
     # -- Section 5: Rank -------------------------------------------------------
     def _rank() -> Doc:
-        cc_data = capability_check["data"]
+        cc_data = st.get("capability_check_data")
         baseline_violations = cc_data["violations"] if cc_data else []
         violations_by_capability: dict[str, int] = {}
         for v in baseline_violations:
@@ -317,8 +310,6 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
         filtered.sort(key=lambda r: r["score"], reverse=True)
         st["ranked"] = filtered
         return {"rankedProposals": filtered, "filteredCount": filtered_count}
-
-    rank = time_section(_rank)
 
     # -- Section 6: Apply ------------------------------------------------------
     def _apply() -> Doc:
@@ -482,24 +473,23 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
 
         return {"applied": applied, "autoApply": True, "failedWrites": failed_writes}
 
-    apply = time_section(_apply)
-
     # -- Build result ----------------------------------------------------------
-    total_ms = round((time.perf_counter() - start) * 1000)
+    composite = run_composite(
+        [
+            ("reconnaissance", _reconnaissance),
+            ("capabilityCheck", _capability_check),
+            ("propose", _propose),
+            ("simulate", _simulate),
+            ("rank", _rank),
+            ("apply", _apply),
+        ]
+    )
+    total_ms = composite["metadata"]["totalDurationMs"]
 
-    sections = {
-        "reconnaissance": reconnaissance,
-        "capabilityCheck": capability_check,
-        "propose": propose,
-        "simulate": simulate,
-        "rank": rank,
-        "apply": apply,
-    }
-    composite = build_composite_result(sections, total_ms)
-
-    cc_data = capability_check["data"]
+    reconnaissance_data = composite["result"]["reconnaissance"]["data"]
+    cc_data = composite["result"]["capabilityCheck"]["data"]
     violations = cc_data["violations"] if cc_data else []
-    apply_data = apply["data"]
+    apply_data = composite["result"]["apply"]["data"]
     applied_proposals = apply_data["applied"] if apply_data else []
     failed_writes = apply_data["failedWrites"] if apply_data else []
     summary = _build_summary(
@@ -508,7 +498,7 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
 
     return {
         "composite": composite,
-        "reconnaissance": reconnaissance["data"],
+        "reconnaissance": reconnaissance_data,
         "violations": violations,
         "proposals": st["ranked"],
         "applied": applied_proposals,

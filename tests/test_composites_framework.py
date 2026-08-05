@@ -12,6 +12,7 @@ import time
 
 from theloom.composites import framework
 from theloom.composites.graph_reconnaissance import GraphReconInput, graph_reconnaissance
+from theloom.composites.self_improve import SelfImproveInput, self_improve
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.store.multigraph import MultiGraph
 
@@ -184,3 +185,46 @@ class TestGraphReconnaissanceWireShape:
             "relationTypeDistribution",
         }
         assert stats["entityCount"] == 1
+
+
+class TestSelfImproveWireShape:
+    """self-improve migrated its state-threaded, six-section pipeline onto
+    `run_composite` — the top-level result shape and its nested composite
+    envelope must be unchanged key-for-key."""
+
+    def test_top_level_and_envelope_keys_are_unchanged(self, multi: MultiGraph) -> None:
+        create_entity(
+            CreateEntityInput.model_validate(
+                {"name": "Seed", "entityType": "concept", "observations": ["obs"]}
+            ),
+            multi,
+        )
+
+        result = self_improve(SelfImproveInput(), multi)
+
+        assert set(result.keys()) == {
+            "composite",
+            "reconnaissance",
+            "violations",
+            "proposals",
+            "applied",
+            "failedWrites",
+            "summary",
+        }
+        envelope = result["composite"]
+        assert set(envelope.keys()) == {"result", "metadata"}
+        assert set(envelope["result"].keys()) == {
+            "reconnaissance",
+            "capabilityCheck",
+            "propose",
+            "simulate",
+            "rank",
+            "apply",
+        }
+        for section in envelope["result"].values():
+            assert set(section.keys()) == {"data", "durationMs", "error"}
+        assert envelope["metadata"]["sectionsFailed"] == 0
+        # autoApply defaults false -> apply is a no-op, deterministically.
+        assert result["applied"] == []
+        assert result["failedWrites"] == []
+        assert isinstance(result["summary"], str) and result["summary"]
