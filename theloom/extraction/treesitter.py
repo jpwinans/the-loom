@@ -30,6 +30,13 @@ Non-code text files (stylesheets, config, docs — see ``TEXT_EXTENSIONS``) get 
 file entity too, with no edges, so an invariant anchored in e.g. a design-token
 stylesheet has something to point at.
 
+What counts as part of the codebase is decided by **git**, not by the
+filesystem. Inside a work tree, an ignored path never becomes an entity (it is
+private by the author's explicit instruction, and a machine-local notes file or
+a generated data dump has no business in a shared graph); a non-code file must
+additionally be tracked. Outside a work tree there is nothing to consult, so
+the whole directory is walked.
+
 Files are traversed in SORTED order so output is deterministic (an unsorted
 directory walk would be machine-dependent).
 """
@@ -38,6 +45,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from typing import Any
 
 from theloom.extraction import resolution
@@ -962,16 +970,50 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
     }
 
 
+def _git_paths(root: str, *args: str) -> set[str] | None:
+    """Slash-separated paths under ``root`` listed by ``git ls-files``, or
+    ``None`` when git can't answer (not a work tree, git missing, git broken).
+    """
+    try:
+        done = subprocess.run(
+            ["git", "ls-files", "-z", *args],
+            cwd=root,
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return {p for p in done.stdout.decode("utf-8", "surrogateescape").split("\0") if p}
+
+
+def _git_visibility(root: str) -> tuple[set[str], set[str]] | None:
+    """``(tracked, visible)`` paths for a work tree, else ``None``.
+
+    ``visible`` adds the untracked-but-not-ignored files: code that is merely
+    new is what someone mapping a working tree most wants to see, while a
+    non-code file is held to the stricter ``tracked`` set.
+    """
+    tracked = _git_paths(root)
+    if tracked is None:
+        return None
+    untracked = _git_paths(root, "--others", "--exclude-standard") or set()
+    return tracked, tracked | untracked
+
+
 def collect_source_files(project_path: str, include_tests: bool = True) -> list[Doc]:
     """Sorted list of {relativePath, content} for supported files (sorted so
     the walk is deterministic).
 
     Recognised non-code text files come along too — they become root file
     entities. A binary (which fails to decode) or an oversized data file is
-    skipped.
+    skipped, and inside a git work tree so is anything git ignores (see the
+    module docstring).
     """
     files: list[Doc] = []
     root = os.path.abspath(project_path)
+    visibility = _git_visibility(root)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
         for filename in sorted(filenames):
@@ -987,6 +1029,11 @@ def collect_source_files(project_path: str, include_tests: bool = True) -> list[
                     if os.path.getsize(full) > MAX_TEXT_FILE_BYTES:
                         continue
                 except OSError:
+                    continue
+            if visibility is not None:
+                tracked, visible = visibility
+                allowed = visible if lang is not None else tracked
+                if rel.replace(os.sep, "/") not in allowed:
                     continue
             if not include_tests and _is_test_file(rel):
                 continue

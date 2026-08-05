@@ -333,6 +333,80 @@ class TestNonCodeFiles:
         assert paths == {"small.json"}
 
 
+def _git_repo(root: str, files: dict[str, str], staged: list[str]) -> None:
+    """A throwaway git work tree: every file written, only ``staged`` added."""
+    import os
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    for rel, content in files.items():
+        full = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    if staged:
+        subprocess.run(["git", "add", "--", *staged], cwd=root, check=True)
+
+
+class TestGitVisibility:
+    """Extraction reads a repository, not a directory. A gitignored file is
+    private by the author's explicit instruction — sweeping it into the graph
+    leaks it, so ignored paths never become entities."""
+
+    def test_gitignored_text_file_is_not_collected(self, tmp_path: object) -> None:
+        root = str(tmp_path)
+        _git_repo(
+            root,
+            {
+                ".gitignore": "SECRET.md\ndata/\n",
+                "README.md": "# hi\n",
+                "SECRET.md": "# private\n",
+                "data/dump.json": "{}",
+            },
+            [".gitignore", "README.md"],
+        )
+        paths = {f["relativePath"] for f in treesitter.collect_source_files(root)}
+        assert "README.md" in paths
+        assert "SECRET.md" not in paths
+        assert "data/dump.json" not in paths
+
+    def test_untracked_text_file_is_not_collected(self, tmp_path: object) -> None:
+        # The spec is git-tracked, not merely not-ignored: a non-code file
+        # nobody has committed is not part of the codebase yet.
+        root = str(tmp_path)
+        _git_repo(root, {"README.md": "# hi\n", "notes.md": "scratch\n"}, ["README.md"])
+        paths = {f["relativePath"] for f in treesitter.collect_source_files(root)}
+        assert paths == {"README.md"}
+
+    def test_gitignored_source_file_is_not_collected(self, tmp_path: object) -> None:
+        root = str(tmp_path)
+        _git_repo(
+            root,
+            {".gitignore": "generated.py\n", "keep.py": "x = 1\n", "generated.py": "y = 2\n"},
+            [".gitignore", "keep.py"],
+        )
+        paths = {f["relativePath"] for f in treesitter.collect_source_files(root)}
+        assert paths == {"keep.py"}
+
+    def test_new_untracked_source_file_is_still_collected(self, tmp_path: object) -> None:
+        # Code that is merely new (untracked but not ignored) is what someone
+        # mapping a working tree most wants to see.
+        root = str(tmp_path)
+        _git_repo(root, {"keep.py": "x = 1\n", "fresh.py": "y = 2\n"}, ["keep.py"])
+        paths = {f["relativePath"] for f in treesitter.collect_source_files(root)}
+        assert paths == {"keep.py", "fresh.py"}
+
+    def test_non_git_directory_is_walked_whole(self, tmp_path: object) -> None:
+        import os
+
+        root = str(tmp_path)
+        for name in ("a.py", "b.md"):
+            with open(os.path.join(root, name), "w", encoding="utf-8") as handle:
+                handle.write("x = 1\n")
+        paths = {f["relativePath"] for f in treesitter.collect_source_files(root)}
+        assert paths == {"a.py", "b.md"}
+
+
 class TestExtractCodebaseDeterminism:
     def test_fixed_repo_stats(self) -> None:
         result = treesitter.extract_codebase("tests/fixtures/repo")
