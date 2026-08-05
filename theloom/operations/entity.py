@@ -386,14 +386,17 @@ def list_entities(
             total += graph_total
             for entity in entities:
                 doc = entity.model_dump(by_alias=True, exclude_unset=True)
+                # Compact first, then stamp: `graph` is the wildcard
+                # disambiguator and must survive the projection.
+                if params.compact:
+                    doc = compact_entity_doc(doc)
                 doc["graph"] = graph_name
                 results.append(doc)
     else:
         entities, total = multi.get_store(params.graph).list_entities_page(entity_filter)
         results = [e.model_dump(by_alias=True, exclude_unset=True) for e in entities]
-
-    if params.compact:
-        results = [compact_entity_doc(doc) for doc in results]
+        if params.compact:
+            results = [compact_entity_doc(doc) for doc in results]
 
     if params.limit is None:
         return results

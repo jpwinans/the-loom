@@ -100,6 +100,38 @@ def test_deep_dive_full_true_restores_envelopes(multi: MultiGraph) -> None:
     assert neighbors == [{"id": other, "name": "Other", "entityType": "concept"}]
 
 
+def test_deep_dive_default_fetches_neighbors_once(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The relations and neighbors sections share one compact neighbor fetch."""
+    import theloom.composites.entity_deep_dive as module
+
+    center = ent(multi, "Center")
+    other = ent(multi, "Other")
+    rel(multi, center, other, "supports")
+
+    calls: list[object] = []
+    original = module.get_neighbors
+
+    def counting(params: object, m: MultiGraph) -> object:
+        calls.append(params)
+        return original(params, m)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module, "get_neighbors", counting)
+    result = entity_deep_dive(EntityDeepDiveInput.model_validate({"entityId": center}), multi)
+
+    assert len(calls) == 1
+    assert result["result"]["neighbors"]["data"] == [
+        {
+            "name": "Other",
+            "entityType": "concept",
+            "relationType": "supports",
+            "direction": "out",
+            "anchor": "Other",
+        }
+    ]
+
+
 def test_anchor_is_none_without_observations() -> None:
     from theloom.composites.entity_deep_dive import _anchor
 

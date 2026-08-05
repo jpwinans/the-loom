@@ -286,6 +286,19 @@ def test_list_wildcard_graph_annotates_graph(multi: MultiGraph) -> None:
     assert graphs == {"In Default": "default", "In Research": "research"}
 
 
+def test_list_wildcard_compact_keeps_the_graph_key(multi: MultiGraph) -> None:
+    """Compaction must not strip the wildcard disambiguator — two same-named
+    entities in different graphs stay distinguishable."""
+    multi.create_graph("research")
+    make(multi, "X")
+    make(multi, "X", graph="research")
+    result = list_entities(ListEntitiesInput.model_validate({"graph": "*", "compact": True}), multi)
+    assert isinstance(result, list)
+    assert {e["graph"] for e in result} == {"default", "research"}
+    fields = {"id", "name", "entityType", "status", "observations", "graph"}
+    assert all(set(e) == fields for e in result)
+
+
 def test_list_compact_projects_each_entity_to_five_fields(multi: MultiGraph) -> None:
     make(multi, "One")
     make(multi, "Two")

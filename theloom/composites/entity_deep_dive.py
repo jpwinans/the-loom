@@ -134,14 +134,23 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
 
     entity_section = time_section(_entity)
 
+    # The relations and neighbors sections both need the same compact neighbor
+    # set; fetch it once and share it rather than paying two store round-trips.
+    compact_neighbors: list[dict[str, Any]] | None = None
+
+    def _compact_neighbors() -> list[dict[str, Any]]:
+        nonlocal compact_neighbors
+        if compact_neighbors is None:
+            compact_neighbors = get_neighbors(
+                GetNeighborsInput.model_validate(
+                    {"entityId": entity_id, "graph": graph, "compact": True}
+                ),
+                multi,
+            )
+        return compact_neighbors
+
     def _neighbor_lookup() -> dict[str, dict[str, Any]]:
-        neighbors = get_neighbors(
-            GetNeighborsInput.model_validate(
-                {"entityId": entity_id, "graph": graph, "compact": True}
-            ),
-            multi,
-        )
-        return {n["id"]: n for n in neighbors if "id" in n}
+        return {n["id"]: n for n in _compact_neighbors() if "id" in n}
 
     def _relations() -> dict[str, list[dict[str, Any]]]:
         outgoing = get_relations(
@@ -168,13 +177,11 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
         }
 
     def _neighbors() -> list[dict[str, Any]]:
-        result = get_neighbors(
-            GetNeighborsInput.model_validate(
-                {"entityId": entity_id, "graph": graph, "compact": not params.full}
-            ),
-            multi,
-        )
         if params.full:
+            result = get_neighbors(
+                GetNeighborsInput.model_validate({"entityId": entity_id, "graph": graph}),
+                multi,
+            )
             return [
                 {
                     "id": n["id"],
@@ -191,7 +198,7 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
                 "direction": n.get("direction"),
                 "anchor": _anchor(n.get("observations")),
             }
-            for n in result
+            for n in _compact_neighbors()
         ]
 
     def _centrality() -> dict[str, Any]:

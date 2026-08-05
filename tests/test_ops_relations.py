@@ -527,3 +527,24 @@ def test_get_relations_compact_projects_followed_bridge_entities(multi: MultiGra
     bridge_row = next(r for r in result if r.get("to_graph"))
     assert set(bridge_row["to_entity"]) == {"id", "name", "entityType", "status", "observations"}
     assert bridge_row["to_entity"]["name"] == "Remote"
+
+
+def test_get_relations_default_keeps_full_followed_bridge_entities(multi: MultiGraph) -> None:
+    """Without `compact`, followed bridge entities stay full envelopes."""
+    multi.create_graph("research")
+    a = ent(multi, "A")
+    remote = ent(multi, "Remote", graph="research")
+    seed_bridge(multi, a, remote)
+
+    result = get_relations(
+        GetRelationsInput.model_validate({"entityId": a, "follow_bridges": True}), multi
+    )
+    bridge_row = next(r for r in result if r.get("to_graph"))
+    expected = (
+        multi.get_store("research")
+        .read_entity(remote)
+        .model_dump(by_alias=True, exclude_unset=True)  # type: ignore[union-attr]
+    )
+    assert bridge_row["to_entity"] == expected
+    assert bridge_row["from_entity"]["id"] == a
+    assert "created_at" in bridge_row["from_entity"]
