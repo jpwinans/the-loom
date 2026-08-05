@@ -25,7 +25,7 @@ adapter in ``theloom/store/memory.py``.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from theloom.model import Entity, EntityFilter, Relation, RelationFilter
 from theloom.store.base import Direction
@@ -127,3 +127,16 @@ class GraphReadPort(Protocol):
         """Every embedded entity's vector, keyed by entity id, in entity
         creation order. Entities without an embedding are absent."""
         ...
+
+
+if TYPE_CHECKING:
+    # Conformance, checked by the typechecker rather than asserted in prose:
+    # both adapters are assignable to the port. A signature drifting on either
+    # side fails `mypy --strict` here, at the definition, instead of at some
+    # far-away call site.
+    from theloom.store.falkor import FalkorGraphStore
+    from theloom.store.memory import InMemoryGraphStore
+
+    def _adapters_conform(falkor: FalkorGraphStore, memory: InMemoryGraphStore) -> None:
+        _live: GraphReadPort = falkor
+        _fake: GraphReadPort = memory

@@ -111,7 +111,26 @@ class InMemoryGraphStore:
         entities = apply_entity_filters(entities, filter)
         if filter is None:
             return entities
+        # sourcedFrom / excludeSourcedFrom need edge access, so filters.py
+        # leaves them to the adapter. Exclude wins over include.
+        included = self._sources_of(filter.sourced_from)
+        excluded = self._sources_of(filter.exclude_sourced_from)
+        if included is not None:
+            entities = [e for e in entities if e.id in included]
+        if excluded is not None:
+            entities = [e for e in entities if e.id not in excluded]
         return entities[: filter.limit] if filter.limit is not None else entities
+
+    def _sources_of(self, target_ids: list[str] | None) -> set[str] | None:
+        """Ids of entities holding a 'sources' relation TO any of the targets."""
+        if not target_ids:
+            return None
+        targets = set(target_ids)
+        return {
+            str(doc["from"])
+            for doc in self._relations
+            if doc["relationType"] == "sources" and doc["to"] in targets
+        }
 
     def list_relations(self, filter: RelationFilter | None = None) -> list[Relation]:
         return apply_relation_filters(

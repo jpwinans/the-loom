@@ -401,3 +401,37 @@ def test_get_entity_vectors_is_empty_without_embeddings(harness: Harness) -> Non
     harness.entity("Bare")
 
     assert harness.reader.get_entity_vectors() == {}
+
+
+# =============================================================================
+# list_entities — the two filters that need edges
+# =============================================================================
+
+
+def test_list_entities_sourced_from_keeps_only_entities_sourcing_the_target(
+    harness: Harness,
+) -> None:
+    paper = harness.entity("Limits to Growth", entityType="source")
+    claim = harness.entity("Overshoot")
+    harness.entity("Unsourced")
+    harness.relation(claim.id, paper.id, relationType="sources")
+
+    listed = harness.reader.list_entities(
+        EntityFilter.model_validate({"sourcedFrom": [paper.id]})
+    )
+
+    assert [e.name for e in listed] == ["Overshoot"]
+
+
+def test_list_entities_exclude_sourced_from_wins_over_sourced_from(harness: Harness) -> None:
+    paper = harness.entity("Limits to Growth", entityType="source")
+    claim = harness.entity("Overshoot")
+    harness.relation(claim.id, paper.id, relationType="sources")
+
+    listed = harness.reader.list_entities(
+        EntityFilter.model_validate(
+            {"sourcedFrom": [paper.id], "excludeSourcedFrom": [paper.id]}
+        )
+    )
+
+    assert listed == []
