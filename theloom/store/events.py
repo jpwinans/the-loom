@@ -6,19 +6,24 @@ deleted) whose payload carries the full document(s) involved, so history is
 replayable and "session changelog"-class queries read the log rather than
 trusting mutable pointers.
 
-Ordering note: the mutation is one atomic Cypher query; the event is appended
-immediately after it succeeds. A crash between the two loses the event but
-never corrupts the projection — the store remains the source of current state,
-the log the source of history.
+Atomicity: FalkorDB *is* the Redis server, so the graph mutation and the
+stream append are two commands against one connection and go out together in a
+single MULTI/EXEC transaction (see ``FalkorGraphStore._commit``). ``queue``
+buffers an append onto that transaction; ``discard`` is its compensation, used
+when the graph half of the transaction reports a server-side error (Redis
+executes every queued command regardless, so the event has to be rolled back
+out by id).
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from redis import Redis
+from redis.client import Pipeline
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,25 @@ class EventLog:
         """Append one event; returns the stream entry id."""
         entry_id = self._redis.xadd(self.key, {"type": event_type, "payload": json.dumps(payload)})
         return entry_id if isinstance(entry_id, str) else entry_id.decode()
+
+    def queue(self, pipe: Pipeline, event_type: str, payload: dict[str, Any]) -> None:
+        """Buffer an append onto an open transaction instead of sending it now.
+
+        The caller's ``EXEC`` decides: the append lands with the mutation it
+        belongs to, or — if anything raises while the transaction is still
+        being built — neither ever reaches the server.
+        """
+        pipe.xadd(self.key, {"type": event_type, "payload": json.dumps(payload)})
+
+    def discard(self, entry_ids: Sequence[str]) -> None:
+        """Remove already-appended entries (compensation for a failed mutation).
+
+        Redis has no rollback: every command queued in a transaction runs even
+        when an earlier one errors, so an event appended alongside a mutation
+        that the server rejected has to be deleted after the fact.
+        """
+        if entry_ids:
+            self._redis.xdel(self.key, *entry_ids)
 
     def append_many(self, events: list[tuple[str, dict[str, Any]]]) -> None:
         """Append a batch of events in one pipelined round trip (batch mutations)."""

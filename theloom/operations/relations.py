@@ -83,8 +83,12 @@ class ReadRelationsInput(CommandInput):
 
 
 class UpdateRelationInput(CommandInput):
+    """``relationType`` is the *new* type; ``relationId`` selects which
+    parallel edge between the pair to update (default: the oldest)."""
+
     from_: UuidStr = Field(alias="from")
     to: UuidStr
+    relation_id: UuidStr | None = Field(default=None, alias="relationId")
     relation_type: RelationType | None = Field(default=None, alias="relationType")
     polarity: Polarity | None = None
     strength: Strength | None = None
@@ -93,8 +97,14 @@ class UpdateRelationInput(CommandInput):
 
 
 class DeleteRelationInput(CommandInput):
+    """``relationType``/``relationId`` select which parallel edge between the
+    pair to retract (default: the oldest)."""
+
     from_: UuidStr = Field(alias="from")
     to: UuidStr
+    relation_id: UuidStr | None = Field(default=None, alias="relationId")
+    relation_type: RelationType | None = Field(default=None, alias="relationType")
+    hard: bool | None = None
     graph: str | None = None
 
 
@@ -288,7 +298,9 @@ def update_relation(params: UpdateRelationInput, multi: MultiGraph) -> dict[str,
     if params.provided("evidence"):
         updates["evidence"] = params.evidence
     try:
-        relation = multi.get_store(params.graph).update_relation(params.from_, params.to, updates)
+        relation = multi.get_store(params.graph).update_relation(
+            params.from_, params.to, updates, relation_id=params.relation_id
+        )
     except NotFoundError:
         raise NotFoundError(
             f"Relation not found from {params.from_} to {params.to}. "
@@ -298,14 +310,25 @@ def update_relation(params: UpdateRelationInput, multi: MultiGraph) -> dict[str,
 
 
 def delete_relation(params: DeleteRelationInput, multi: MultiGraph) -> str:
+    """Retract a relation: the edge leaves every read path but its final doc is
+    kept with a closed system-time interval, so history stays queryable.
+    ``hard: true`` erases the edge instead."""
+    hard = bool(params.hard)
     try:
-        multi.get_store(params.graph).delete_relation(params.from_, params.to)
+        multi.get_store(params.graph).delete_relation(
+            params.from_,
+            params.to,
+            params.relation_type.value if params.relation_type is not None else None,
+            relation_id=params.relation_id,
+            hard=hard,
+        )
     except NotFoundError:
         raise NotFoundError(
             f"Relation not found from {params.from_} to {params.to}. "
             "Use list_relations to verify the relation exists before deleting."
         ) from None
-    return f"Relation from {params.from_} to {params.to} deleted successfully."
+    verb = "deleted" if hard else "retracted"
+    return f"Relation from {params.from_} to {params.to} {verb} successfully."
 
 
 def list_relations(params: ListRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:

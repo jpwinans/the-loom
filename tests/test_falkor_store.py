@@ -96,20 +96,59 @@ def test_update_missing_entity_raises_not_found(store: FalkorGraphStore) -> None
         store.update_entity("00000000-0000-4000-8000-000000000000", {"name": "x"})
 
 
-def test_delete_entity_returns_it_and_removes_it(store: FalkorGraphStore) -> None:
+def test_delete_entity_retracts_it_and_returns_the_retracted_record(
+    store: FalkorGraphStore,
+) -> None:
     created = store.create_entity(spec())
-    deleted = store.delete_entity(created.id)
+    retracted = store.delete_entity(created.id)
+    assert retracted.id == created.id
+    assert retracted.status is not None and retracted.status.value == "retracted"
+    # gone from the default (active) projection, but still readable by id
+    assert store.list_entities() == []
+    read = store.read_entity(created.id)
+    assert read is not None and read.status is not None
+    assert read.status.value == "retracted"
+    # idempotent: retracting an already-retracted entity is a no-op
+    assert store.delete_entity(created.id).id == created.id
+    with pytest.raises(NotFoundError):
+        store.delete_entity("00000000-0000-4000-8000-000000000000")
+
+
+def test_delete_entity_keeps_the_prior_incarnation_readable_as_of(
+    store: FalkorGraphStore,
+) -> None:
+    created = store.create_entity(spec())
+    time.sleep(0.002)
+    store.delete_entity(created.id)
+    assert store.read_entity_as_of(created.id, created.created_at) == created
+
+
+def test_hard_delete_entity_removes_it(store: FalkorGraphStore) -> None:
+    created = store.create_entity(spec())
+    deleted = store.delete_entity(created.id, hard=True)
     assert deleted.id == created.id
     assert store.read_entity(created.id) is None
     with pytest.raises(NotFoundError):
-        store.delete_entity(created.id)
+        store.delete_entity(created.id, hard=True)
 
 
-def test_delete_entity_drops_attached_relations(store: FalkorGraphStore) -> None:
+def test_delete_entity_invalidates_attached_relations(store: FalkorGraphStore) -> None:
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    relation = store.create_relation(rel_spec(a.id, b.id))
+    store.delete_entity(a.id)
+    assert store.list_relations() == []
+    versions = store._rows(
+        "MATCH (v:_RelationVersion {relation_id: $id}) RETURN v.tx_to", {"id": relation.id}
+    )
+    assert len(versions) == 1 and versions[0][0] is not None
+
+
+def test_hard_delete_entity_drops_attached_relations(store: FalkorGraphStore) -> None:
     a = store.create_entity(spec("A"))
     b = store.create_entity(spec("B"))
     store.create_relation(rel_spec(a.id, b.id))
-    store.delete_entity(a.id)
+    store.delete_entity(a.id, hard=True)
     assert store.list_relations() == []
 
 
@@ -292,6 +331,67 @@ def test_delete_relation_targets_parallel_edge(store: FalkorGraphStore) -> None:
     assert [r.relation_type for r in remaining] == ["questions"]
 
 
+def test_delete_relation_targets_a_same_typed_parallel_edge_by_id(
+    store: FalkorGraphStore,
+) -> None:
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    first = store.create_relation(rel_spec(a.id, b.id, relationType="supports"))
+    second = store.create_relation(rel_spec(a.id, b.id, relationType="supports"))
+    store.delete_relation(a.id, b.id, relation_id=second.id)
+    assert [r.id for r in store.read_relations(a.id, b.id)] == [first.id]
+
+
+def test_update_relation_targets_a_same_typed_parallel_edge_by_id(
+    store: FalkorGraphStore,
+) -> None:
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    first = store.create_relation(rel_spec(a.id, b.id, relationType="supports"))
+    second = store.create_relation(rel_spec(a.id, b.id, relationType="supports"))
+    updated = store.update_relation(a.id, b.id, {"evidence": "second"}, relation_id=second.id)
+    assert updated.id == second.id
+    by_id = {r.id: r for r in store.read_relations(a.id, b.id)}
+    assert by_id[second.id].evidence == "second"
+    assert by_id[first.id].evidence is None
+
+
+def test_relation_id_that_does_not_match_the_pair_raises_not_found(
+    store: FalkorGraphStore,
+) -> None:
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    store.create_relation(rel_spec(a.id, b.id))
+    with pytest.raises(NotFoundError):
+        store.delete_relation(a.id, b.id, relation_id="00000000-0000-4000-8000-000000000000")
+
+
+def test_delete_relation_retires_it_bi_temporally(store: FalkorGraphStore) -> None:
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    relation = store.create_relation(rel_spec(a.id, b.id))
+    store.delete_relation(a.id, b.id)
+    assert store.read_relations(a.id, b.id) == []
+    versions = store._rows(
+        "MATCH (v:_RelationVersion {relation_id: $id}) RETURN v.tx_to", {"id": relation.id}
+    )
+    assert len(versions) == 1 and versions[0][0] is not None
+
+
+def test_hard_delete_relation_leaves_no_version(store: FalkorGraphStore) -> None:
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    relation = store.create_relation(rel_spec(a.id, b.id))
+    store.delete_relation(a.id, b.id, hard=True)
+    assert store.read_relations(a.id, b.id) == []
+    assert (
+        store._rows(
+            "MATCH (v:_RelationVersion {relation_id: $id}) RETURN v.tx_to", {"id": relation.id}
+        )
+        == []
+    )
+
+
 def test_list_relations_filters(store: FalkorGraphStore) -> None:
     a = store.create_entity(spec("A"))
     b = store.create_entity(spec("B"))
@@ -398,9 +498,17 @@ def test_mutations_append_events(
     entity = store.create_entity(spec())
     store.update_entity(entity.id, {"status": "investigating"})
     store.delete_entity(entity.id)
+    doomed = store.create_entity(spec("Gone"))
+    store.delete_entity(doomed.id, hard=True)
     log = EventLog(redis_client, graph_name=f"{namespace}-g", key_prefix=namespace)
     types = [event.type for event in log.read_all()]
-    assert types == ["entity_created", "entity_status_changed", "entity_deleted"]
+    assert types == [
+        "entity_created",
+        "entity_status_changed",
+        "entity_retracted",
+        "entity_created",
+        "entity_deleted",
+    ]
 
 
 def test_relation_events_and_plain_update_event(
@@ -418,7 +526,7 @@ def test_relation_events_and_plain_update_event(
         "entity_created",
         "relation_created",
         "entity_updated",
-        "relation_deleted",
+        "relation_invalidated",
     ]
 
 

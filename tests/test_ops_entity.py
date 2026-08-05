@@ -142,12 +142,30 @@ def test_read_entity_without_compact_is_unchanged(multi: MultiGraph) -> None:
     assert result == entity
 
 
-def test_delete_returns_entity_then_not_found(multi: MultiGraph) -> None:
+def test_delete_retracts_by_default_and_preserves_the_record(multi: MultiGraph) -> None:
     entity = make(multi)
-    deleted = delete_entity(DeleteEntityInput.model_validate({"id": entity["id"]}), multi)
+    retracted = delete_entity(DeleteEntityInput.model_validate({"id": entity["id"]}), multi)
+    assert retracted["id"] == entity["id"]
+    assert retracted["status"] == "retracted"
+    # still readable by id — history is preserved, not erased
+    assert (
+        read_entity(ReadEntityInput.model_validate({"id": entity["id"]}), multi)["id"]
+        == (entity["id"])
+    )
+    with pytest.raises(NotFoundError):
+        delete_entity(DeleteEntityInput.model_validate({"id": MISSING}), multi)
+
+
+def test_hard_delete_removes_the_entity(multi: MultiGraph) -> None:
+    entity = make(multi)
+    deleted = delete_entity(
+        DeleteEntityInput.model_validate({"id": entity["id"], "hard": True}), multi
+    )
     assert deleted["id"] == entity["id"]
     with pytest.raises(NotFoundError):
-        delete_entity(DeleteEntityInput.model_validate({"id": entity["id"]}), multi)
+        read_entity(ReadEntityInput.model_validate({"id": entity["id"]}), multi)
+    with pytest.raises(NotFoundError):
+        delete_entity(DeleteEntityInput.model_validate({"id": entity["id"], "hard": True}), multi)
 
 
 # =============================================================================

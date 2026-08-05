@@ -70,7 +70,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
 - **`bulk-import`** — Bulk import entities and relations into the knowledge graph.
 - **`create-entity`** — Create a new entity in the knowledge graph.
-- **`delete-entity`** — Delete an entity from the knowledge graph.
+- **`delete-entity`** — Retract an entity and its relations, preserving history (erase outright with "hard": true).
 - **`list-entities`** — List entities with optional filtering.
 - **`merge-entities`** — Merge a secondary entity into a primary one: union observations, redirect relations, supersede the secondary.
 - **`read-entities-by-name`** — Resolve a batch of entity names to UUIDs.
@@ -170,7 +170,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
 - **`create-relation`** — Create a relation between two entities.
 - **`create-relations`** — Create multiple relations in a single invocation.
-- **`delete-relation`** — Delete a relation from the knowledge graph.
+- **`delete-relation`** — Retract a relation, preserving history (erase outright with "hard": true).
 - **`get-neighbors`** — Get all entities connected to an entity.
 - **`get-relations`** — Get all relations connected to an entity.
 - **`list-relations`** — List relations with optional AND filters.

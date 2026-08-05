@@ -112,6 +112,7 @@ class UpdateEntityInput(CommandInput):
 
 class DeleteEntityInput(CommandInput):
     id: UuidStr
+    hard: bool | None = None
     graph: str | None = None
 
 
@@ -315,9 +316,17 @@ def update_entity(params: UpdateEntityInput, multi: MultiGraph) -> dict[str, Any
 
 
 def delete_entity(params: DeleteEntityInput, multi: MultiGraph) -> dict[str, Any]:
+    """Retract an entity, returning the retracted record.
+
+    History is preserved: the entity keeps its id, gains status 'retracted',
+    and its attached relations are closed out bi-temporally, so a
+    point-in-time read still reconstructs the graph as it was. ``hard: true``
+    erases the entity and its edges outright — the only path that loses
+    history.
+    """
     store = multi.get_store(params.graph)
     try:
-        deleted = store.delete_entity(params.id)
+        deleted = store.delete_entity(params.id, hard=bool(params.hard))
     except NotFoundError:
         raise NotFoundError(
             f"Entity not found with ID: {params.id}. "

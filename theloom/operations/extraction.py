@@ -200,7 +200,9 @@ def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> D
         parts = relation_id.split("->")
         if len(parts) >= 2:
             try:
-                graph_store.delete_relation(parts[0], parts[1])
+                # A rollback undoes a run that should never have landed, so it
+                # erases rather than retracts — there is no history to keep.
+                graph_store.delete_relation(parts[0], parts[1], hard=True)
                 deleted_relations += 1
             except Exception:
                 pass
@@ -214,7 +216,7 @@ def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> D
     ]
     for entity_id in ordered_ids:
         try:
-            graph_store.delete_entity(entity_id)
+            graph_store.delete_entity(entity_id, hard=True)
             deleted_entities += 1
         except Exception:
             pass

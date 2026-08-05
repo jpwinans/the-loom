@@ -23,6 +23,7 @@ from theloom.operations.relations import (
     GetRelationsInput,
     ListRelationsInput,
     ReadRelationInput,
+    ReadRelationsInput,
     UpdateRelationInput,
     create_relation,
     create_relations,
@@ -31,6 +32,7 @@ from theloom.operations.relations import (
     get_relations,
     list_relations,
     read_relation,
+    read_relations,
     update_relation,
 )
 from theloom.store.multigraph import MultiGraph
@@ -223,13 +225,51 @@ def test_update_relation_fields(multi: MultiGraph) -> None:
     assert updated["evidence"] == "new evidence"
 
 
-def test_delete_relation_success_and_not_found(multi: MultiGraph) -> None:
+def test_delete_relation_retracts_by_default_and_not_found(multi: MultiGraph) -> None:
     a, b = ent(multi, "A"), ent(multi, "B")
     create_relation(CreateRelationInput.model_validate(rel_input(a, b)), multi)
     message = delete_relation(DeleteRelationInput.model_validate({"from": a, "to": b}), multi)
-    assert message == f"Relation from {a} to {b} deleted successfully."
+    assert message == f"Relation from {a} to {b} retracted successfully."
     with pytest.raises(NotFoundError):
         delete_relation(DeleteRelationInput.model_validate({"from": a, "to": b}), multi)
+
+
+def test_hard_delete_relation_says_so(multi: MultiGraph) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b)), multi)
+    message = delete_relation(
+        DeleteRelationInput.model_validate({"from": a, "to": b, "hard": True}), multi
+    )
+    assert message == f"Relation from {a} to {b} deleted successfully."
+
+
+def test_delete_relation_addresses_a_parallel_edge_by_relation_id(multi: MultiGraph) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    first = create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    second = create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    delete_relation(
+        DeleteRelationInput.model_validate({"from": a, "to": b, "relationId": second["id"]}),
+        multi,
+    )
+    remaining = read_relations(ReadRelationsInput.model_validate({"from": a, "to": b}), multi)
+    assert [r["id"] for r in remaining] == [first["id"]]
+
+
+def test_update_relation_addresses_a_parallel_edge_by_relation_id(multi: MultiGraph) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    first = create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    second = create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    updated = update_relation(
+        UpdateRelationInput.model_validate(
+            {"from": a, "to": b, "relationId": second["id"], "evidence": "the second edge"}
+        ),
+        multi,
+    )
+    assert updated["id"] == second["id"]
+    remaining = read_relations(ReadRelationsInput.model_validate({"from": a, "to": b}), multi)
+    by_id = {r["id"]: r for r in remaining}
+    assert by_id[second["id"]]["evidence"] == "the second edge"
+    assert by_id[first["id"]]["evidence"] != "the second edge"
 
 
 def test_list_relations_explicit_null_polarity_filters_to_null(multi: MultiGraph) -> None:

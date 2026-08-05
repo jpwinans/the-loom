@@ -227,7 +227,10 @@ def _entity_commands() -> list[CommandDescriptor]:
         CommandDescriptor(
             name="delete-entity",
             category="Entity Management",
-            summary="Delete an entity from the knowledge graph.",
+            summary=(
+                "Retract an entity and its relations, preserving history "
+                '(erase outright with "hard": true).'
+            ),
             input_model=entity_ops.DeleteEntityInput,
             handler=entity_ops.delete_entity,
         ),
@@ -306,7 +309,7 @@ def _relation_commands() -> list[CommandDescriptor]:
         CommandDescriptor(
             name="delete-relation",
             category="Relation Management",
-            summary="Delete a relation from the knowledge graph.",
+            summary=('Retract a relation, preserving history (erase outright with "hard": true).'),
             input_model=relation_ops.DeleteRelationInput,
             handler=relation_ops.delete_relation,
         ),

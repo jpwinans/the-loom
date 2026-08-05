@@ -26,10 +26,15 @@ Storage model — one FalkorDB graph per named Loom graph:
   retiring one means closing its system-time interval, not flipping a flag.
 - Metadata = singleton node ``:_GraphMeta {_doc}``.
 
-Every mutation is a single atomic Cypher query, followed by an event append
-to the graph's Redis stream (see events.py for the ordering guarantee).
-Status changes are validated against the lifecycle transition table here in
-the store.
+Every mutation goes through ``_commit``: its Cypher and its event append are
+sent as one Redis MULTI/EXEC transaction, so the projection and the log move
+together (see ``_commit`` for the exact guarantee). Status changes are
+validated against the lifecycle transition table here in the store.
+
+Deletion invalidates. ``delete_entity`` retracts (status 'retracted', prior
+incarnation snapshotted, attached edges closed out bi-temporally) and
+``delete_relation`` closes the edge's system-time interval; both take
+``hard=True`` for true erasure, which is the only path that destroys history.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from falkordb import FalkorDB
+from falkordb.query_result import QueryResult
 from redis import Redis
 
 from theloom.errors import NotFoundError, ValidationError
@@ -50,6 +56,7 @@ from theloom.model import (
     Entity,
     EntityCreate,
     EntityFilter,
+    EntityStatus,
     Relation,
     RelationCreate,
     RelationFilter,
@@ -146,6 +153,17 @@ def _entity_prefilter(filter: EntityFilter | None) -> tuple[str, dict[str, Any]]
     return " AND ".join(clauses), params
 
 
+def _is_error(response: Any) -> bool:
+    """Redis returns per-command errors as exception *values* inside a
+    transaction's reply list (``raise_on_error=False``)."""
+    return isinstance(response, Exception)
+
+
+def _stream_id(response: Any) -> str:
+    """An XADD reply, decoded (the connection may or may not decode for us)."""
+    return response if isinstance(response, str) else str(response.decode())
+
+
 def _transition_error(from_status: str | None, to_status: str) -> str:
     """Lifecycle transition error message, code-classified VALIDATION_ERROR."""
     effective = from_status or "active"
@@ -165,7 +183,67 @@ class FalkorGraphStore(GraphStore):
         self, db: FalkorDB, redis: Redis, graph_name: str, key_prefix: str = "loom"
     ) -> None:
         self._graph = db.select_graph(f"{key_prefix}:graph:{graph_name}")
+        self._redis = redis
         self._events = EventLog(redis, graph_name, key_prefix)
+
+    # -- the mutation primitive ---------------------------------------------------
+
+    def _commit(
+        self,
+        steps: Sequence[tuple[str, dict[str, Any]]],
+        events: Sequence[tuple[str, dict[str, Any]]],
+    ) -> tuple[list[Any], list[str]]:
+        """Run a mutation and append its events as ONE unit.
+
+        FalkorDB is a Redis module, so ``GRAPH.QUERY`` and ``XADD`` are two
+        commands on one connection: both are queued into a single MULTI/EXEC
+        transaction and dispatched in one round trip. The guarantee this buys,
+        precisely:
+
+        - Nothing reaches the server until ``EXEC``. Any failure while the
+          transaction is being built — serializing a payload, an injected
+          fault, the process dying — leaves the graph and the log both
+          untouched. This is the hole the old write-then-append order had: a
+          crash after the query lost the event forever.
+        - Redis runs the queued commands with no other client interleaved, and
+          the client cannot die between them.
+        - Redis has no rollback, so a *server-side* error in the Cypher (a
+          malformed query — a bug, since every domain precondition is checked
+          in Python first) still lets the queued ``XADD`` run. That event is
+          compensated away by id before the error propagates, leaving the
+          caller with an exception and no trace in either place.
+
+        Returns ``(query results, appended event ids)``; the ids let a caller
+        that only learns the mutation was wrong *after* ``EXEC`` (see
+        ``create_relations``) discard the events it no longer earns.
+        """
+        with self._redis.pipeline(transaction=True) as pipe:
+            for cypher, params in steps:
+                # The client's own parameter encoder, then the same command
+                # Graph.query() would have issued — buffered instead of sent.
+                pipe.execute_command(  # type: ignore[no-untyped-call]
+                    "GRAPH.QUERY",
+                    self._graph.name,
+                    self._graph._build_params_header(params) + cypher,
+                    "--compact",
+                )
+            for event_type, payload in events:
+                self._events.queue(pipe, event_type, payload)
+            responses: list[Any] = pipe.execute(raise_on_error=False)
+
+        query_responses, event_responses = responses[: len(steps)], responses[len(steps) :]
+        event_ids = [_stream_id(entry) for entry in event_responses if not _is_error(entry)]
+        query_failure = next((r for r in query_responses if _is_error(r)), None)
+        if query_failure is not None:
+            # The mutation did not happen, so its events are not earned.
+            self._events.discard(event_ids)
+            raise query_failure
+        event_failure = next((r for r in event_responses if _is_error(r)), None)
+        if event_failure is not None:
+            # The mutation did happen; the events that landed stay (discarding
+            # them would only widen the gap). Surface the loss instead.
+            raise event_failure
+        return [QueryResult(self._graph, response) for response in query_responses], event_ids
 
     # -- query helpers ----------------------------------------------------------
 
@@ -191,11 +269,21 @@ class FalkorGraphStore(GraphStore):
         doc = spec.model_dump(by_alias=True, exclude_unset=True)
         doc.update(id=str(uuid.uuid4()), created_at=now, updated_at=now)
         entity = Entity.model_validate(doc)
-        self._query(
-            f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, {_index_literal('ix')}}})",
-            {"id": doc["id"], "doc": json.dumps(doc), "now": now, **_index_params(doc, "ix")},
+        self._commit(
+            [
+                (
+                    f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, "
+                    f"{_index_literal('ix')}}})",
+                    {
+                        "id": doc["id"],
+                        "doc": json.dumps(doc),
+                        "now": now,
+                        **_index_params(doc, "ix"),
+                    },
+                )
+            ],
+            [("entity_created", {"entity": doc})],
         )
-        self._events.append("entity_created", {"entity": doc})
         return entity
 
     def import_entity_doc(self, doc: Mapping[str, Any]) -> None:
@@ -293,29 +381,106 @@ class FalkorGraphStore(GraphStore):
 
         # One atomic query: snapshot the prior incarnation, then swap the doc
         # (and its derived read-index projection).
-        self._query(
+        event_type = "entity_status_changed" if status_changed else "entity_updated"
+        self._commit(
+            [self._swap_doc_step(entity_id, merged, now)],
+            [(event_type, {"entity": merged, "previous": current})],
+        )
+        return entity
+
+    def _swap_doc_step(
+        self, entity_id: str, doc: Mapping[str, Any], now: str
+    ) -> tuple[str, dict[str, Any]]:
+        """The invalidate-never-overwrite step: snapshot the entity's current
+        incarnation as a closed ``:_EntityVersion``, then swap in the new doc
+        and its derived read-index projection."""
+        return (
             "MATCH (n:_Entity {id: $id}) "
             "CREATE (:_EntityVersion {entity_id: $id, _doc: n._doc, "
             "tx_from: n.tx_from, tx_to: $now}) "
             f"SET n._doc = $doc, n.tx_from = $now, {_index_assignments('n', 'ix')}",
             {
                 "id": entity_id,
-                "doc": json.dumps(merged),
+                "doc": json.dumps(dict(doc)),
                 "now": now,
-                **_index_params(merged, "ix"),
+                **_index_params(doc, "ix"),
             },
         )
-        event_type = "entity_status_changed" if status_changed else "entity_updated"
-        self._events.append(event_type, {"entity": merged, "previous": current})
-        return entity
 
-    def delete_entity(self, entity_id: str) -> Entity:
+    def delete_entity(self, entity_id: str, hard: bool = False) -> Entity:
+        """Retract an entity, or erase it outright with ``hard=True``.
+
+        Retraction is what "delete" means in an event-sourced store that never
+        overwrites: the doc moves to status 'retracted', its prior incarnation
+        is snapshotted as a closed ``:_EntityVersion``, and every attached edge
+        is closed out bi-temporally (``:_RelationVersion``). The entity leaves
+        every default read — ``list_entities`` filters to active — while
+        ``read_entity_as_of`` can still reconstruct what the graph looked like
+        before, which a hard delete makes impossible.
+
+        Returns the record as it now stands: the retracted doc, or the erased
+        doc under ``hard``. Retracting an already-retracted entity is a no-op.
+        """
         doc = self._read_doc(entity_id)
         if doc is None:
             raise NotFoundError("Entity not found")
-        self._query("MATCH (n:_Entity {id: $id}) DETACH DELETE n", {"id": entity_id})
-        self._events.append("entity_deleted", {"entity": doc})
-        return Entity.model_validate(doc)
+        if hard:
+            self._commit(
+                [("MATCH (n:_Entity {id: $id}) DETACH DELETE n", {"id": entity_id})],
+                [("entity_deleted", {"entity": doc})],
+            )
+            return Entity.model_validate(doc)
+
+        status = doc.get("status")
+        if not is_valid_transition(status, EntityStatus.RETRACTED):
+            raise ValidationError(_transition_error(status, EntityStatus.RETRACTED.value))
+        now = iso_now()
+        retracted = {**doc, "status": EntityStatus.RETRACTED.value, "updated_at": now}
+        entity = Entity.model_validate(retracted)
+        attached = self._attached_relation_docs(entity_id)
+        steps = [self._swap_doc_step(entity_id, retracted, now)]
+        if attached:
+            steps.append(self._relation_version_step(attached, now))
+            steps.append(("MATCH (n:_Entity {id: $id})-[r]-() DELETE r", {"id": entity_id}))
+        self._commit(
+            steps,
+            [
+                (
+                    "entity_retracted",
+                    {"entity": retracted, "previous": doc, "invalidatedRelations": attached},
+                )
+            ],
+        )
+        return entity
+
+    def _attached_relation_docs(self, entity_id: str) -> list[dict[str, Any]]:
+        """Wire docs of every live edge touching an entity, in insertion order."""
+        rows = self._rows_paged(
+            "MATCH (n:_Entity {id: $id})-[r]-() RETURN r._doc ORDER BY id(r)", {"id": entity_id}
+        )
+        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
+        return list({doc["id"]: doc for doc in docs}.values())
+
+    @staticmethod
+    def _relation_version_step(
+        docs: Sequence[Mapping[str, Any]], now: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Close out a batch of relation docs' system-time intervals."""
+        return (
+            "UNWIND $rows AS row CREATE (:_RelationVersion {relation_id: row.id, "
+            "_doc: row.doc, tx_from: row.txFrom, tx_to: $now})",
+            {
+                "rows": [
+                    {
+                        "id": doc["id"],
+                        "doc": json.dumps(dict(doc)),
+                        "txFrom": doc.get("created_at", now),
+                    }
+                    for doc in docs
+                ],
+                "now": now,
+            },
+        )
 
     def read_entity_doc(self, entity_id: str) -> dict[str, Any] | None:
         """The verbatim wire doc — key order preserved (synthesis `raw` output
@@ -399,17 +564,21 @@ class FalkorGraphStore(GraphStore):
             )
             params["supersedesId"] = supersedes_doc["id"]
             params["supersedesDoc"] = json.dumps(dict(supersedes_doc))
-        self._query("".join(parts), params)
-        self._events.append(
-            "entities_merged",
-            {
-                "primary": dict(primary_doc),
-                "secondary": dict(secondary_doc),
-                "previousPrimary": dict(previous_primary),
-                "previousSecondary": dict(previous_secondary),
-                "redirectedRelations": [dict(doc) for doc in redirects],
-                "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
-            },
+        self._commit(
+            [("".join(parts), params)],
+            [
+                (
+                    "entities_merged",
+                    {
+                        "primary": dict(primary_doc),
+                        "secondary": dict(secondary_doc),
+                        "previousPrimary": dict(previous_primary),
+                        "previousSecondary": dict(previous_secondary),
+                        "redirectedRelations": [dict(doc) for doc in redirects],
+                        "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
+                    },
+                )
+            ],
         )
 
     def list_entity_docs(self, filter: EntityFilter | None = None) -> list[dict[str, Any]]:
@@ -535,24 +704,31 @@ class FalkorGraphStore(GraphStore):
         by_type: dict[str, list[dict[str, Any]]] = {}
         for doc in docs:
             by_type.setdefault(doc["relationType"], []).append(doc)
-        created = 0
+        steps: list[tuple[str, dict[str, Any]]] = []
         for relation_type, type_docs in by_type.items():
             rows = [
                 {"from": d["from"], "to": d["to"], "id": d["id"], "doc": json.dumps(d)}
                 for d in type_docs
             ]
-            result = self._query(
-                "UNWIND $rows AS row "
-                "MATCH (a:_Entity {id: row.from}), (b:_Entity {id: row.to}) "
-                f"CREATE (a)-[:{relation_type} {{id: row.id, _doc: row.doc}}]->(b)",
-                {"rows": rows},
+            steps.append(
+                (
+                    "UNWIND $rows AS row "
+                    "MATCH (a:_Entity {id: row.from}), (b:_Entity {id: row.to}) "
+                    f"CREATE (a)-[:{relation_type} {{id: row.id, _doc: row.doc}}]->(b)",
+                    {"rows": rows},
+                )
             )
-            created += int(result.relationships_created)
+        results, event_ids = self._commit(
+            steps, [("relation_created", {"relation": doc}) for doc in docs]
+        )
+        created = sum(int(result.relationships_created) for result in results)
         if created != len(docs):
+            # A missing endpoint is only visible in the reply, after EXEC —
+            # so the events are compensated away rather than pre-empted.
+            self._events.discard(event_ids)
             raise NotFoundError(
                 f"Entity not found: relation endpoints must exist (created {created}/{len(docs)})"
             )
-        self._events.append_many([("relation_created", {"relation": doc}) for doc in docs])
         return [Relation.model_validate(doc) for doc in docs]
 
     def import_relation_doc(self, doc: Mapping[str, Any]) -> None:
@@ -586,16 +762,38 @@ class FalkorGraphStore(GraphStore):
         return len(events)
 
     def _edge_rows(
-        self, from_id: str, to_id: str, relation_type: str | None
+        self, from_id: str, to_id: str, relation_type: str | None, relation_id: str | None = None
     ) -> list[tuple[int, dict[str, Any]]]:
-        """(internal edge id, doc) for directed edges from→to, insertion order."""
+        """(internal edge id, doc) for directed edges from→to, insertion order.
+
+        ``relation_id`` narrows to one specific edge — the only way to address
+        a parallel edge that shares its type with a sibling."""
         edge_type = f":{relation_type}" if relation_type else ""
+        id_clause = " WHERE r.id = $rid" if relation_id is not None else ""
+        params: dict[str, Any] = {"from": from_id, "to": to_id}
+        if relation_id is not None:
+            params["rid"] = relation_id
         rows = self._rows(
-            f"MATCH (a:_Entity {{id: $from}})-[r{edge_type}]->(b:_Entity {{id: $to}}) "
-            "RETURN id(r), r._doc ORDER BY id(r)",
-            {"from": from_id, "to": to_id},
+            f"MATCH (a:_Entity {{id: $from}})-[r{edge_type}]->(b:_Entity {{id: $to}})"
+            f"{id_clause} RETURN id(r), r._doc ORDER BY id(r)",
+            params,
         )
         return [(int(row[0]), json.loads(row[1])) for row in rows]
+
+    def _target_edge(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None,
+        relation_id: str | None,
+    ) -> tuple[int, dict[str, Any]]:
+        """The single edge a write addresses. Parallel typed edges are
+        first-class, so ``relation_id`` selects exactly one; without it the
+        oldest match wins (the historical behaviour)."""
+        edges = self._edge_rows(from_id, to_id, relation_type, relation_id)
+        if not edges:
+            raise NotFoundError("Relation not found")
+        return edges[0]
 
     def read_relation(
         self, from_id: str, to_id: str, relation_type: str | None = None
@@ -617,11 +815,9 @@ class FalkorGraphStore(GraphStore):
         to_id: str,
         updates: Mapping[str, Any],
         relation_type: str | None = None,
+        relation_id: str | None = None,
     ) -> Relation:
-        edges = self._edge_rows(from_id, to_id, relation_type)
-        if not edges:
-            raise NotFoundError("Relation not found")
-        edge_id, current = edges[0]
+        edge_id, current = self._target_edge(from_id, to_id, relation_type, relation_id)
         merged = {**current, **dict(updates), "updated_at": iso_now()}
         for field in _IMMUTABLE_RELATION_FIELDS:
             merged[field] = current[field]
@@ -630,7 +826,7 @@ class FalkorGraphStore(GraphStore):
             # relationType is an updatable field; the edge is
             # retyped structurally (delete + recreate, same id/doc) so Cypher
             # type-filtered traversals stay consistent with the doc.
-            self._query(
+            step = (
                 "MATCH (a:_Entity {id: $from})-[r]->(b:_Entity {id: $to}) "
                 "WHERE id(r) = $rid DELETE r "
                 f"CREATE (a)-[:{merged['relationType']} {{id: $eid, _doc: $doc}}]->(b)",
@@ -643,15 +839,19 @@ class FalkorGraphStore(GraphStore):
                 },
             )
         else:
-            self._query(
+            step = (
                 "MATCH ()-[r]->() WHERE id(r) = $rid SET r._doc = $doc",
                 {"rid": edge_id, "doc": json.dumps(merged)},
             )
-        self._events.append("relation_updated", {"relation": merged, "previous": current})
+        self._commit([step], [("relation_updated", {"relation": merged, "previous": current})])
         return relation
 
     def invalidate_relation(
-        self, from_id: str, to_id: str, relation_type: str | None = None
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None = None,
+        relation_id: str | None = None,
     ) -> Relation:
         """Retire an edge bi-temporally: it leaves the live projection and its
         final doc is snapshotted as ``:_RelationVersion`` with ``tx_to`` set.
@@ -664,34 +864,39 @@ class FalkorGraphStore(GraphStore):
 
         Raises NotFoundError when no such edge exists.
         """
-        edges = self._edge_rows(from_id, to_id, relation_type)
-        if not edges:
-            raise NotFoundError("Relation not found")
-        edge_id, doc = edges[0]
+        edge_id, doc = self._target_edge(from_id, to_id, relation_type, relation_id)
         now = iso_now()
-        self._query(
-            "MATCH ()-[r]->() WHERE id(r) = $rid "
-            "CREATE (:_RelationVersion {relation_id: $id, _doc: $doc, "
-            "tx_from: $txFrom, tx_to: $now}) "
-            "DELETE r",
-            {
-                "rid": edge_id,
-                "id": doc["id"],
-                "doc": json.dumps(doc),
-                "txFrom": doc.get("created_at", now),
-                "now": now,
-            },
+        self._commit(
+            [
+                self._relation_version_step([doc], now),
+                ("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id}),
+            ],
+            [("relation_invalidated", {"relation": doc, "tx_to": now})],
         )
-        self._events.append("relation_invalidated", {"relation": doc, "tx_to": now})
         return Relation.model_validate(doc)
 
-    def delete_relation(self, from_id: str, to_id: str, relation_type: str | None = None) -> None:
-        edges = self._edge_rows(from_id, to_id, relation_type)
-        if not edges:
-            raise NotFoundError("Relation not found")
-        edge_id, doc = edges[0]
-        self._query("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id})
-        self._events.append("relation_deleted", {"relation": doc})
+    def delete_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None = None,
+        relation_id: str | None = None,
+        hard: bool = False,
+    ) -> None:
+        """Retire the targeted edge, or erase it outright with ``hard=True``.
+
+        The default is ``invalidate_relation`` — deleting an edge in an
+        event-sourced store means closing its system-time interval, not
+        dropping the only record that it ever existed. ``hard=True`` really
+        removes it, taking its history with it."""
+        if not hard:
+            self.invalidate_relation(from_id, to_id, relation_type, relation_id)
+            return
+        edge_id, doc = self._target_edge(from_id, to_id, relation_type, relation_id)
+        self._commit(
+            [("MATCH ()-[r]->() WHERE id(r) = $rid DELETE r", {"rid": edge_id})],
+            [("relation_deleted", {"relation": doc})],
+        )
 
     def list_relations(self, filter: RelationFilter | None = None) -> list[Relation]:
         return self._relation_page(filter)[0]

@@ -85,11 +85,13 @@ def assemble_bundle(params: ExportBundleInput, multi: MultiGraph) -> dict[str, A
     bound, and the shipped event log truncates to ``as_of``. Analytics and
     semantic sections stay whole-graph/current (they are already
     scope-independent) — ``as_of`` bounds entities, relations, and the event
-    log only. Known limitation: ``delete_entity`` does not write a final
-    ``_EntityVersion`` snapshot, so a hard-deleted entity's last incarnation is
-    not ``read_entity_as_of``-recoverable; reconstruction is therefore over
-    currently-existing entities (the dominant case — invalidation in Loom is a
-    status change, not a delete).
+    log only. Deletion now invalidates rather than erases: ``delete-entity``
+    retracts and snapshots the prior incarnation, so a deleted entity remains
+    ``read_entity_as_of``-recoverable and entity payloads are correct as of the
+    bound. Two gaps remain: ``"hard": true`` really does erase the node and its
+    versions, and a relation retired since the bound is not resurrected here
+    (reconstruction reads live edges — its closed-out ``:_RelationVersion``
+    exists but this path does not consult it).
     """
     target = params.graph or multi.default_graph
     if params.graph and not multi.has_graph(params.graph):
