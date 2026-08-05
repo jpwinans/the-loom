@@ -8,6 +8,11 @@ pairwise distances to its external distances to all other regions:
 A high score means a region is internally dense but surrounded by distant
 entities — unexplored territory between it and its neighbors.
 
+Why this one does *not* go through :mod:`theloom.semantic.search`: the search
+core answers "what is nearest to this vector", and every distance here is
+all-pairs *within* and *between* known regions — there is no query and no
+top-k. It shares the one cosine function, and nothing else.
+
 Availability note: this signal degrades to a ``failedSection`` when the
 embedding pipeline / vector store is unavailable. Entity vectors live in the
 store (``get_entity_vectors``); when there are no embeddings the CALLER should

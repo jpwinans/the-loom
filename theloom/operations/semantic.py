@@ -1,4 +1,8 @@
-"""Semantic operations.
+"""Semantic operations — the command layer over retrieval and ranking.
+
+Retrieval lives in :mod:`theloom.semantic.search` and ranking in
+:mod:`theloom.semantic.ranking`; what is left here is input handling, the
+keyword signal, and the discovery commands built on top.
 
 Score semantics: every similarity that
 flows through vector search is ``1/(1+L2distance)`` — the vector store returns L2, and
