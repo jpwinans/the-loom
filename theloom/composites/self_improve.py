@@ -11,9 +11,15 @@ The capstone composite chains every preceding feature into a six-section cycle:
 
 Human-in-the-loop by default (autoApply=false), which keeps the whole cycle
 deterministic: the apply section returns an empty result and never mutates the
-graph. Every section runs inside :func:`time_section` for fault isolation. The
+graph. Every section runs inside :func:`time_section` for fault isolation.
+Within apply, each proposal's entity write is one atomic mutation, but its
+relation writes are independent per-edge attempts against an already-committed
+entity: a failing relation (e.g. a targetId retracted between propose and
+apply) is reported in ``failedWrites`` with a reason rather than swallowed —
+it never rolls back the entity or the relations that did succeed. The
 top-level result is
-``{composite, reconnaissance, violations, proposals, applied, summary}``.
+``{composite, reconnaissance, violations, proposals, applied, failedWrites,
+summary}``.
 """
 
 from __future__ import annotations
@@ -103,6 +109,7 @@ def _build_summary(
     violations: list[Doc],
     ranked_proposals: list[Doc],
     applied_proposals: list[Doc],
+    failed_writes: list[Doc],
     auto_apply: bool,
     duration_ms: int,
 ) -> str:
@@ -149,6 +156,13 @@ def _build_summary(
                 lines.append(
                     f"  - {ap['ranked']['proposal']['entity']['name']} "
                     f"-> entity {ap['createdEntityId']}"
+                )
+        if len(failed_writes) > 0:
+            lines.append(f"Failed {len(failed_writes)} relation write(s):")
+            for fw in failed_writes:
+                lines.append(
+                    f"  - {fw['proposalEntityName']} -> {fw['targetId']} "
+                    f"({fw['relationType']}): {fw['reason']}"
                 )
     else:
         lines.append("Auto-apply disabled. Review proposals and apply manually.")
@@ -298,11 +312,12 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
     # -- Section 6: Apply ------------------------------------------------------
     def _apply() -> Doc:
         if not auto_apply:
-            return {"applied": [], "autoApply": False}
+            return {"applied": [], "autoApply": False, "failedWrites": []}
 
         store = multi.get_store(graph)
         to_apply = st["ranked"][:apply_top_n]
         applied: list[Doc] = []
+        failed_writes: list[Doc] = []
 
         for ranked_item in to_apply:
             try:
@@ -335,11 +350,11 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                 for rel in proposal["relations"]:
                     if not rel.get("targetId"):
                         continue
+                    if rel["direction"] == "outgoing":
+                        from_id, to_id = entity.id, rel["targetId"]
+                    else:
+                        from_id, to_id = rel["targetId"], entity.id
                     try:
-                        if rel["direction"] == "outgoing":
-                            from_id, to_id = entity.id, rel["targetId"]
-                        else:
-                            from_id, to_id = rel["targetId"], entity.id
                         relation = store.create_relation(
                             RelationCreate.model_validate(
                                 {
@@ -356,8 +371,16 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                             )
                         )
                         created_relation_ids.append(relation.id)
-                    except Exception:  # noqa: BLE001 — relation failure is not fatal.
-                        pass
+                    except Exception as exc:  # noqa: BLE001 — reported, not swallowed.
+                        failed_writes.append(
+                            {
+                                "proposalEntityName": proposal["entity"]["name"],
+                                "targetId": rel["targetId"],
+                                "relationType": rel["relationType"],
+                                "direction": rel["direction"],
+                                "reason": str(exc),
+                            }
+                        )
 
                 # noqa: BLE001 — credit propagation failure is not fatal.
                 with contextlib.suppress(Exception):
@@ -432,7 +455,7 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
             except Exception:  # noqa: BLE001 — per-proposal failure is not fatal.
                 pass
 
-        return {"applied": applied, "autoApply": True}
+        return {"applied": applied, "autoApply": True, "failedWrites": failed_writes}
 
     apply = time_section(_apply)
 
@@ -453,7 +476,10 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
     violations = cc_data["violations"] if cc_data else []
     apply_data = apply["data"]
     applied_proposals = apply_data["applied"] if apply_data else []
-    summary = _build_summary(violations, st["ranked"], applied_proposals, auto_apply, total_ms)
+    failed_writes = apply_data["failedWrites"] if apply_data else []
+    summary = _build_summary(
+        violations, st["ranked"], applied_proposals, failed_writes, auto_apply, total_ms
+    )
 
     return {
         "composite": composite,
@@ -461,5 +487,6 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
         "violations": violations,
         "proposals": st["ranked"],
         "applied": applied_proposals,
+        "failedWrites": failed_writes,
         "summary": summary,
     }
