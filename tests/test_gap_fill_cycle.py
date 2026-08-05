@@ -88,3 +88,15 @@ def test_commit_threshold_does_not_commit_when_structural_gate_fails(
     assert result["metadata"]["committed"] == 0
     relations = multi.get_store().list_relations()
     assert not any(r.from_ == a_id and r.to == b_id for r in relations)
+
+
+def test_registered_summary_says_commit_threshold_writes() -> None:
+    """The commit gate now really commits, so ``commitThreshold`` is a mutation
+    switch. A caller reading the catalog must be able to see that before
+    passing it — the published summary (and COMMANDS.md, generated from it)
+    says the command writes."""
+    from theloom.cli.registry import COMMANDS
+
+    descriptor = next(c for c in COMMANDS if c.name == "gap-fill-cycle")
+    assert "commitThreshold" in descriptor.summary
+    assert "WRITES" in descriptor.summary

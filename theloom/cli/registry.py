@@ -1479,7 +1479,9 @@ def _composite_commands() -> list[CommandDescriptor]:
         ),
         (
             "gap-fill-cycle",
-            "Automated gap-filling with validation (composite).",
+            "Automated gap-filling with validation (composite). WRITES: a suggestion "
+            "that clears the structural gate and the commitThreshold is created, so "
+            "commitThreshold is a real mutation switch, not a report-only score.",
             gap_fill_cycle_composite.GapFillCycleInput,
             gap_fill_cycle_composite.gap_fill_cycle,
             True,

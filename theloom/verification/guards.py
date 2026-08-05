@@ -16,7 +16,9 @@ Default relation guards: CAUSAL_MISSING_POLARITY (post-inference), the mirror
 NON_CAUSAL_POLARITY (structural/epistemic types carry no polarity), SELF_LOOP,
 ORPHAN_RELATION_FROM/TO (an endpoint that does not exist — or that exists only
 as a retracted doc, which is the same thing for attachment purposes) — all
-error severity. The polarity partition is
+error severity. The endpoint verdict is exported as :func:`endpoint_error` so
+the batch create path, which prefetches statuses instead of reading endpoints
+one at a time, enforces exactly the same rule. The polarity partition is
 enforced on every write path (create, batch create, update, bulk-import) and
 reported on the read side by checks.guard_non_causal_polarity, which shares
 this module's message.
@@ -28,7 +30,12 @@ from theloom.model import CAUSAL_RELATION_TYPES, EntityFilter, EntityStatus
 from theloom.store.falkor import FalkorGraphStore
 from theloom.verification.checks import non_causal_polarity_error
 
-__all__ = ["entity_gate_warnings", "non_causal_polarity_error", "relation_gate_errors"]
+__all__ = [
+    "endpoint_error",
+    "entity_gate_warnings",
+    "non_causal_polarity_error",
+    "relation_gate_errors",
+]
 
 
 def entity_gate_warnings(store: FalkorGraphStore, name: str, observations: list[str]) -> list[str]:
@@ -71,8 +78,14 @@ def relation_gate_errors(
     return errors
 
 
-def _endpoint_errors(store: FalkorGraphStore, role: str, entity_id: str) -> list[str]:
-    """ORPHAN_RELATION_FROM/TO for one endpoint.
+def endpoint_error(role: str, entity_id: str, status: EntityStatus | None) -> str | None:
+    """ORPHAN_RELATION_FROM/TO for one endpoint, from its effective status
+    (``None`` when no such entity exists) — ``None`` when it is attachable.
+
+    The verdict lives here, taking a status rather than a store, so both arities
+    of the same operation reach it: create-relation reads one endpoint at a
+    time, create-relations prefetches every id in the target graph, and neither
+    may be more permissive than the other.
 
     A retracted entity is not orphaned but is not attachable either: deletion
     invalidates rather than erases, so its doc still reads back, while
@@ -81,9 +94,14 @@ def _endpoint_errors(store: FalkorGraphStore, role: str, entity_id: str) -> list
     a sequence of commands that each reported success — so the gate refuses it
     here, where the refusal is a typed error.
     """
+    if status is None:
+        return f"{role} entity '{entity_id}' does not exist"
+    if status == EntityStatus.RETRACTED:
+        return f"{role} entity '{entity_id}' is retracted and cannot be a relation endpoint"
+    return None
+
+
+def _endpoint_errors(store: FalkorGraphStore, role: str, entity_id: str) -> list[str]:
     entity = store.read_entity(entity_id)
-    if entity is None:
-        return [f"{role} entity '{entity_id}' does not exist"]
-    if entity.effective_status == EntityStatus.RETRACTED:
-        return [f"{role} entity '{entity_id}' is retracted and cannot be a relation endpoint"]
-    return []
+    error = endpoint_error(role, entity_id, entity.effective_status if entity is not None else None)
+    return [error] if error is not None else []

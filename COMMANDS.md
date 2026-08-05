@@ -20,7 +20,7 @@ Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 - **`entity-deep-dive`** — Comprehensive analysis of a single entity (composite).
 - **`explore-frontier`** — Rank frontier regions by foraging signals with MVT advice and anti-pattern guards (composite).
 - **`far-analogy-retrieval`** — Run the full far-analogy retrieval pipeline: fingerprint, match, slip, transfer, score (composite).
-- **`gap-fill-cycle`** — Automated gap-filling with validation (composite).
+- **`gap-fill-cycle`** — Automated gap-filling with validation (composite). WRITES: a suggestion that clears the structural gate and the commitThreshold is created, so commitThreshold is a real mutation switch, not a report-only score.
 - **`graph-reconnaissance`** — Comprehensive structural overview of a graph (composite).
 - **`hypothesis-engine`** — Generate and rank hypotheses from semantic gaps (composite).
 - **`influence-map`** — Map an entity's influence via semiring distances and bottlenecks (composite).

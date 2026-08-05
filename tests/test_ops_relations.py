@@ -47,6 +47,7 @@ from theloom.operations.verification import (
     check_consistency,
     list_guard_violations,
 )
+from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
 MISSING = "00000000-0000-4000-8000-000000000000"
@@ -258,6 +259,44 @@ def test_batch_continue_on_error_false_throws(multi: MultiGraph) -> None:
             multi,
         )
     # first item failed and aborted the batch — nothing was created
+    assert list_relations(ListRelationsInput.model_validate({}), multi) == []
+
+
+def test_batch_to_retracted_endpoint_blocked_like_the_single_command(multi: MultiGraph) -> None:
+    """Batch and single are the same operation at different arity: the gate's
+    verdict on an endpoint cannot depend on which one the caller reached for.
+    A retracted endpoint is refused by both, with the same message."""
+    a, b = ent(multi, "A"), ent(multi, "B")
+    c = ent(multi, "C")
+    delete_entity(DeleteEntityInput.model_validate({"id": b}), multi)
+
+    result = create_relations(
+        CreateRelationsInput.model_validate(
+            {"relations": [rel_input(a, b), rel_input(b, c), rel_input(a, c)]}
+        ),
+        multi,
+    )
+    assert result["applied"] == 1
+    assert result["failed"] == 2
+    assert "is retracted and cannot be a relation endpoint" in result["errors"][0]["error"]
+    assert f"Target entity '{b}'" in result["errors"][0]["error"]
+    assert f"Source entity '{b}'" in result["errors"][1]["error"]
+    # Only the a -> c relation landed.
+    surviving = list_relations(ListRelationsInput.model_validate({}), multi)
+    assert [(r["from"], r["to"]) for r in surviving] == [(a, c)]
+
+
+def test_batch_retracted_endpoint_aborts_when_continue_on_error_false(multi: MultiGraph) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    delete_entity(DeleteEntityInput.model_validate({"id": b}), multi)
+    with pytest.raises(OperationError) as excinfo:
+        create_relations(
+            CreateRelationsInput.model_validate(
+                {"relations": [rel_input(a, b)], "continueOnError": False}
+            ),
+            multi,
+        )
+    assert "retracted" in str(excinfo.value)
     assert list_relations(ListRelationsInput.model_validate({}), multi) == []
 
 
@@ -532,6 +571,72 @@ def test_get_neighbors_compact_projects_entity_fields(multi: MultiGraph) -> None
     assert entry["name"] == "B"
     assert entry["relationType"] == "supports"
     assert entry["direction"] == "out"
+
+
+def test_get_neighbors_hydrates_the_neighbourhood_in_one_batched_read(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hydration is a set fetch, not a per-neighbour loop.
+
+    A single-id read costs a label scan, so hydrating a hub entity one
+    ``read_entity`` at a time is a round trip per neighbour — the N+1 the
+    store's batched ``read_entity_docs`` exists to avoid. Same rows, same
+    order, one query.
+    """
+    a = ent(multi, "A")
+    neighbours = [ent(multi, name) for name in ("B", "C", "D", "E")]
+    for neighbour in neighbours:
+        create_relation(CreateRelationInput.model_validate(rel_input(a, neighbour)), multi)
+
+    expected = get_neighbors(GetNeighborsInput.model_validate({"entityId": a}), multi)
+
+    single_reads = 0
+    original = FalkorGraphStore.read_entity
+
+    def counting_read_entity(self: FalkorGraphStore, entity_id: str) -> object:
+        nonlocal single_reads
+        single_reads += 1
+        return original(self, entity_id)
+
+    monkeypatch.setattr(FalkorGraphStore, "read_entity", counting_read_entity)
+    result = get_neighbors(GetNeighborsInput.model_validate({"entityId": a}), multi)
+
+    assert result == expected
+    assert [row["name"] for row in result] == ["B", "C", "D", "E"]
+    assert single_reads == 0
+
+
+def test_get_neighbors_follows_bridges_with_one_read_per_remote_graph(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cross-graph branch batches too — one read per remote graph, not one
+    per bridge."""
+    multi.create_graph("research")
+    a = ent(multi, "A")
+    remotes = [ent(multi, name, graph="research") for name in ("R1", "R2", "R3")]
+    for remote in remotes:
+        seed_bridge(multi, a, remote)
+
+    expected = get_neighbors(
+        GetNeighborsInput.model_validate({"entityId": a, "follow_bridges": True}), multi
+    )
+
+    single_reads = 0
+    original = FalkorGraphStore.read_entity
+
+    def counting_read_entity(self: FalkorGraphStore, entity_id: str) -> object:
+        nonlocal single_reads
+        single_reads += 1
+        return original(self, entity_id)
+
+    monkeypatch.setattr(FalkorGraphStore, "read_entity", counting_read_entity)
+    result = get_neighbors(
+        GetNeighborsInput.model_validate({"entityId": a, "follow_bridges": True}), multi
+    )
+
+    assert result == expected
+    assert [row["name"] for row in result] == ["R1", "R2", "R3"]
+    assert single_reads == 0
 
 
 # =============================================================================
