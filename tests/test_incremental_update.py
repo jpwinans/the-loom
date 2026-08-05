@@ -435,7 +435,13 @@ def test_removed_symbol_in_a_changed_file_is_superseded(
     seeded: Path, multi: MultiGraph, store: FalkorGraphStore
 ) -> None:
     policy = seeded / "src" / "policy.py"
-    policy.write_text('"""Policy checks."""\n\nMAX_TRANSFER = 10000.0\n', encoding="utf-8")
+    policy.write_text(
+        '"""Policy checks."""\n\nMAX_TRANSFER = 10000.0\n\n\n'
+        "def under_review(amount: float) -> str:\n"
+        '    """Return the review state for an amount."""\n'
+        '    return "under_review" if amount > MAX_TRANSFER else "cleared"\n',
+        encoding="utf-8",
+    )
     commit(seeded, "drop the allows helper")
 
     result = update(seeded, multi)
@@ -564,7 +570,7 @@ def test_guard_refuses_superseding_more_than_half_the_graph(
     assert names(store) == before
 
     forced = update(seeded, multi, force=True)
-    assert forced["stats"]["entitiesRetracted"] == 13
+    assert forced["stats"]["entitiesRetracted"] == 14
     assert "file:lib/index.ts" in names(store)
 
 

@@ -217,6 +217,96 @@ class TestSymbolMentions:
         assert [r["to"] for r in out["relations"]] == [summarize]
 
 
+class TestDomainVocabulary:
+    """A term the project itself writes as a *value* is vocabulary, not a
+    reference to the callable that happens to share its spelling.
+
+    Observed on this repo: six docs listing the ``ConfidenceBasis`` values
+    linked ``single_source`` — the enum value — to
+    ``theloom/algebra/core.py``'s semiring shortest-path function, the repo's
+    only callable of that name. Code-shaped, backticked, unambiguous, and
+    wrong every time.
+    """
+
+    def test_a_name_the_project_uses_as_a_value_is_never_a_link(self) -> None:
+        per_file = [
+            {
+                "path": "src/basis.py",
+                "symbols": {"single_source": "single_source (basis)"},
+                "symbolKinds": {"single_source": "procedure"},
+                "stringLiterals": ["single_source"],
+            }
+        ]
+        out = doclinks.resolve_doc_links(
+            [{"path": "docs/architecture.md", "content": "Basis: `single_source`.\n"}],
+            FILE_PATHS,
+            per_file,
+        )
+        assert out["relations"] == []
+        assert out["stats"]["vocabularyDocMentionsSkipped"] == 1
+        assert out["stats"]["docSymbolReferences"] == 0
+
+    def test_a_keyed_prefix_constant_is_vocabulary_too(self) -> None:
+        """``USAGE_STATUS_PREFIX = "usage_status: "`` names the same token; the
+        doc means the observation prefix, not the helper of that name."""
+        per_file = [
+            {
+                "path": "src/memory.py",
+                "symbols": {"usage_status": "usage_status (memory)"},
+                "symbolKinds": {"usage_status": "procedure"},
+                "stringLiterals": ["usage_status"],
+            }
+        ]
+        out = doclinks.resolve_doc_links(
+            [{"path": "docs/architecture.md", "content": "Writes `usage_status`.\n"}],
+            FILE_PATHS,
+            per_file,
+        )
+        assert out["relations"] == []
+
+    def test_a_test_files_literals_are_not_vocabulary(self) -> None:
+        """``describe("buildCausalGraph")`` quotes a symbol name; it does not
+        make that symbol a domain term, and a doc naming it still links."""
+        per_file = [
+            {
+                "path": "src/systems.ts",
+                "symbols": {"buildCausalGraph": "buildCausalGraph (systems)"},
+                "symbolKinds": {"buildCausalGraph": "procedure"},
+                "stringLiterals": [],
+            },
+            {
+                "path": "src/systems.test.ts",
+                "symbols": {},
+                "symbolKinds": {},
+                "stringLiterals": ["buildCausalGraph"],
+            },
+        ]
+        out = doclinks.resolve_doc_links(
+            [{"path": "docs/architecture.md", "content": "See `buildCausalGraph`.\n"}],
+            FILE_PATHS,
+            per_file,
+        )
+        assert [r["to"] for r in out["relations"]] == ["buildCausalGraph (systems)"]
+
+    def test_a_path_reference_survives_a_colliding_value(self) -> None:
+        """The vocabulary guard is about deduced symbol links; a written path
+        states its target and is not a deduction."""
+        per_file = [
+            {
+                "path": "src/models.py",
+                "symbols": {},
+                "symbolKinds": {},
+                "stringLiterals": ["models"],
+            }
+        ]
+        out = doclinks.resolve_doc_links(
+            [{"path": "docs/architecture.md", "content": "See src/models.py.\n"}],
+            FILE_PATHS,
+            per_file,
+        )
+        assert [r["to"] for r in out["relations"]] == ["file:src/models.py"]
+
+
 class TestDedupeAndCap:
     def test_repeated_mentions_collapse_to_one_edge(self) -> None:
         out = _link("src/models.py is here.\nAnd `open_account` is in src/models.py.\n")
@@ -262,6 +352,14 @@ class TestFixtureRepo:
         result = treesitter.extract_codebase("tests/fixtures/repo")
         assert [r for r in result["relations"] if r["from"] == "file:docs/glossary.md"] == []
         assert result["resolution"]["ambiguousDocMentionsSkipped"] == 1
+
+    def test_the_glossarys_status_term_is_not_an_edge_to_the_callable(self) -> None:
+        """``under_review`` is a value ``src/policy.py`` returns and also the
+        project's only callable of that name; the doc means the term."""
+        result = treesitter.extract_codebase("tests/fixtures/repo")
+        targets = {r["to"] for r in result["relations"] if r["relationType"] == "references"}
+        assert "under_review (policy)" not in targets
+        assert result["resolution"]["vocabularyDocMentionsSkipped"] == 1
 
     def test_prose_mentions_in_the_linking_doc_are_not_edges(self) -> None:
         result = treesitter.extract_codebase("tests/fixtures/repo")

@@ -236,6 +236,39 @@ class TestResolveCalls:
         ]
 
 
+class TestIsTestPath:
+    """One answer to "is this the product?", shared by the file collector and
+    the doc linker's vocabulary — a repo whose tests are ``tests/test_*.py``
+    must not read as product source in one pass and as tests in another."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tests/test_work_memory.py",
+            "tests/conftest.py",
+            "src/store_test.py",
+            "tapestry/src/lib/schema.test.ts",
+            "tapestry/src/views/smoke.spec.ts",
+            "app/__tests__/render.tsx",
+            "TESTS/Test_Thing.PY",
+        ],
+    )
+    def test_test_files_are_recognised(self, path: str) -> None:
+        assert resolution.is_test_path(path)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "theloom/store/falkor.py",
+            "theloom/extraction/latest.py",
+            "docs/superpowers/specs/2026-07-11-design.md",
+            "src/contest.py",
+        ],
+    )
+    def test_product_source_is_not(self, path: str) -> None:
+        assert not resolution.is_test_path(path)
+
+
 class TestUniqueNameGuards:
     """The unique-name rule is the low-precision resolver, so it needs guards.
 

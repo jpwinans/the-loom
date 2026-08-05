@@ -31,6 +31,19 @@ reference at all: the same callable kinds the resolver allows, never a
 variable that merely shares a config key's name. A lone lowercase word links
 to nothing, even when the project defines it exactly once.
 
+Nor does being code-shaped make a term code. A project's own **domain
+vocabulary** is written the way code is and quoted the way code is: docs list
+``single_source`` among the confidence bases and ``usage_status`` among the
+standing observations. Those are values, not callables — but a repo big
+enough to define the vocabulary is big enough to also define one function of
+the same name, and then the uniqueness rule welds six documents to a semiring
+shortest-path routine they never mention. So a name the project itself writes
+as a string *value* — an enum value, a status token, a keyed prefix constant
+(``"usage_status: "``) — is vocabulary, and vocabulary is never a symbol
+link. The vocabulary is read from the product source only: a test file's
+``describe("buildCausalGraph")`` quotes a symbol name rather than coining a
+term, and counting it would suppress exactly the links docs legitimately make.
+
 These are the guards the unique-name call resolver needed: a wrong edge is
 worse than a missing one, because every downstream analysis treats edges as
 fact.
@@ -45,7 +58,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from theloom.extraction.resolution import BUILTIN_NAMES, CALLABLE_KINDS, file_entity_name
+from theloom.extraction.resolution import (
+    BUILTIN_NAMES,
+    CALLABLE_KINDS,
+    file_entity_name,
+    is_test_path,
+)
 
 Doc = dict[str, Any]
 
@@ -90,6 +108,22 @@ def _symbol_index(per_file: list[Doc]) -> dict[str, set[str]]:
     return index
 
 
+def _vocabulary(per_file: list[Doc]) -> frozenset[str]:
+    """Every term the project's own source writes as a string value.
+
+    Read from product source only. A test file quotes symbol names constantly
+    (``describe("buildCausalGraph")``, ``"open_account"`` in a fixture) without
+    coining a single term, so its literals would poison names docs really do
+    reference.
+    """
+    terms: set[str] = set()
+    for record in per_file:
+        if is_test_path(str(record.get("path", ""))):
+            continue
+        terms.update(str(term) for term in record.get("stringLiterals", []))
+    return frozenset(terms)
+
+
 def _is_code_shaped(text: str) -> bool:
     """True when the name is written the way code is and prose is not.
 
@@ -111,10 +145,13 @@ def _path_mentions(line: str, doc_path: str, file_paths: frozenset[str]) -> list
     return hits
 
 
-def _symbol_mentions(line: str, index: dict[str, set[str]]) -> tuple[list[tuple[str, str]], int]:
-    """``(mentions, ambiguous count)`` for the backticked names on the line."""
+def _symbol_mentions(
+    line: str, index: dict[str, set[str]], vocabulary: frozenset[str]
+) -> tuple[list[tuple[str, str]], int, int]:
+    """``(mentions, ambiguous count, vocabulary count)`` for the line's names."""
     hits: list[tuple[str, str]] = []
     ambiguous = 0
+    vocabulary_hits = 0
     for match in _BACKTICK_RE.finditer(line):
         text = match.group(1).strip()
         # An explicit call form is code syntax, so it stands in for the shape
@@ -131,13 +168,18 @@ def _symbol_mentions(line: str, index: dict[str, set[str]]) -> tuple[list[tuple[
         candidates = index.get(text)
         if not candidates:
             continue
+        if text in vocabulary:
+            # The project writes this term as a value; the doc is quoting the
+            # term, not the callable that happens to share its spelling.
+            vocabulary_hits += 1
+            continue
         if len(candidates) > 1:
             # Counted per occurrence: how often the docs say something the
             # project defines twice is worth knowing.
             ambiguous += 1
             continue
         hits.append((text, next(iter(candidates))))
-    return hits, ambiguous
+    return hits, ambiguous, vocabulary_hits
 
 
 def _relation(
@@ -172,8 +214,9 @@ def resolve_doc_links(
     Returns ``{relations, stats}``.
     """
     index = _symbol_index(per_file)
+    vocabulary = _vocabulary(per_file)
     relations: list[Doc] = []
-    path_links = symbol_links = ambiguous = capped = 0
+    path_links = symbol_links = ambiguous = capped = vocabulary_skipped = 0
 
     for doc in docs:
         doc_path = str(doc["path"])
@@ -181,8 +224,9 @@ def resolve_doc_links(
         seen: set[str] = set()
         emitted = 0
         for line_number, line in enumerate(str(doc.get("content", "")).splitlines()):
-            symbols, line_ambiguous = _symbol_mentions(line, index)
+            symbols, line_ambiguous, line_vocabulary = _symbol_mentions(line, index, vocabulary)
             ambiguous += line_ambiguous
+            vocabulary_skipped += line_vocabulary
             paths = _path_mentions(line, doc_path, file_paths)
             hits = [(text, target, True) for text, target in paths]
             hits.extend((text, target, False) for text, target in symbols)
@@ -208,6 +252,7 @@ def resolve_doc_links(
             "docPathReferences": path_links,
             "docSymbolReferences": symbol_links,
             "ambiguousDocMentionsSkipped": ambiguous,
+            "vocabularyDocMentionsSkipped": vocabulary_skipped,
             "docReferencesCapped": capped,
         },
     }

@@ -78,6 +78,14 @@ MAX_TEXT_FILE_BYTES = 1024 * 1024
 DOCSTRING_MAX_CHARS = 300
 RATIONALE_MAX_CHARS = 200
 
+# Node types that hold a string literal in the supported grammars (Python and
+# TypeScript/JavaScript both name it ``string``; ``string_literal`` is there so
+# a grammar that names it that way needs no second pass).
+_STRING_NODE_TYPES = frozenset({"string", "string_literal"})
+
+# Below this a value is a word, not a term worth reserving.
+MIN_VOCABULARY_CHARS = 3
+
 SKIP_DIRS = {
     "node_modules",
     "dist",
@@ -181,6 +189,10 @@ def _named(node: Any) -> list[Any]:
 # =============================================================================
 
 _STRING_PREFIX_RE = re.compile(r"^[rubfRUBF]{0,3}('''|\"\"\"|'|\")")
+# The leading identifier of a string literal, when the literal *is* that
+# identifier or is keyed by it (``"usage_status: "``, ``"basis=..."``). Those
+# are the terms a project writes as values rather than as code.
+_VOCABULARY_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*(?:[:=]|$)")
 _COMMENT_MARKER_RE = re.compile(r"^\s*(?:#+|//+|/\*+|\*+)\s?")
 _COMMENT_TAIL_RE = re.compile(r"\s*\*+/\s*$")
 _RATIONALE_RE = re.compile(r"^(NOTE|HACK|WHY|IMPORTANT|TODO|FIXME)\s*:\s*(.*)$")
@@ -307,6 +319,25 @@ def _leading_module_comment(root: Any, source: bytes) -> str | None:
     if len(children) > 1 and children[1].start_point[0] <= first.end_point[0] + 1:
         return None
     return _clean_block_comment(raw)
+
+
+def _string_literal_vocabulary(node: Any, source: bytes, found: set[str]) -> None:
+    """The identifier-shaped terms this file writes as string *values*.
+
+    An enum value, a status token, a keyed prefix constant — the project's own
+    domain language. The doc linker needs it to tell a term from a symbol:
+    ``single_source`` is a ``ConfidenceBasis`` value long before it is the
+    semiring function of the same name, and a doc quoting the term is not
+    referencing the function.
+    """
+    if node.type in _STRING_NODE_TYPES:
+        body = _strip_string_literal(_text(node, source))
+        match = _VOCABULARY_RE.match(body) if body else None
+        if match is not None and len(match.group(1)) >= MIN_VOCABULARY_CHARS:
+            found.add(match.group(1))
+        return
+    for child in node.children:
+        _string_literal_vocabulary(child, source, found)
 
 
 def _comment_notes(node: Any, source: bytes, notes: list[Doc]) -> None:
@@ -976,12 +1007,16 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
 
     _attach_notes(tree.root_node, source, file_entity, symbol_spans)
 
+    vocabulary: set[str] = set()
+    _string_literal_vocabulary(tree.root_node, source, vocabulary)
+
     return {
         "entities": entities,
         "relations": relations,
         "language": lang,
         "imports": extraction["imports"],
         "symbols": symbol_name_map,
+        "stringLiterals": sorted(vocabulary),
         "symbolKinds": {
             key: kind_to_entity_type(sym["kind"])
             for sym in extraction["symbols"]
@@ -1093,8 +1128,7 @@ def _text_file_entity(path: str, kind: str) -> Doc:
 
 
 def _is_test_file(rel: str) -> bool:
-    lowered = rel.lower()
-    return any(marker in lowered for marker in (".test.", ".spec.", "__tests__/", "__test__/"))
+    return resolution.is_test_path(rel)
 
 
 def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> Doc:
@@ -1139,6 +1173,7 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
                 "symbolKinds": result["symbolKinds"],
                 "imports": result["imports"],
                 "symbols": result["symbols"],
+                "stringLiterals": result["stringLiterals"],
                 "unresolvedCalls": result["unresolvedCalls"],
                 "unresolvedInheritances": result["unresolvedInheritances"],
             }

@@ -8,3 +8,7 @@ symbol and must not become an edge.
 
 **policy** — `allows` is a lone lowercase word; backticks alone do not
 make it code, so this mention names no symbol either.
+
+**review** — `under_review` is a status the policy module writes as a value.
+The project also has exactly one callable of that name, but this mention is
+the term, not the function, so it is not an edge either.

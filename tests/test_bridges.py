@@ -140,6 +140,24 @@ def test_pair_can_be_bridged_again_after_removal(multi: MultiGraph) -> None:
     assert [record["txTo"] is None for record in history] == [False, True]
 
 
+def test_importing_a_bridge_doc_puts_it_back_in_the_live_set(multi: MultiGraph) -> None:
+    """A verbatim import writes *live* state, whatever the id held before.
+
+    Restoring a snapshot onto a store where that id was once invalidated must
+    clear ``tx_to``: a bridge the importer counts as imported and the reader
+    cannot see is silent data loss.
+    """
+    created = multi.bridges.create_bridge(bridge_doc())
+    multi.bridges.delete_bridge("e1", "e2", "supports")
+    assert multi.bridges.list_bridges() == []
+
+    multi.bridges.import_bridge_doc(created)
+
+    assert multi.bridges.list_bridges() == [created]
+    history = multi.bridges.list_bridge_history()
+    assert [record["txTo"] for record in history] == [None]
+
+
 # =============================================================================
 # Migration off the legacy Redis list
 # =============================================================================
@@ -227,6 +245,38 @@ def test_interrupted_migration_does_not_swallow_a_newer_legacy_write(
     assert multi.bridges.list_bridges() == [stranded, listed]
     assert redis_client.exists(f"{namespace}:bridges") == 0
     assert redis_client.exists(f"{namespace}:bridges:migrating") == 0
+
+
+def test_an_id_less_legacy_doc_migrates_to_a_stable_id(
+    db: FalkorDB, redis_client: Redis, namespace: str
+) -> None:
+    """The pre-registry writer minted no id, so the id has to come from the
+    doc's own identity — its (from, to, relationType) triple.
+
+    A doc re-read from the claim key (a crash between the write and the
+    ``LREM``, or a racer that refilled the key) must MERGE onto the record it
+    already wrote. A freshly minted uuid per pass would instead stack duplicate
+    live bridges holding the triple the write guard rejects.
+    """
+    doc = {
+        **bridge_doc("a", "b"),
+        "created_at": "2026-07-10T12:00:00.000Z",
+        "updated_at": "2026-07-10T12:00:00.000Z",
+    }
+    seed_legacy(redis_client, namespace, [doc])
+
+    multi = MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
+    first = multi.bridges.list_bridges()
+    assert len(first) == 1
+    assert first[0]["id"]
+
+    # Committed, then the process died before the doc left the claim key.
+    redis_client.rpush(f"{namespace}:bridges:migrating", json.dumps(doc))
+    reopened = MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
+
+    assert [bridge["id"] for bridge in reopened.bridges.list_bridges()] == [first[0]["id"]]
+    with pytest.raises(OperationError):
+        reopened.bridges.create_bridge(bridge_doc("a", "b"))
 
 
 class _ClaimRacer:

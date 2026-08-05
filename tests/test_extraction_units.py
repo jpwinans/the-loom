@@ -143,6 +143,24 @@ class TestExtractFromSource:
         # its evidence at the line the call is written on.
         assert result["unresolvedCalls"] == [{"caller": "C.m (c)", "callee": "helper", "line": 2}]
 
+    def test_identifier_shaped_string_literals_are_the_files_vocabulary(self) -> None:
+        """The terms a file writes as *values* — enum values, status tokens,
+        keyed prefixes — so the doc linker can tell a term from a symbol."""
+        source = (
+            'BASIS = "single_source"\n'
+            'PREFIX = "usage_status: "\n'
+            'MESSAGE = "not an identifier at all"\n'
+            'SHORT = "id"\n'
+        )
+        result = treesitter.extract_from_source(source, "src/model.py", "python")
+        assert result["stringLiterals"] == ["single_source", "usage_status"]
+
+    def test_typescript_string_literals_are_collected(self) -> None:
+        result = treesitter.extract_from_source(
+            "const basis = 'single_source';\n", "src/basis.ts", "typescript"
+        )
+        assert result["stringLiterals"] == ["single_source"]
+
 
 def _observations(result: dict[str, object], name: str) -> list[str]:
     entities = result["entities"]
@@ -458,18 +476,20 @@ class TestExtractCodebaseDeterminism:
             # 5 parsed sources + README.md, styles/tokens.css and the two docs,
             # which are entities but are never parsed
             "totalFiles": 9,
-            "totalSymbols": 15,
-            # 24 symbols/files + the pkg:dataclasses node for the one
+            "totalSymbols": 16,
+            # 25 symbols/files + the pkg:dataclasses node for the one
             # third-party import in the fixture
-            "totalEntities": 25,
-            "totalRelations": 28,
+            "totalEntities": 26,
+            "totalRelations": 29,
             # `system` counts every file entity, code or not, plus the package
-            "entityBreakdown": {"system": 10, "procedure": 11, "concept": 3, "variable": 1},
+            "entityBreakdown": {"system": 10, "procedure": 12, "concept": 3, "variable": 1},
             # Call edges are typed `calls`; `related_to` now means only a
             # semantic link, which structural extraction never emits. Non-code
             # files are roots except for docs, whose unambiguous mentions of a
-            # file or a symbol become `references` edges into the code.
-            "relationBreakdown": {"part_of": 18, "calls": 3, "requires": 3, "references": 4},
+            # file or a symbol become `references` edges into the code. The
+            # glossary's `under_review` is a value the policy module writes,
+            # so it stays vocabulary and adds no edge.
+            "relationBreakdown": {"part_of": 19, "calls": 3, "requires": 3, "references": 4},
         }
 
     def test_fixture_repo_carries_content_not_just_coordinates(self) -> None:

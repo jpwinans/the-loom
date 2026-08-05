@@ -142,6 +142,34 @@ def call_evidence(caller: str, callee: str, path: str, line: int) -> str:
     return f"{caller} calls {callee} at {path}:{line + 1}"
 
 
+# Where a repository keeps its tests, across the conventions the supported
+# languages use: a marked file name (``x.test.ts``, ``test_x.py``, ``x_test.go``)
+# or a directory set aside for them.
+#
+# ``spec``/``specs`` is deliberately not a test *directory*: a repository that
+# keeps written specifications there would lose them from the map, and the
+# ``.spec.`` file marker already catches the RSpec/Jest convention.
+_TEST_FILE_MARKERS = (".test.", ".spec.", "__tests__/", "__test__/")
+_TEST_DIRECTORIES = frozenset({"test", "tests", "__tests__", "__test__"})
+
+
+def is_test_path(path: str) -> bool:
+    """True when the path is a test file rather than product source.
+
+    Shared, because "is this the product?" is asked in more than one place and
+    a repository whose Python tests all live in ``tests/test_*.py`` must not
+    read as product source in one pass and as tests in another.
+    """
+    lowered = path.replace(os.sep, "/").lower()
+    if any(marker in lowered for marker in _TEST_FILE_MARKERS):
+        return True
+    segments = lowered.split("/")
+    if any(segment in _TEST_DIRECTORIES for segment in segments[:-1]):
+        return True
+    stem = segments[-1].rsplit(".", 1)[0]
+    return stem == "conftest" or stem.startswith("test_") or stem.endswith("_test")
+
+
 def file_entity_name(path: str) -> str:
     """The entity name the extractor gives a file."""
     return f"file:{path}"

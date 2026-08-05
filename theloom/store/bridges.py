@@ -37,7 +37,10 @@ A crash mid-migration therefore leaves its docs on the claim key and the next
 access resumes from them. Nothing on the claim key is ever dropped wholesale,
 so no bridge is lost to a racer that refilled the key between another
 process's write and its removal; two processes racing can at worst write the
-same doc twice (the row MERGEs by id, only the event duplicates).
+same doc twice (the row MERGEs by id, only the event duplicates). That holds
+for the id-less docs the legacy writer produced too: their id is *derived*
+from the (from, to, relationType) triple rather than minted per pass, so the
+same doc read twice is the same row.
 """
 
 from __future__ import annotations
@@ -77,7 +80,14 @@ _CREATE_IF_ABSENT = (
     "CREATE (b:_Bridge {id: $id, dedupe: $key, _doc: $doc, tx_from: $tx})"
 )
 
-_MERGE_VERBATIM = "MERGE (b:_Bridge {id: $id}) SET b.dedupe = $key, b._doc = $doc, b.tx_from = $tx"
+# A verbatim write states live state, so it clears ``tx_to`` as well as setting
+# the rest: MERGEing onto an id this store once invalidated must put the record
+# back in the live set, not leave a bridge the importer counted and no reader
+# can see.
+_MERGE_VERBATIM = (
+    "MERGE (b:_Bridge {id: $id}) "
+    "SET b.dedupe = $key, b._doc = $doc, b.tx_from = $tx, b.tx_to = NULL"
+)
 
 _INVALIDATE = "MATCH (b:_Bridge {id: $id}) WHERE b.tx_to IS NULL SET b.tx_to = $tx"
 
@@ -159,7 +169,8 @@ class BridgeRegistry:
         Imported docs are historical state, not new mutations — the same
         contract as ``FalkorGraphStore.import_entity_doc`` — so no event is
         appended and the doc's own ``created_at`` is the system-time lower
-        bound.
+        bound. The doc is live once imported even if this store had previously
+        invalidated its id: an import states what the snapshot holds.
         """
         self._ensure_migrated()
         self._graph.query(_MERGE_VERBATIM, _write_params(dict(doc)))
@@ -274,16 +285,28 @@ def _write_params(doc: BridgeDoc, tx_from: str | None = None) -> dict[str, Any]:
 
     A doc that predates the event-sourced registry (or a snapshot import) dates
     from its own ``created_at``, not from the moment it was carried over. An
-    id is minted in place for the (malformed) doc that arrives without one, so
-    the stored ``_doc`` and the event payload agree on identity.
+    id is minted in place for the doc that arrives without one, so the stored
+    ``_doc`` and the event payload agree on identity.
     """
-    doc.setdefault("id", str(uuid.uuid4()))
+    doc.setdefault("id", _derived_id(doc))
     return {
         "id": doc["id"],
         "key": _dedupe_key(doc),
         "doc": json.dumps(doc),
         "tx": tx_from or doc.get("created_at") or iso_now(),
     }
+
+
+def _derived_id(doc: BridgeDoc) -> str:
+    """A stable id for a doc that never carried one (the legacy list wrote none).
+
+    Derived from the doc's own identity — the (from, to, relationType) triple
+    the dedupe guard is keyed on — so the *same* doc always lands on the same
+    record. A fresh uuid per pass would instead let a re-read of the claim key
+    (a crash between the write and the ``LREM``, or a racing drainer) stack
+    duplicate live bridges holding the triple ``create_bridge`` rejects.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"loom:bridge:{_dedupe_key(doc)}"))
 
 
 def _dedupe_key(doc: BridgeDoc) -> str:
