@@ -3,17 +3,16 @@
 Full provenance audit for one entity: the provenance chain, claims derived from
 source entities in that chain,
 inferred claims filtered to the chain, and a dry-run credit-cascade preview.
-Every section runs inside :func:`time_section`.
+Every section runs through :func:`run_composite`'s :func:`time_section`.
 """
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.operations.epistemic import (
     ClaimsFromSourceInput,
@@ -43,9 +42,11 @@ def _confidence_score(entity: dict[str, Any]) -> Any:
 
 
 def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     graph = params.graph
     entity_id = params.entity_id
+
+    # State threaded across sections (sections run sequentially).
+    state: dict[str, Any] = {"chain_data": None}
 
     def _provenance_chain() -> list[dict[str, Any]]:
         chain = provenance_chain(
@@ -54,7 +55,7 @@ def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[st
             ),
             multi,
         )
-        return [
+        result = [
             {
                 "entityId": node["entity"]["id"],
                 "entityName": node["entity"]["name"],
@@ -64,13 +65,13 @@ def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[st
             }
             for node in chain
         ]
-
-    chain_section = time_section(_provenance_chain)
+        state["chain_data"] = result
+        return result
 
     def _derived_claims() -> list[dict[str, Any]]:
         source_ids = [
             entry["entityId"]
-            for entry in (chain_section["data"] or [])
+            for entry in (state["chain_data"] or [])
             if entry["entityType"] == "source"
         ]
         if not source_ids:
@@ -96,7 +97,7 @@ def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[st
 
     def _inferred_claims() -> list[dict[str, Any]]:
         all_inferred = inferred_claims(TypedEpistemicInput.model_validate({"graph": graph}), multi)
-        chain_ids = {entry["entityId"] for entry in (chain_section["data"] or [])}
+        chain_ids = {entry["entityId"] for entry in (state["chain_data"] or [])}
         return [
             {
                 "entityId": entity["id"],
@@ -121,11 +122,11 @@ def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[st
             multi,
         )
 
-    sections = {
-        "provenanceChain": chain_section,
-        "derivedClaims": time_section(_derived_claims),
-        "inferredClaims": time_section(_inferred_claims),
-        "cascadePreview": time_section(_cascade_preview),
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("provenanceChain", _provenance_chain),
+            ("derivedClaims", _derived_claims),
+            ("inferredClaims", _inferred_claims),
+            ("cascadePreview", _cascade_preview),
+        ]
+    )
