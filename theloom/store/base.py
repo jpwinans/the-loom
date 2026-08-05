@@ -17,7 +17,10 @@ semantics:
   never duck-typing.
 
 Bi-temporal: every mutation appends to the event log, updates snapshot the
-prior version, and ``read_entity_as_of`` answers "state as of time T".
+prior version, and ``read_entity_as_of`` answers "state as of time T" for one
+entity. The graph-level form of that question — every entity's incarnation plus
+every relation whose interval was open then — is ``read_graph_as_of``, declared
+on ``theloom/store/read_port.py`` where new read contracts go.
 """
 
 from __future__ import annotations

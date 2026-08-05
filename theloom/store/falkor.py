@@ -24,6 +24,11 @@ Storage model — one FalkorDB graph per named Loom graph:
   tx_to}`` — the same bi-temporal shape for an edge that has left the live
   projection (``invalidate_relation``). An edge carries no status field, so
   retiring one means closing its system-time interval, not flipping a flag.
+
+Both version labels are read by ``read_graph_as_of``, the graph-level answer to
+"state as of time T": it is the only read that can see a closed interval, so
+anything reconstructing a past graph from the live projection alone is missing
+exactly what these nodes record.
 - Metadata = singleton node ``:_GraphMeta {_doc}``.
 
 Every mutation goes through ``_commit``: ONE Cypher statement plus its event

@@ -206,10 +206,11 @@ detector finds one reinforcing and four balancing loops.
 
 Every view — Explorer, Overview, Systems, Chronicle, and the Semantic Map
 alike — can also be bounded to a moment in the graph's own history with the
-bi-temporal `asOf` parameter, which reconstructs entities through the store's
-real `read_entity_as_of` path and truncates relations and the event log to
-that instant (the Semantic Map's projection and clusters are the one
-exception: as noted above, they always reflect current embeddings, never
+bi-temporal `asOf` parameter, which asks the store for the graph as it stood
+at that instant — each entity in the incarnation current then, every relation
+whose validity interval was open then (including edges retired since), and the
+event log truncated to it (the Semantic Map's projection and clusters are the
+one exception: as noted above, they always reflect current embeddings, never
 `asOf`):
 
 ```bash
