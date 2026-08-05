@@ -18,6 +18,7 @@ embed-*/status shapes are fully deterministic.
 
 from __future__ import annotations
 
+import datetime
 import math
 import re
 from typing import Any
@@ -35,6 +36,16 @@ from theloom.semantic.embed import (
     build_embedding_text,
     compute_content_hash,
     get_embedder,
+)
+from theloom.semantic.ranking import (
+    DEFAULT_RECENCY_HALF_LIFE_DAYS,
+    DEFAULT_RECENCY_MAX_BOOST,
+    apply_mmr,
+    apply_recency_boost,
+    assign_quality_groups,
+    expand_by_graph,
+    fuse_scores,
+    select_seeds,
 )
 from theloom.semantic.search import search_entities
 from theloom.store.falkor import FalkorGraphStore
@@ -515,21 +526,6 @@ def _keyword_scores(
     return matches
 
 
-def _match_source(scores: dict[str, float]) -> str:
-    v, k, g = scores["vector"] > 0, scores["keyword"] > 0, scores["graph"] > 0
-    if v and k and g:
-        return "semantic+keyword+graph"
-    if v and k:
-        return "semantic+keyword"
-    if v and g:
-        return "semantic+graph"
-    if k:
-        return "keyword"
-    if g:
-        return "graph"
-    return "semantic"
-
-
 def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict[str, Any]]:
     store = multi.get_store(params.graph)
     results = _search_similar(
@@ -554,6 +550,10 @@ def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict
 
 
 def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any]:
+    """Fetch, then rank: one vector fetch through the search core, then the
+    pure ranking stages in :mod:`theloom.semantic.ranking` — graph expansion,
+    score fusion, optional recency decay, optional MMR, optional quality
+    grouping — applied in that order."""
     store = multi.get_store(params.graph)
     weights = dict(DEFAULT_WEIGHTS)
     if params.weights is not None:
@@ -565,201 +565,78 @@ def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any
     limit = params.limit or 10
     quality_grouping = params.quality_grouping if params.quality_grouping is not None else True
     strategy = params.grouping_strategy or "similar"
+    query_summary = {
+        "text": params.query,
+        "weights": weights,
+        "graphHops": graph_hops,
+        "qualityGrouping": quality_grouping,
+    }
 
+    # --- fetch ---------------------------------------------------------------
     vector_k = max(limit * 3, 30)
-    vector_results = _search_similar(
+    hits = _search_similar(
         store,
         params.query,
         limit=vector_k,
         min_score=params.min_score,
         entity_types=_as_type_list(params.entity_type),
     )
-    if not vector_results:
-        return {
-            "results": [],
-            "totalCandidates": 0,
-            "qualityGroups": 0,
-            "query": {
-                "text": params.query,
-                "weights": weights,
-                "graphHops": graph_hops,
-                "qualityGrouping": quality_grouping,
-            },
-        }
+    if not hits:
+        return {"results": [], "totalCandidates": 0, "qualityGroups": 0, "query": query_summary}
 
+    vector_rows = [
+        {
+            "entityId": hit["id"],
+            "name": hit["metadata"]["name"],
+            "entityType": hit["metadata"]["entityType"],
+            "entryType": hit["metadata"]["entryType"],
+            "score": hit["score"],
+        }
+        for hit in hits
+    ]
     entities = {e["id"]: e for e in _entity_docs(store)}
-    query_terms = _tokenize(params.query)
-    keyword_matches = _keyword_scores(query_terms, entities, [r["id"] for r in vector_results])
-
-    # Graph expansion: top seeds ranked by vector+keyword blend, 1/hop scores.
-    seed_ranked = sorted(
-        vector_results,
-        key=lambda r: (
-            -(
-                weights["vector"] * float(r["score"])
-                + weights["keyword"] * float(keyword_matches.get(r["id"], {}).get("score", 0))
-            )
-        ),
+    keyword_matches = _keyword_scores(
+        _tokenize(params.query), entities, [row["entityId"] for row in vector_rows]
     )
-    max_seeds = min(5, max(1, math.ceil(len(vector_results) * 0.5)))
-    seed_ids = [r["id"] for r in seed_ranked[:max_seeds]]
-    seed_set = set(seed_ids)
-    graph_results: dict[str, dict[str, Any]] = {}
-    if graph_hops > 0:
-        for seed_id in seed_ids:
-            frontier = [seed_id]
-            for hop in range(1, graph_hops + 1):
-                next_frontier: list[str] = []
-                for node_id in frontier:
-                    neighbors = store.get_neighbors(node_id)[:10]
-                    for neighbor in neighbors:
-                        if neighbor.id in seed_set:
-                            continue
-                        existing = graph_results.get(neighbor.id)
-                        if not existing or existing["hopDistance"] > hop:
-                            graph_results[neighbor.id] = {
-                                "entityId": neighbor.id,
-                                "name": neighbor.name,
-                                "entityType": neighbor.entity_type.value,
-                                "hopDistance": hop,
-                                "expandedFrom": seed_id,
-                                "score": 1.0 / hop,
-                            }
-                        if not existing:
-                            next_frontier.append(neighbor.id)
-                frontier = next_frontier
 
-    result_map: dict[str, dict[str, Any]] = {}
-    for vr in vector_results:
-        km = keyword_matches.get(vr["id"])
-        scores = {
-            "vector": float(vr["score"]),
-            "keyword": float(km["score"]) if km else 0.0,
-            "graph": 0.0,
-        }
-        row: dict[str, Any] = {
-            "entityId": vr["id"],
-            "name": vr["metadata"]["name"],
-            "entityType": vr["metadata"]["entityType"],
-            "score": sum(weights[k] * scores[k] for k in weights),
-            "scores": scores,
-            "matchSource": _match_source(scores),
-            "entryType": vr["metadata"]["entryType"],
-        }
-        if km:
-            row["matchedTerms"] = km["matchedTerms"]
-        result_map[vr["id"]] = row
-    for gr in graph_results.values():
-        existing = result_map.get(gr["entityId"])
-        if existing is None:
-            scores = {"vector": 0.0, "keyword": 0.0, "graph": float(gr["score"])}
-            result_map[gr["entityId"]] = {
-                "entityId": gr["entityId"],
-                "name": gr["name"],
-                "entityType": gr["entityType"],
-                "score": sum(weights[k] * scores[k] for k in weights),
-                "scores": scores,
-                "matchSource": "graph",
-                "hopDistance": gr["hopDistance"],
-                "expandedFrom": gr["expandedFrom"],
-            }
-        else:
-            existing["scores"]["graph"] = max(existing["scores"]["graph"], gr["score"])
-            existing["score"] = sum(weights[k] * existing["scores"][k] for k in weights)
-            existing["matchSource"] = _match_source(existing["scores"])
-            existing["hopDistance"] = gr["hopDistance"]
-            existing["expandedFrom"] = gr["expandedFrom"]
+    def neighbors_of(entity_id: str) -> list[tuple[str, str, str]]:
+        return [(n.id, n.name, n.entity_type.value) for n in store.get_neighbors(entity_id)]
 
-    combined = sorted(result_map.values(), key=lambda r: -float(r["score"]))
+    # --- rank ----------------------------------------------------------------
+    graph_rows = expand_by_graph(
+        select_seeds(vector_rows, keyword_matches, weights), neighbors_of, graph_hops
+    )
+    ranked = fuse_scores(vector_rows, keyword_matches, graph_rows, weights)
 
     if params.recency_boost:
-        import datetime
+        ranked = apply_recency_boost(
+            ranked,
+            {
+                entity_id: entity.get("updated_at") or entity.get("created_at")
+                for entity_id, entity in entities.items()
+            },
+            now_ms=datetime.datetime.now(datetime.UTC).timestamp() * 1000,
+            max_boost=(
+                params.recency_max_boost
+                if params.recency_max_boost is not None
+                else DEFAULT_RECENCY_MAX_BOOST
+            ),
+            half_life_days=params.recency_half_life_days or DEFAULT_RECENCY_HALF_LIFE_DAYS,
+        )
 
-        max_boost = params.recency_max_boost if params.recency_max_boost is not None else 0.15
-        half_life_days = params.recency_half_life_days or 7
-        now_ms = datetime.datetime.now(datetime.UTC).timestamp() * 1000
-        for row in combined:
-            entity = entities.get(row["entityId"])
-            if entity is None:
-                continue
-            timestamp = entity.get("updated_at") or entity.get("created_at")
-            if not timestamp:
-                continue
-            parsed = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            age_ms = max(0.0, now_ms - parsed.timestamp() * 1000)
-            half_life_ms = max(1.0, half_life_days * 86_400_000)
-            decay = math.exp(-age_ms * math.log(2) / half_life_ms)
-            row["score"] *= 1 + max_boost * decay
-        combined.sort(key=lambda r: -float(r["score"]))
+    if params.mmr_lambda is not None:
+        ranked = apply_mmr(ranked, params.mmr_lambda, limit)
 
-    if params.mmr_lambda is not None and len(combined) > 1:
-        lam = params.mmr_lambda
-        token_sets = [
-            set(t for t in re.split(r"\W+", f"{r['name']} {r['entityType']}".lower()) if t)
-            for r in combined
-        ]
-        max_score = float(combined[0]["score"])
-        normalized = [(float(r["score"]) / max_score if max_score > 0 else 0.0) for r in combined]
-        selected = [0]
-        remaining = list(range(1, len(combined)))
-        count = min(limit, len(combined))
-        while len(selected) < count and remaining:
-            best_index, best_mmr = remaining[0], -math.inf
-            for index in remaining:
-                max_sim = 0.0
-                for sel in selected:
-                    a, b = token_sets[index], token_sets[sel]
-                    union = len(a | b)
-                    sim = (len(a & b) / union) if union else 0.0
-                    max_sim = max(max_sim, sim)
-                mmr = lam * normalized[index] - (1 - lam) * max_sim
-                if mmr > best_mmr:
-                    best_index, best_mmr = index, mmr
-            selected.append(best_index)
-            remaining.remove(best_index)
-        combined = [combined[i] for i in selected]
-
-    truncated = combined[:limit]
-
+    results = ranked[:limit]
     quality_groups = 0
-    if quality_grouping and truncated:
-        multiplier = 1.5 if strategy == "similar" else 1.0
-        ordered = sorted(truncated, key=lambda r: -float(r["score"]))
-        if len(ordered) == 1:
-            ordered[0]["qualityGroup"] = 1
-            groups = [[ordered[0]]]
-        else:
-            gaps = [
-                float(ordered[i]["score"]) - float(ordered[i + 1]["score"])
-                for i in range(len(ordered) - 1)
-            ]
-            mean_gap = sum(gaps) / len(gaps)
-            threshold = max(mean_gap * 1.5 * multiplier, 0.05)
-            groups = []
-            current: list[dict[str, Any]] = []
-            for i, row in enumerate(ordered):
-                current.append(row)
-                if i < len(gaps) and gaps[i] > threshold:
-                    groups.append(current)
-                    current = []
-            if current:
-                groups.append(current)
-            for number, group in enumerate(groups, start=1):
-                for row in group:
-                    row["qualityGroup"] = number
-        truncated = [row for group in groups for row in group]
-        quality_groups = len(groups)
+    if quality_grouping and results:
+        results, quality_groups = assign_quality_groups(results, strategy)
 
     return {
-        "results": truncated,
-        "totalCandidates": len(vector_results) + len(graph_results),
+        "results": results,
+        "totalCandidates": len(vector_rows) + len(graph_rows),
         "qualityGroups": quality_groups,
-        "query": {
-            "text": params.query,
-            "weights": weights,
-            "graphHops": graph_hops,
-            "qualityGrouping": quality_grouping,
-        },
+        "query": query_summary,
     }
 
 

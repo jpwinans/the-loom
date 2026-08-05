@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from theloom.model import EntityCreate
+from theloom.model import EntityCreate, RelationCreate
+from theloom.operations.semantic import HybridSearchInput, hybrid_search
 from theloom.semantic.search import search_entities
 from theloom.store.multigraph import MultiGraph
 
@@ -105,3 +106,68 @@ def test_search_reports_the_raw_cosine_alongside_the_l2_score(multi: MultiGraph)
 
     assert hits[0]["cosine"] == pytest.approx(0.6, rel=1e-6)
     assert hits[0]["score"] == pytest.approx(0.5278640450004206, rel=1e-6)
+
+
+# =============================================================================
+# hybrid-search end to end: fetch through the core, then the ranking stages
+# =============================================================================
+
+
+def test_hybrid_search_fuses_vector_keyword_and_graph_signals(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One worked example through the whole command.
+
+    Vector: 'alpha signal' at cosine 1.0 scores 1.0, 'beta noise' at cosine 0.6
+    scores 1/(1+sqrt(0.8)) = 0.527864. Keyword: the query term 'alpha' matches
+    1 of 1 term in 'alpha signal' only. Seeds: ceil(2*0.5) = 1, so only
+    'alpha signal' expands, reaching 'gamma neighbour' at hop 1 (graph 1.0).
+    Fused at 0.6/0.25/0.15: 0.6+0.25 = 0.85, 0.6*0.527864 = 0.316718, 0.15.
+    Gaps 0.5333/0.1667 average 0.35, so the 'similar' threshold is 0.7875 and
+    nothing splits: one quality group holding all three.
+    """
+    store = multi.get_store()
+    ids = _seed(multi, {"alpha signal": [1.0, 0.0], "beta noise": [0.6, 0.8]})
+    gamma = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "gamma neighbour", "entityType": "concept", "observations": []}
+        )
+    )
+    store.create_relation(
+        RelationCreate.model_validate(
+            {"from": ids["alpha signal"], "to": gamma.id, "relationType": "related_to"}
+        )
+    )
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: _FixedEmbedder([1.0, 0.0])
+    )
+
+    result = hybrid_search(HybridSearchInput.model_validate({"query": "alpha"}), multi)
+
+    assert [row["name"] for row in result["results"]] == [
+        "alpha signal",
+        "beta noise",
+        "gamma neighbour",
+    ]
+    assert [row["score"] for row in result["results"]] == [
+        pytest.approx(0.85, rel=1e-6),
+        pytest.approx(0.31671842700025236, rel=1e-6),
+        pytest.approx(0.15),
+    ]
+    assert [row["matchSource"] for row in result["results"]] == [
+        "semantic+keyword",
+        "semantic",
+        "graph",
+    ]
+    assert result["results"][0]["matchedTerms"] == ["alpha"]
+    assert result["results"][2]["hopDistance"] == 1
+    assert result["results"][2]["expandedFrom"] == ids["alpha signal"]
+    assert {row["qualityGroup"] for row in result["results"]} == {1}
+    assert result["qualityGroups"] == 1
+    assert result["totalCandidates"] == 3
+    assert result["query"] == {
+        "text": "alpha",
+        "weights": {"vector": 0.6, "keyword": 0.25, "graph": 0.15},
+        "graphHops": 1,
+        "qualityGrouping": True,
+    }
