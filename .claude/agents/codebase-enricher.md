@@ -43,10 +43,14 @@ an unenriched group is a blank page in the walkthrough.
 Run this step regardless of MODE — a repeated `--full` run must not duplicate the
 semantic layer. Re-maps never overwrite history — supersession keeps the old reading
 queryable so `session-changelog` can answer "how did the architecture change since
-<date>". For each of `concept`, `pattern`, `claim`, `tension`:
+<date>". Filter server-side instead of fetching every entity of a type and scanning
+client-side — `query` matches observation text, so this narrows to roughly this
+group's entities instead of the whole graph's semantic layer (measured: 32x overfetch
+doing it the old way, ~1,100 entities into context when ~35 would do). For each of
+`concept`, `pattern`, `claim`, `tension`:
 
 ```bash
-loom list-entities '{"entityType": "<type>", "graph": "GRAPH_NAME"}'
+loom list-entities '{"entityType": "<type>", "query": "module_group: <GROUP.id>", "compact": true, "limit": 200, "graph": "GRAPH_NAME"}'
 ```
 
 Keep entities whose observations include BOTH `map_layer: semantic` and
@@ -73,7 +77,7 @@ files.
 Semantic entities must link to real structural entities, not names. Per file:
 
 ```bash
-loom list-entities '{"query": "<file path>", "entityType": "system", "graph": "GRAPH_NAME"}'
+loom list-entities '{"query": "<file path>", "entityType": "system", "compact": true, "limit": 20, "graph": "GRAPH_NAME"}'
 ```
 
 Collect the `system` entity id for each file (these are the link targets).
@@ -108,12 +112,10 @@ from step 4 — never placeholder ids):
 loom create-relation '{"from": "<semantic_entity_id>", "to": "<system_entity_id>", "relationType": "related_to", "polarity": null, "strength": "moderate", "evidence": "<one line: why this file grounds the entity>", "graph": "GRAPH_NAME"}'
 ```
 
-Then (`embed-entities` can take several minutes on a first run — one-time embedder
-model download plus one embedding per entity — run it with a long Bash timeout
-(600000 ms), never the default):
+Then verify (no `embed-entities` call here — the workflow embeds once, after every
+group has enriched, not per group):
 
 ```bash
-loom embed-entities '{"graph": "GRAPH_NAME"}'
 loom read-entity '{"id": "<entity_id>", "graph": "GRAPH_NAME"}'   # per created entity
 ```
 
