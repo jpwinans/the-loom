@@ -22,7 +22,7 @@ from typing import Any
 from falkordb import FalkorDB
 from redis import Redis
 
-from theloom.documents.chunkstore import ChunkStore
+from theloom.documents.chunkstore import CHUNK_GRAPH_SUFFIX, ChunkStore
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.extraction.runstore import RunStore
 from theloom.model import RelationCreate
@@ -188,7 +188,11 @@ class MultiGraph:
 
     def chunk_store(self) -> ChunkStore:
         """The global document-chunk store (not graph-scoped)."""
-        return ChunkStore(self._db, self._prefix)
+        return ChunkStore(self._db, self._prefix, self._redis)
+
+    def chunk_event_log(self) -> EventLog:
+        """The append-only stream of document-chunk writes (not graph-scoped)."""
+        return EventLog(self._redis, CHUNK_GRAPH_SUFFIX, self._prefix)
 
     def run_store(self) -> RunStore:
         """The extraction-run store (event-log-backed)."""

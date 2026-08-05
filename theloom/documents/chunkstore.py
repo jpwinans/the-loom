@@ -6,6 +6,19 @@ NOT inside any knowledge graph: documents are global across graphs, so
 ingest/list/delete take no graph param. Each node carries the verbatim metadata
 doc in ``_doc`` and an optional ``_embedding`` (vecf32) so analyze-category can
 cluster. Row order follows ``id(n)`` (insertion order).
+
+Chunk writes are event-sourced like every other mutation: each one is a single
+Cypher statement plus its event append, committed as one MULTI/EXEC unit
+through ``theloom.store.commit`` (see that module for the exact guarantee and
+the compensation in each direction). The events land in their own stream —
+``{prefix}:_chunks:events``, keyed by the same reserved name as the chunk graph
+— because chunks are not graph-scoped, so document history replays independently
+of any knowledge graph's log. Events: ``chunk_created`` per upserted chunk,
+``chunk_deleted`` per removed chunk, ``chunks_deleted`` for a whole document.
+Payloads carry ids (chunk, source) and the ingestion coordinates, not the chunk
+text — the chunk row is the store of record for content.
+
+Reads never touch the log.
 """
 
 from __future__ import annotations
@@ -15,16 +28,29 @@ import json
 from typing import Any
 
 from falkordb import FalkorDB
+from redis import Redis
 
+from theloom.store.commit import commit_steps
+from theloom.store.events import EventLog
 from theloom.store.paging import fetch_all_rows
 
 Doc = dict[str, Any]
 CHUNK_GRAPH_SUFFIX = "_chunks"
 
+# Ceiling on the ids gathered for a document-wide delete event. Documents are
+# chunked, not unbounded, and the paged read below keeps the server's
+# RESULTSET_SIZE cap from silently shortening the list.
+_MAX_CHUNKS_PER_DOCUMENT = 100_000
+
 
 class ChunkStore:
-    def __init__(self, db: FalkorDB, key_prefix: str = "loom") -> None:
+    def __init__(self, db: FalkorDB, key_prefix: str = "loom", redis: Redis | None = None) -> None:
         self._graph = db.select_graph(f"{key_prefix}:graph:{CHUNK_GRAPH_SUFFIX}")
+        # FalkorDB *is* the Redis server, so the chunk write and its event
+        # append are two commands on one connection; default to the client the
+        # graph handle already speaks through.
+        self._redis: Redis = redis if redis is not None else db.connection
+        self.events = EventLog(self._redis, CHUNK_GRAPH_SUFFIX, key_prefix)
 
     def _query(self, cypher: str, params: Doc | None = None) -> Any:
         return self._graph.query(cypher, params or {})
@@ -32,6 +58,14 @@ class ChunkStore:
     def _rows(self, cypher: str, params: Doc | None = None) -> list[list[Any]]:
         result = self._query(cypher, params)
         return result.result_set or []
+
+    def _commit(
+        self,
+        step: tuple[str, dict[str, Any]],
+        events: list[tuple[str, dict[str, Any]]],
+    ) -> None:
+        """One Cypher statement plus its events, as one transaction."""
+        commit_steps(self._redis, self._graph, self.events, [step], events)
 
     def ensure_vector_index(self, dimension: int = 768) -> None:
         with contextlib.suppress(Exception):
@@ -41,23 +75,22 @@ class ChunkStore:
             )
 
     def upsert_chunk(self, chunk_id: str, metadata: Doc, vector: list[float] | None) -> None:
-        """Insert-or-replace a chunk row keyed by chunk id."""
+        """Insert-or-replace a chunk row keyed by chunk id, and log it."""
+        params: Doc = {
+            "id": chunk_id,
+            "doc": json.dumps(metadata),
+            "sid": metadata.get("sourceId", ""),
+        }
         if vector is None:
-            self._query(
-                "MERGE (c:_Chunk {id: $id}) SET c._doc = $doc, c.sourceId = $sid",
-                {"id": chunk_id, "doc": json.dumps(metadata), "sid": metadata.get("sourceId", "")},
-            )
+            cypher = "MERGE (c:_Chunk {id: $id}) SET c._doc = $doc, c.sourceId = $sid"
         else:
-            self._query(
+            cypher = (
                 "MERGE (c:_Chunk {id: $id}) "
-                "SET c._doc = $doc, c.sourceId = $sid, c._embedding = vecf32($vec)",
-                {
-                    "id": chunk_id,
-                    "doc": json.dumps(metadata),
-                    "sid": metadata.get("sourceId", ""),
-                    "vec": vector,
-                },
+                "SET c._doc = $doc, c.sourceId = $sid, c._embedding = vecf32($vec)"
             )
+            params["vec"] = vector
+        event = _chunk_event(chunk_id, metadata, vector)
+        self._commit((cypher, params), [("chunk_created", event)])
 
     def query_chunks(
         self, *, category: str | None = None, source_id: str | None = None, limit: int = 1000
@@ -99,15 +132,53 @@ class ChunkStore:
         return result
 
     def delete_where_source(self, source_id: str) -> int:
-        rows = self._rows("MATCH (c:_Chunk {sourceId: $sid}) RETURN count(c)", {"sid": source_id})
-        count = int(rows[0][0]) if rows else 0
-        if count:
-            self._query("MATCH (c:_Chunk {sourceId: $sid}) DELETE c", {"sid": source_id})
-        return count
+        """Delete every chunk of one document; returns how many went."""
+        rows = fetch_all_rows(
+            self._rows,
+            "MATCH (c:_Chunk {sourceId: $sid}) RETURN c.id ORDER BY id(c)",
+            {"sid": source_id},
+            limit=_MAX_CHUNKS_PER_DOCUMENT,
+        )
+        chunk_ids = [str(row[0]) for row in rows]
+        if not chunk_ids:
+            return 0
+        self._commit(
+            ("MATCH (c:_Chunk {sourceId: $sid}) DELETE c", {"sid": source_id}),
+            [
+                (
+                    "chunks_deleted",
+                    {"sourceId": source_id, "chunkIds": chunk_ids, "count": len(chunk_ids)},
+                )
+            ],
+        )
+        return len(chunk_ids)
 
     def delete_chunk(self, chunk_id: str) -> None:
-        self._query("MATCH (c:_Chunk {id: $id}) DELETE c", {"id": chunk_id})
+        self._commit(
+            ("MATCH (c:_Chunk {id: $id}) DELETE c", {"id": chunk_id}),
+            [("chunk_deleted", {"chunkId": chunk_id})],
+        )
 
     def wipe(self) -> None:
+        """Drop every chunk and its history (reseeding / migration path)."""
         with contextlib.suppress(Exception):
             self._query("MATCH (c:_Chunk) DELETE c")
+        with contextlib.suppress(Exception):
+            self.events.delete()
+
+
+def _chunk_event(chunk_id: str, metadata: Doc, vector: list[float] | None) -> Doc:
+    """The ``chunk_created`` payload: who the chunk is and where it came from.
+
+    Deliberately not the chunk text — the log records that the write happened
+    and against which document, and the chunk row holds the content.
+    """
+    payload: Doc = {
+        "chunkId": chunk_id,
+        "sourceId": metadata.get("sourceId", ""),
+        "embedded": vector is not None,
+    }
+    for field in ("sourceName", "sourceFormat", "chunkIndex", "contentHash", "category"):
+        if metadata.get(field) is not None:
+            payload[field] = metadata[field]
+    return payload

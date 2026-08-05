@@ -50,7 +50,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from falkordb import FalkorDB
-from falkordb.query_result import QueryResult
 from redis import Redis
 
 from theloom.errors import NotFoundError, OperationError, ValidationError
@@ -67,6 +66,7 @@ from theloom.model import (
     is_valid_transition,
 )
 from theloom.store.base import Direction, GraphStore
+from theloom.store.commit import commit_steps
 from theloom.store.events import EventLog
 from theloom.store.filters import (
     apply_entity_filters,
@@ -193,17 +193,6 @@ def _relation_version_rows(docs: Sequence[Mapping[str, Any]], now: str) -> list[
     ]
 
 
-def _is_error(response: Any) -> bool:
-    """Redis returns per-command errors as exception *values* inside a
-    transaction's reply list (``raise_on_error=False``)."""
-    return isinstance(response, Exception)
-
-
-def _stream_id(response: Any) -> str:
-    """An XADD reply, decoded (the connection may or may not decode for us)."""
-    return response if isinstance(response, str) else str(response.decode())
-
-
 def _transition_error(from_status: str | None, to_status: str) -> str:
     """Lifecycle transition error message, code-classified VALIDATION_ERROR."""
     effective = from_status or "active"
@@ -243,41 +232,9 @@ class FalkorGraphStore(GraphStore):
         leave the first one applied. See ``_commit_steps`` for the one place
         that genuinely needs several statements, and what it owes in return.
 
-        FalkorDB is a Redis module, so ``GRAPH.QUERY`` and ``XADD`` are two
-        commands on one connection: both are queued into a single MULTI/EXEC
-        transaction and dispatched in one round trip. Precisely:
-
-        - Nothing reaches the server until ``EXEC``. Any failure while the
-          transaction is being built — serializing a payload, an injected
-          fault, the process dying — leaves the graph and the log both
-          untouched. This is the hole the old write-then-append order had: a
-          crash after the query lost the event forever.
-        - Redis runs the queued commands with no other client interleaved, and
-          the client cannot die between them.
-        - A command Redis rejects while *queueing* it (unknown command, bad
-          arity, out of memory) aborts the whole transaction: ``EXEC`` runs
-          nothing and ``execute`` raises. Both halves stay untouched.
-        - Redis has no rollback, so a command rejected at *run* time still
-          leaves its neighbour applied — and exactly one of the two halves can
-          be the casualty, each compensated in the only direction its
-          semantics allow:
-
-          * the Cypher failed (a malformed query — a bug, since every domain
-            precondition is checked in Python first): the query applied
-            nothing, so the ``XADD`` that ran beside it is unearned and is
-            deleted by id before the error propagates. No trace in either
-            place.
-          * the ``XADD`` failed: the mutation is applied and there is no
-            inverse statement to take it back with, so the event it earned is
-            true and is appended again outside the transaction (see
-            ``_repair_log``). The caller sees success. If that retry fails too
-            the log gap is permanent, and the caller gets an
-            OPERATION_ERROR naming the missing events instead of silence.
-
-        The one thing this does *not* promise: a repaired event is appended
-        after the ``EXEC``, so a concurrent writer can slip an entry in front
-        of it. Events stay ordered within a mutation, but a repaired one may
-        sit later in the stream than a mutation that really followed it.
+        The transaction mechanism and its exact failure semantics — including
+        which half is compensated in which direction — live in
+        ``theloom.store.commit``; the chunk store shares them.
 
         Returns ``(query results, appended event ids)``; the ids let a caller
         that only learns the mutation was wrong *after* ``EXEC`` (see
@@ -301,63 +258,8 @@ class FalkorGraphStore(GraphStore):
         checking every endpoint before committing and by deleting the edges it
         did create if the reply still disagrees.
         """
-        with self._redis.pipeline(transaction=True) as pipe:
-            for cypher, params in steps:
-                # The client's own parameter encoder, then the same command
-                # Graph.query() would have issued — buffered instead of sent.
-                pipe.execute_command(  # type: ignore[no-untyped-call]
-                    "GRAPH.QUERY",
-                    self._graph.name,
-                    self._graph._build_params_header(params) + cypher,
-                    "--compact",
-                )
-            for event_type, payload in events:
-                self._events.queue(pipe, event_type, payload)
-            responses: list[Any] = pipe.execute(raise_on_error=False)
-
-        query_responses, event_responses = responses[: len(steps)], responses[len(steps) :]
-        event_ids = [_stream_id(entry) for entry in event_responses if not _is_error(entry)]
-        query_failure = next((r for r in query_responses if _is_error(r)), None)
-        if query_failure is not None:
-            # The mutation did not happen, so its events are not earned.
-            self._events.discard(event_ids)
-            raise query_failure
-        unlogged = [
-            event
-            for event, response in zip(events, event_responses, strict=True)
-            if _is_error(response)
-        ]
-        if unlogged:
-            # The mutation did happen and cannot be undone, so the events it
-            # earned are true; append the ones that errored again.
-            event_ids.extend(self._repair_log(unlogged))
-        return [QueryResult(self._graph, response) for response in query_responses], event_ids
-
-    def _repair_log(self, unlogged: Sequence[tuple[str, dict[str, Any]]]) -> list[str]:
-        """Re-append the events of a committed mutation whose XADD errored.
-
-        Only reachable for a *runtime* rejection of the append: a queue-time
-        rejection (unknown command, bad arity, out of memory) makes Redis
-        abort the whole transaction, so neither half runs and ``execute``
-        raises before any of this. A runtime one — the stream key holding a
-        non-stream value, a server-side refusal of the write — comes back as
-        an error value beside a ``GRAPH.QUERY`` that has already applied, and
-        Redis has no rollback to take it back with.
-
-        So compensation runs towards the log, not away from it. If the retry
-        also fails the gap is real and permanent; it is named in a typed
-        OPERATION_ERROR (with the raw Redis failure chained) rather than left
-        for a replay to discover as missing history.
-        """
-        try:
-            return self._events.repair(unlogged)
-        except Exception as exc:
-            types = ", ".join(event_type for event_type, _ in unlogged)
-            raise OperationError(
-                "Mutation committed but the event log could not be repaired: "
-                f"{len(unlogged)} event(s) ({types}) are missing from the log and "
-                f"cannot be re-appended: {exc}"
-            ) from exc
+        results, event_ids = commit_steps(self._redis, self._graph, self._events, steps, events)
+        return list(results), event_ids
 
     # -- query helpers ----------------------------------------------------------
 

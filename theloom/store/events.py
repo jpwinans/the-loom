@@ -4,11 +4,13 @@ Stream key: ``{prefix}:{graph}:events``. Every store mutation appends an event
 (entity_created/updated/status_changed/deleted, relation_created/updated/
 deleted) whose payload carries the full document(s) involved, so history is
 replayable and "session changelog"-class queries read the log rather than
-trusting mutable pointers.
+trusting mutable pointers. Document chunks are global rather than graph-scoped,
+so they log to the reserved name ``_chunks`` (chunk_created / chunk_deleted /
+chunks_deleted — see ``theloom.documents.chunkstore``).
 
 Atomicity: FalkorDB *is* the Redis server, so the graph mutation and the
 stream append are two commands against one connection and go out together in a
-single MULTI/EXEC transaction (see ``FalkorGraphStore._commit``). ``queue``
+single MULTI/EXEC transaction (see ``theloom.store.commit``). ``queue``
 buffers an append onto that transaction, and the two commands compensate each
 other in whichever direction the failure runs — Redis executes every queued
 command regardless of its neighbours, so exactly one half can fail at EXEC:
