@@ -52,7 +52,7 @@ import re
 import subprocess
 from typing import Any
 
-from theloom.extraction import doclinks, resolution
+from theloom.extraction import doclinks, encoding, resolution
 
 Doc = dict[str, Any]
 
@@ -887,14 +887,18 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
     relations: list[Doc] = []
     entity_names: set[str] = set()
 
-    file_entity_name = f"file:{file_path}"
-    entity_names.add(file_entity_name)
-    file_observations = [f"File path: {file_path}", f"Language: {lang}", "Symbol kind: File"]
+    file_entity_key = encoding.file_entity_name(file_path)
+    entity_names.add(file_entity_key)
+    file_observations = [
+        encoding.file_path_observation(file_path),
+        f"Language: {lang}",
+        encoding.symbol_kind_observation("File"),
+    ]
     module_docstring = extraction.get("moduleDocstring")
     if module_docstring:
         file_observations.append(f"docstring: {module_docstring}")
     file_entity = {
-        "name": file_entity_name,
+        "name": file_entity_key,
         "entityType": "system",
         "observations": file_observations,
         "provenance": _provenance(file_path, 0),
@@ -918,9 +922,9 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
             symbol_name_map[sym["name"]] = entity_name
 
         observations = [
-            f"File path: {file_path}",
-            f"Line range: {sym['startLine'] + 1}-{sym['endLine'] + 1}",
-            f"Symbol kind: {sym['kind']}",
+            encoding.file_path_observation(file_path),
+            encoding.line_range_observation(sym["startLine"], sym["endLine"]),
+            encoding.symbol_kind_observation(sym["kind"]),
         ]
         if sym.get("signature"):
             observations.append(f"signature: {sym['signature']}")
@@ -938,7 +942,7 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
         relations.append(
             {
                 "from": entity_name,
-                "to": file_entity_name,
+                "to": file_entity_key,
                 "relationType": "part_of",
                 "polarity": None,
                 "strength": "strong",
@@ -993,7 +997,7 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
                     "relationType": "calls",
                     "polarity": None,
                     "strength": "moderate",
-                    "evidence": resolution.call_evidence(
+                    "evidence": encoding.call_evidence(
                         caller_name, call["callee"], file_path, call["line"]
                     ),
                 }
@@ -1113,9 +1117,13 @@ def _text_file_entity(path: str, kind: str) -> Doc:
     was obtained.
     """
     return {
-        "name": f"file:{path}",
+        "name": encoding.file_entity_name(path),
         "entityType": "system",
-        "observations": [f"File path: {path}", f"Language: {kind}", "Symbol kind: File"],
+        "observations": [
+            encoding.file_path_observation(path),
+            f"Language: {kind}",
+            encoding.symbol_kind_observation("File"),
+        ],
         "provenance": {
             "sourceType": "observation",
             "sourceId": None,

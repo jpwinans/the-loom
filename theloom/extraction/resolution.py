@@ -28,7 +28,15 @@ import os
 import posixpath
 from typing import Any
 
+from theloom.extraction.encoding import call_evidence, file_entity_name, symbol_kind_observation
+
 Doc = dict[str, Any]
+
+# ``call_evidence`` and ``file_entity_name`` used to be defined here; they now
+# live in ``theloom.extraction.encoding`` (the one place the codebase-graph
+# encoding is built and parsed) and are imported back in so existing importers
+# (``from theloom.extraction.resolution import file_entity_name``, used by
+# ``theloom.extraction.doclinks``) keep working unchanged.
 
 # Suffix probes for a module specifier that omits its extension, in the order a
 # bundler would try them. ``/index`` forms come last so ``./x.ts`` wins over
@@ -129,19 +137,6 @@ BUILTIN_NAMES = frozenset(
 )
 
 
-def call_evidence(caller: str, callee: str, path: str, line: int) -> str:
-    """Evidence for a call edge, anchored at the **call site**.
-
-    One fixed, parseable format for every call edge, whichever pass emitted it:
-    ``<caller> calls <callee> at <file>:<line>``. ``line`` is 0-based (the
-    tree-sitter convention the extractor carries) and renders 1-based. The site
-    is where the call is written, not where the callee is defined — following
-    an edge means reading the caller. How the target was established is carried
-    by ``confidence.basis``, not by prose, so the format stays fixed.
-    """
-    return f"{caller} calls {callee} at {path}:{line + 1}"
-
-
 # Where a repository keeps its tests, across the conventions the supported
 # languages use: a marked file name (``x.test.ts``, ``test_x.py``, ``x_test.go``)
 # or a directory set aside for them.
@@ -168,11 +163,6 @@ def is_test_path(path: str) -> bool:
         return True
     stem = segments[-1].rsplit(".", 1)[0]
     return stem == "conftest" or stem.startswith("test_") or stem.endswith("_test")
-
-
-def file_entity_name(path: str) -> str:
-    """The entity name the extractor gives a file."""
-    return f"file:{path}"
 
 
 def external_entity_name(package: str) -> str:
@@ -321,7 +311,7 @@ def resolve_imports(
                             "entityType": "system",
                             "observations": [
                                 f"Package: {package}",
-                                "Symbol kind: ExternalPackage",
+                                symbol_kind_observation("ExternalPackage"),
                                 "Dependency: third-party (not a file in this project)",
                             ],
                             "provenance": {
