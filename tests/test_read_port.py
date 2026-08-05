@@ -416,9 +416,7 @@ def test_list_entities_sourced_from_keeps_only_entities_sourcing_the_target(
     harness.entity("Unsourced")
     harness.relation(claim.id, paper.id, relationType="sources")
 
-    listed = harness.reader.list_entities(
-        EntityFilter.model_validate({"sourcedFrom": [paper.id]})
-    )
+    listed = harness.reader.list_entities(EntityFilter.model_validate({"sourcedFrom": [paper.id]}))
 
     assert [e.name for e in listed] == ["Overshoot"]
 
@@ -429,9 +427,37 @@ def test_list_entities_exclude_sourced_from_wins_over_sourced_from(harness: Harn
     harness.relation(claim.id, paper.id, relationType="sources")
 
     listed = harness.reader.list_entities(
-        EntityFilter.model_validate(
-            {"sourcedFrom": [paper.id], "excludeSourcedFrom": [paper.id]}
-        )
+        EntityFilter.model_validate({"sourcedFrom": [paper.id], "excludeSourcedFrom": [paper.id]})
     )
 
     assert listed == []
+
+
+# =============================================================================
+# The fake as a test helper
+# =============================================================================
+
+
+def test_both_adapters_are_recognised_as_read_ports(harness: Harness) -> None:
+    assert isinstance(harness.reader, GraphReadPort)
+
+
+def test_the_fake_is_reachable_from_the_shared_test_helpers() -> None:
+    """Later work must be able to unit-test against the port without docker."""
+    from tests.fakes import seeded_memory_store
+
+    store = seeded_memory_store(
+        entities=[spec("Delay"), spec("Feedback Loop")],
+        relations=[(0, 1, "causes")],
+    )
+
+    listed = store.list_entities()
+    assert [e.name for e in listed] == ["Delay", "Feedback Loop"]
+    edge = store.read_relation(listed[0].id, listed[1].id)
+    assert edge is not None
+    assert edge.relation_type.value == "causes"
+
+
+def test_the_memory_store_fixture_is_a_read_port(memory_store: GraphReadPort) -> None:
+    assert isinstance(memory_store, GraphReadPort)
+    assert memory_store.list_entities() == []

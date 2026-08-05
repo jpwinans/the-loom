@@ -12,6 +12,7 @@ from falkordb import FalkorDB
 from redis import Redis
 
 from theloom.config import LoomConfig, load_config
+from theloom.store.memory import InMemoryGraphStore
 from theloom.store.multigraph import MultiGraph
 
 
@@ -47,6 +48,15 @@ def namespace(db: FalkorDB, redis_client: Redis) -> Iterator[str]:
 @pytest.fixture()
 def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
     return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
+
+
+@pytest.fixture()
+def memory_store() -> InMemoryGraphStore:
+    """An empty in-memory adapter for ``GraphReadPort`` — no docker involved.
+
+    Reach for this (or ``tests.fakes.seeded_memory_store``) whenever the code
+    under test only reads the graph."""
+    return InMemoryGraphStore()
 
 
 @pytest.fixture()
