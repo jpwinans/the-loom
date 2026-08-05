@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from theloom.composites.framework import SectionResult, failed_section, time_section
+from theloom.semantic.embed import cosine_similarity
 
 # Maximum entities per region before sampling (O(n^2) pairwise cost).
 MAX_ENTITIES_PER_REGION = 500
@@ -50,11 +51,6 @@ class CoverageGapResult:
     """Coverage gap score normalized to [0, 1]."""
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Cosine similarity for L2-normalized vectors == dot product."""
-    return sum(x * y for x, y in zip(a, b, strict=False))
-
-
 def _avg_pairwise_distance(vectors: list[list[float]]) -> float:
     """Average pairwise cosine distance within a set of vectors (0 if < 2)."""
     if len(vectors) < 2:
@@ -63,7 +59,7 @@ def _avg_pairwise_distance(vectors: list[list[float]]) -> float:
     pair_count = 0
     for i in range(len(vectors)):
         for j in range(i + 1, len(vectors)):
-            total_distance += 1 - _cosine_similarity(vectors[i], vectors[j])
+            total_distance += 1 - cosine_similarity(vectors[i], vectors[j])
             pair_count += 1
     return total_distance / pair_count if pair_count > 0 else 0.0
 
@@ -78,7 +74,7 @@ def _avg_external_distance(
     pair_count = 0
     for internal in internal_vectors:
         for external in external_vectors:
-            total_distance += 1 - _cosine_similarity(internal, external)
+            total_distance += 1 - cosine_similarity(internal, external)
             pair_count += 1
     return total_distance / pair_count if pair_count > 0 else 0.0
 

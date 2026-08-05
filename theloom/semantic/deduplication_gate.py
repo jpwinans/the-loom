@@ -4,17 +4,21 @@ Semantic similarity check against existing entities before proposing new ones,
 in three modes: ``reject`` (default, drop near-duplicates), ``flag`` (keep but
 annotate) and ``merge`` (combine observations with the existing entity).
 
-The gate compares the proposal's embedding against the entity vectors held by
-the store (``store.get_entity_vectors()``) using cosine similarity, restricted
-to existing entities of the same type. When no embedding manager is supplied
-(or the store holds no vectors) it falls back to case-insensitive name
-matching, so the pipeline never crashes.
+The gate asks the shared search core (:mod:`theloom.semantic.search`) for the
+proposal embedding's nearest neighbours of the same entity type, and thresholds
+them on **cosine** — the scale this gate's threshold has always been stated on,
+which the core carries alongside its own 1/(1+L2) score. Unlike every other
+search it compares against entities of *every* status: a proposal that
+duplicates a superseded entity is still a duplicate. When no embedding manager
+is supplied (or the store holds no vectors) it falls back to case-insensitive
+name matching, so the pipeline never crashes.
 """
 
 from __future__ import annotations
 
-import math
 from typing import Any
+
+from theloom.semantic.search import EntityMeta, l2_similarity, search_by_vector
 
 Doc = dict[str, Any]
 
@@ -38,21 +42,6 @@ def _list_entity_docs(store: Any) -> list[Doc]:
 
     result = store.list_entities(EntityFilter.model_validate({"statusFilter": _ALL_STATUSES}))
     return [_to_doc(e) for e in result]
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    if len(a) != len(b) or len(a) == 0:
-        return 0.0
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    for x, y in zip(a, b, strict=False):
-        dot += x * y
-        norm_a += x * x
-        norm_b += y * y
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
 def _embed_text(embedding_manager: Any, text: str) -> list[float]:
@@ -105,11 +94,16 @@ def deduplicate_proposals(
     # No embedding manager (or no stored vectors): fall back to name matching.
     if embedding_manager is None:
         return _name_based_deduplication(proposals, store, threshold, mode)
-    vectors: dict[str, list[float]] = store.get_entity_vectors()
-    if not vectors:
+    if not store.has_entity_vectors():
         return _name_based_deduplication(proposals, store, threshold, mode)
 
     meta = {e["id"]: e for e in _list_entity_docs(store)}
+    # The gate already holds every entity doc, so the search core resolves
+    # candidate metadata from this map instead of point-reading each hit.
+    resolve_meta = {
+        entity_id: EntityMeta(name=doc["name"], entity_type=doc["entityType"], active=True)
+        for entity_id, doc in meta.items()
+    }
 
     accepted: list[Doc] = []
     rejected: list[Doc] = []
@@ -120,27 +114,29 @@ def deduplicate_proposals(
         embedding = _embed_text(embedding_manager, text)
         proposal_type = proposal["entity"]["entityType"]
 
-        candidates: list[tuple[float, str, Doc]] = []
-        for entity_id, vector in vectors.items():
-            existing = meta.get(entity_id)
-            if existing is None or existing["entityType"] != proposal_type:
-                continue
-            score = _cosine_similarity(embedding, vector)
-            if score >= threshold:
-                candidates.append((score, entity_id, existing))
+        hits = search_by_vector(
+            store,
+            embedding,
+            max_candidates,
+            min_score=l2_similarity(threshold),
+            entity_types=[proposal_type],
+            require_active=False,
+            resolve_meta=resolve_meta.get,
+        )
+        candidates = [hit for hit in hits if hit["cosine"] >= threshold]
 
         if not candidates:
             accepted.append({**proposal, "isDuplicate": False})
             continue
 
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        best_score, best_id, best_meta = candidates[:max_candidates][0]
+        best = candidates[0]
+        best_meta = meta[best["id"]]
         match: Doc = {
             "proposalName": proposal["entity"]["name"],
-            "existingEntityId": best_id,
+            "existingEntityId": best["id"],
             "existingEntityName": best_meta["name"],
             "existingEntityType": best_meta["entityType"],
-            "similarity": best_score,
+            "similarity": best["cosine"],
         }
         matches.append(match)
 
