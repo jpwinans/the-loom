@@ -150,13 +150,17 @@ def _search_similar(
     other default read applies. Retraction is the exception: it drops the
     vector outright, so a retracted entity is not even a candidate.
 
-    No per-call full vector or entity scan. Candidates come back in similarity
-    order, entity metadata is a point lookup per candidate, and since the order
-    is best-first the first candidate under ``min_score`` means every later one
-    is too — the scan stops there. Filters that the index can't answer (status,
-    entityType) can starve a fixed-size window, so the window *grows* until
-    ``limit`` is met or the index is exhausted: a rare type stays findable
-    instead of silently returning fewer hits than exist.
+    No per-call full vector or entity scan. Entity metadata is a point lookup
+    per candidate. The ANN window is approximate: its *scores* are exact but
+    its membership and ordering are best-effort (observed on the emulated
+    linux/amd64 build: a k-window holding the farthest nodes while the true
+    nearest sat outside it), so candidates are re-sorted by our own computed
+    score, and the only thing treated as proof of exhaustion is the index
+    returning fewer than ``k`` rows. Filters the index can't answer (status,
+    entityType, ``min_score`` over an unlucky window) can starve a fixed-size
+    window, so the window *grows* until ``limit`` is met or the index is
+    exhausted: a rare type stays findable instead of silently returning fewer
+    hits than exist.
     """
     query_vector = get_embedder().embed_query(query_text)
     resolved: dict[str, Any] = {}
@@ -165,11 +169,13 @@ def _search_similar(
         candidates = store.vector_knn(query_vector, k)
         results: list[dict[str, Any]] = []
         exhausted = len(candidates) < k
-        for entity_id, cosine in candidates:
-            score = _lance_score(cosine)
+        scored = sorted(
+            ((entity_id, _lance_score(cosine)) for entity_id, cosine in candidates),
+            key=lambda pair: -pair[1],
+        )
+        for entity_id, score in scored:
             if min_score is not None and score < min_score:
-                exhausted = True  # descending order: nothing further qualifies
-                break
+                break  # sorted: the rest of THIS window is below; growth decides the rest
             if entity_id not in resolved:
                 resolved[entity_id] = store.read_entity(entity_id)
             entity = resolved[entity_id]

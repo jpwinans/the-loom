@@ -460,3 +460,63 @@ def test_get_embedder_passes_configured_cache_dir_to_fastembed(
         assert captured["model_name"] == embed_module.MODEL_ID
     finally:
         embed_module.get_embedder.cache_clear()
+
+
+# =============================================================================
+# The ANN window is approximate: membership and ordering are best-effort
+# =============================================================================
+# Observed on the emulated linux/amd64 FalkorDB build: a k-window can hold the
+# FARTHEST nodes (correct scores, inverted membership) while the true nearest
+# sit outside it. _search_similar must therefore rank by its own computed
+# score and keep growing the window rather than trusting engine order, and
+# must not treat a window full of below-threshold candidates as exhaustion.
+
+
+def test_search_similar_recovers_when_the_knn_window_is_inverted(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _seed_vectors(
+        multi,
+        {
+            "far-a": [1.0, 0.0, 0.0, 0.0],
+            "far-b": [1.0, 0.0, 0.0, 0.0],
+            "near-c": [0.0, 1.0, 0.0, 0.0],
+            "near-d": [0.0, 1.0, 0.0, 0.0],
+        },
+    )
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder",
+        lambda: _StubEmbedder([0.0, 1.0, 0.0, 0.0]),
+    )
+
+    # vector_knn returns (id, cosine similarity). Similarity to the query:
+    # the near pair is identical (1.0), the far pair orthogonal (0.0).
+    similarity_by_id = {
+        ids["far-a"]: 0.0,
+        ids["far-b"]: 0.0,
+        ids["near-c"]: 1.0,
+        ids["near-d"]: 1.0,
+    }
+    windows: list[int] = []
+
+    def inverted_window(
+        self: FalkorGraphStore, query_vector: list[float], k: int
+    ) -> list[tuple[str, float]]:
+        # Farthest-first membership with EXACT similarities — the pathology as
+        # measured. A window smaller than the population never contains the
+        # true nearest; only the full-population window does.
+        windows.append(k)
+        ranked = sorted(similarity_by_id.items(), key=lambda pair: pair[1])
+        if k < len(ranked):
+            return ranked[:k]
+        return sorted(similarity_by_id.items(), key=lambda pair: -pair[1])
+
+    # Class-level: MultiGraph.get_store returns a fresh instance per call, so
+    # an instance-level patch would never reach the store the search uses.
+    monkeypatch.setattr(FalkorGraphStore, "vector_knn", inverted_window)
+    results = semantic_search(
+        SemanticSearchInput.model_validate({"query": "q", "limit": 2, "minScore": 0.5}),
+        multi,
+    )
+    assert sorted(r["name"] for r in results) == ["near-c", "near-d"]
+    assert len(windows) > 1, "the window must have grown past the inverted first read"

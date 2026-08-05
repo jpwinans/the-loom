@@ -565,3 +565,89 @@ def test_read_entity_as_of_returns_historical_state(store: FalkorGraphStore) -> 
 def test_read_entity_as_of_before_creation_is_none(store: FalkorGraphStore) -> None:
     created = store.create_entity(spec())
     assert store.read_entity_as_of(created.id, "2000-01-01T00:00:00.000Z") is None
+
+
+# =============================================================================
+# Vector index readiness
+# =============================================================================
+# CREATE VECTOR INDEX returns while FalkorDB constructs the index in the
+# background, and queryNodes against an index still under construction is
+# rejected ("Invalid arguments for procedure 'db.idx.vector.queryNodes'" —
+# observed on the linux/amd64 build with k=1 once ~30 vectors are stored).
+# ensure_vector_index therefore barriers on OPERATIONAL, and vector_knn
+# recovers once from exactly that rejection.
+
+
+def _index_status_rows(status: str) -> list[list[object]]:
+    return [["_Entity", {"_embedding": ["VECTOR"]}, status]]
+
+
+def test_ensure_vector_index_waits_for_construction_to_finish(
+    store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    statuses = iter(["UNDER CONSTRUCTION", "UNDER CONSTRUCTION", "OPERATIONAL"])
+    polls = {"count": 0}
+
+    def fake_rows(query: str, params: object = None) -> list[list[object]]:
+        assert "db.indexes" in query
+        polls["count"] += 1
+        return _index_status_rows(next(statuses))
+
+    monkeypatch.setattr(store, "_rows", fake_rows)
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    store._wait_vector_index_operational(timeout=5.0)
+    assert polls["count"] == 3
+
+
+def test_ensure_vector_index_raises_when_construction_never_finishes(
+    store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        store, "_rows", lambda query, params=None: _index_status_rows("UNDER CONSTRUCTION")
+    )
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    with pytest.raises(LoomError) as excinfo:
+        store._wait_vector_index_operational(timeout=0.01)
+    assert "operational" in str(excinfo.value).lower()
+
+
+def test_vector_knn_recovers_once_from_under_construction_rejection(
+    store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = store.create_entity(spec())
+    store.set_entity_vector(created.id, [1.0, 0.0])
+    store.ensure_vector_index(dimension=2)
+
+    real_rows = store._rows
+    state = {"rejected": False, "waited": False}
+
+    def flaky_rows(query: str, params: object = None) -> list[list[object]]:
+        if "queryNodes" in query and not state["rejected"]:
+            state["rejected"] = True
+            raise RuntimeError("Invalid arguments for procedure 'db.idx.vector.queryNodes'")
+        return real_rows(query, params) if params is not None else real_rows(query)
+
+    monkeypatch.setattr(store, "_rows", flaky_rows)
+    monkeypatch.setattr(
+        store,
+        "_wait_vector_index_operational",
+        lambda timeout=30.0: state.__setitem__("waited", True),
+    )
+    results = store.vector_knn([1.0, 0.0], 1)
+    assert state["rejected"] and state["waited"]
+    assert [entity_id for entity_id, _ in results] == [created.id]
+
+
+def test_vector_knn_propagates_unrelated_errors_without_retry(
+    store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = store.create_entity(spec())
+    store.set_entity_vector(created.id, [1.0, 0.0])
+    store.ensure_vector_index(dimension=2)
+
+    def broken_rows(query: str, params: object = None) -> list[list[object]]:
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(store, "_rows", broken_rows)
+    with pytest.raises(RuntimeError, match="connection reset"):
+        store.vector_knn([1.0, 0.0], 1)

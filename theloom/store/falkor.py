@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
@@ -52,7 +53,7 @@ from falkordb import FalkorDB
 from falkordb.query_result import QueryResult
 from redis import Redis
 
-from theloom.errors import NotFoundError, ValidationError
+from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.model import (
     ALL_ENTITY_TYPES,
     ALL_RELATION_TYPES,
@@ -400,6 +401,33 @@ class FalkorGraphStore(GraphStore):
             # all this method promised. Anything else is a real failure.
             if self.vector_index_dimension() is None:
                 raise
+        self._wait_vector_index_operational()
+
+    def _wait_vector_index_operational(self, timeout: float = 30.0) -> None:
+        """Block until the entity vector index reports OPERATIONAL.
+
+        CREATE VECTOR INDEX returns while FalkorDB populates the index in the
+        background, and queryNodes against an index still under construction
+        can be rejected outright — measured on the linux/amd64 build: k=1 fails
+        with "Invalid arguments for procedure 'db.idx.vector.queryNodes'" until
+        construction finishes (k>=2 happens to work, and Apple-silicon builds
+        construct too fast to observe it). A create followed by a query is only
+        correct with this barrier in between.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            rows = self._rows(
+                "CALL db.indexes() YIELD label, types, status RETURN label, types, status"
+            )
+            for label, types, status in rows:
+                if label != _ENTITY_LABEL:
+                    continue
+                if "VECTOR" not in (dict(types or {}).get(_VECTOR_PROPERTY) or []):
+                    continue
+                if status == "OPERATIONAL":
+                    return
+            time.sleep(0.05)
+        raise OperationError(f"Entity vector index did not become operational within {timeout}s")
 
     def _stored_vector_dimension(self) -> int | None:
         """The width of the vectors actually stored, or ``None`` if none are."""
@@ -438,11 +466,22 @@ class FalkorGraphStore(GraphStore):
             if stored is None:
                 return []
             self.ensure_vector_index(dimension=stored)
-        rows = self._rows(
+        query = (
             "CALL db.idx.vector.queryNodes('_Entity', '_embedding', $k, vecf32($q)) "
-            "YIELD node, score RETURN node.id, score",
-            {"k": k, "q": query_vector},
+            "YIELD node, score RETURN node.id, score"
         )
+        try:
+            rows = self._rows(query, {"k": k, "q": query_vector})
+        except Exception as exc:
+            # An index created by another process can still be under
+            # construction here, and queryNodes against it is rejected with
+            # exactly this message (ensure_vector_index barriers only our own
+            # creates). Wait for construction once, retry once; anything else,
+            # or a second failure, is a real error and surfaces.
+            if "db.idx.vector.queryNodes" not in str(exc):
+                raise
+            self._wait_vector_index_operational()
+            rows = self._rows(query, {"k": k, "q": query_vector})
         return [(row[0], 1.0 - float(row[1])) for row in rows]
 
     def read_entity(self, entity_id: str) -> Entity | None:
