@@ -14,6 +14,7 @@ from falkordb import FalkorDB
 from redis import Redis
 
 from theloom.errors import LoomError, NotFoundError, OperationError
+from theloom.model import RelationCreate
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.operations.relations import (
     CreateRelationInput,
@@ -34,6 +35,12 @@ from theloom.operations.relations import (
     read_relation,
     read_relations,
     update_relation,
+)
+from theloom.operations.verification import (
+    GraphOnlyInput,
+    ListGuardViolationsInput,
+    check_consistency,
+    list_guard_violations,
 )
 from theloom.store.multigraph import MultiGraph
 
@@ -106,6 +113,34 @@ def test_create_code_relation_rejects_polarity(multi: MultiGraph, relation_type:
             multi,
         )
     assert "verification gate" in str(excinfo.value)
+    assert "must not have polarity" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "relation_type",
+    [
+        "related_to",
+        "instance_of",
+        "part_of",
+        "sources",
+        "crystallized_from",
+        "supports",
+        "contradicts",
+        "questions",
+        "supersedes",
+    ],
+)
+def test_create_rejects_polarity_on_every_non_causal_type(
+    multi: MultiGraph, relation_type: str
+) -> None:
+    """The partition is model-wide: polarity belongs to causal types only, so
+    every structural/epistemic type rejects it, not just calls/references."""
+    a, b = ent(multi, "A"), ent(multi, "B")
+    with pytest.raises(OperationError) as excinfo:
+        create_relation(
+            CreateRelationInput.model_validate(rel_input(a, b, relation_type, polarity="+")),
+            multi,
+        )
     assert "must not have polarity" in str(excinfo.value)
 
 
@@ -223,6 +258,77 @@ def test_update_relation_fields(multi: MultiGraph) -> None:
     )
     assert updated["strength"] == "strong"
     assert updated["evidence"] == "new evidence"
+
+
+@pytest.mark.parametrize("relation_type", ["calls", "references", "supports"])
+def test_update_relation_rejects_polarity_on_non_causal_type(
+    multi: MultiGraph, relation_type: str
+) -> None:
+    """The create-time partition is not bypassable after creation."""
+    a, b = ent(multi, "A"), ent(multi, "B")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b, relation_type)), multi)
+    with pytest.raises(OperationError) as excinfo:
+        update_relation(
+            UpdateRelationInput.model_validate({"from": a, "to": b, "polarity": "+"}), multi
+        )
+    assert "verification gate" in str(excinfo.value)
+    assert "must not have polarity" in str(excinfo.value)
+    stored = read_relations(ReadRelationsInput.model_validate({"from": a, "to": b}), multi)
+    assert stored[0]["polarity"] is None
+
+
+def test_update_relation_retype_to_non_causal_requires_dropping_polarity(
+    multi: MultiGraph,
+) -> None:
+    a, b = ent(multi, "A"), ent(multi, "B")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b, "causes")), multi)
+    with pytest.raises(OperationError) as excinfo:
+        update_relation(
+            UpdateRelationInput.model_validate({"from": a, "to": b, "relationType": "calls"}), multi
+        )
+    assert "must not have polarity" in str(excinfo.value)
+    cleared = update_relation(
+        UpdateRelationInput.model_validate(
+            {"from": a, "to": b, "relationType": "calls", "polarity": None}
+        ),
+        multi,
+    )
+    assert cleared["relationType"] == "calls"
+    assert cleared["polarity"] is None
+
+
+def test_read_side_guards_report_polarized_non_causal_relation(multi: MultiGraph) -> None:
+    """A polarized structural edge written below the mutation gate (store-level
+    writes, older data) is still reportable by the verification surface."""
+    a, b = ent(multi, "A"), ent(multi, "B")
+    store = multi.get_store(None)
+    store.create_relation(
+        RelationCreate.model_validate(
+            {"from": a, "to": b, "relationType": "calls", "polarity": "+", "strength": "moderate"}
+        )
+    )
+    violations = list_guard_violations(ListGuardViolationsInput.model_validate({}), multi)
+    codes = [v["code"] for group in violations["relationViolations"] for v in group["violations"]]
+    assert "NON_CAUSAL_POLARITY" in codes
+
+    consistency = check_consistency(GraphOnlyInput.model_validate({}), multi)
+    assert consistency["consistent"] is False
+    consistency_codes = [
+        v["code"] for group in consistency["relationViolations"] for v in group["violations"]
+    ]
+    assert "NON_CAUSAL_POLARITY" in consistency_codes
+
+
+def test_update_relation_retype_to_causal_infers_polarity(multi: MultiGraph) -> None:
+    """Retyping to a causal type mirrors create: the default is inferred rather
+    than leaving a causal edge with no polarity."""
+    a, b = ent(multi, "A"), ent(multi, "B")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b, "calls")), multi)
+    updated = update_relation(
+        UpdateRelationInput.model_validate({"from": a, "to": b, "relationType": "inhibits"}), multi
+    )
+    assert updated["relationType"] == "inhibits"
+    assert updated["polarity"] == "-"
 
 
 def test_delete_relation_retracts_by_default_and_not_found(multi: MultiGraph) -> None:

@@ -20,6 +20,13 @@ _CAUSAL_NAMES = [t.value for t in CAUSAL_RELATION_TYPES]
 _ENTITY_TYPE_NAMES = [t.value for t in ALL_ENTITY_TYPES]
 
 
+def non_causal_polarity_error(relation_type: str, polarity: str) -> str:
+    """Message for polarity on a non-causal (structural/epistemic) type. Shared
+    by the mutation gate (guards.py) and the read-side guard below so both
+    surfaces report the invariant in the same words."""
+    return f"Non-causal relation type '{relation_type}' must not have polarity, got: {polarity}"
+
+
 def _effective_status(entity: Doc) -> str:
     return entity.get("status") or "active"
 
@@ -103,6 +110,25 @@ def guard_causal_polarity(relation: Doc, store: Any = None) -> list[Doc]:
     return []
 
 
+def guard_non_causal_polarity(relation: Doc, store: Any = None) -> list[Doc]:
+    """The mirror of guard_causal_polarity: polarity belongs to causal types
+    only, so a structural/epistemic edge carrying one is a violation."""
+    relation_type = relation.get("relationType")
+    if not relation_type or relation_type in _CAUSAL_NAMES:
+        return []
+    polarity = relation.get("polarity")
+    if polarity is None:
+        return []
+    return [
+        {
+            "code": "NON_CAUSAL_POLARITY",
+            "message": non_causal_polarity_error(str(relation_type), str(polarity)),
+            "severity": "error",
+            "path": "polarity",
+        }
+    ]
+
+
 def guard_no_self_loop(relation: Doc, store: Any = None) -> list[Doc]:
     from_id, to_id = relation.get("from"), relation.get("to")
     if from_id is None or to_id is None:
@@ -144,6 +170,7 @@ ENTITY_GUARDS: dict[str, Callable[..., list[Doc]]] = {
 }
 RELATION_GUARDS: dict[str, Callable[..., list[Doc]]] = {
     "causalPolarity": guard_causal_polarity,
+    "nonCausalPolarity": guard_non_causal_polarity,
     "noSelfLoop": guard_no_self_loop,
     "noDuplicateRelation": guard_no_duplicate_relation,
 }

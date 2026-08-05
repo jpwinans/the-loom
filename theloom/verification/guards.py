@@ -14,13 +14,19 @@ listEntities({name}) — a *partial*, case-insensitive match.
 
 Default relation guards: CAUSAL_MISSING_POLARITY (post-inference), the mirror
 NON_CAUSAL_POLARITY (structural/epistemic types carry no polarity), SELF_LOOP,
-ORPHAN_RELATION_FROM/TO — all error severity.
+ORPHAN_RELATION_FROM/TO — all error severity. The polarity partition is
+enforced on every write path (create, batch create, update, bulk-import) and
+reported on the read side by checks.guard_non_causal_polarity, which shares
+this module's message.
 """
 
 from __future__ import annotations
 
 from theloom.model import CAUSAL_RELATION_TYPES, EntityFilter
 from theloom.store.falkor import FalkorGraphStore
+from theloom.verification.checks import non_causal_polarity_error
+
+__all__ = ["entity_gate_warnings", "non_causal_polarity_error", "relation_gate_errors"]
 
 
 def entity_gate_warnings(store: FalkorGraphStore, name: str, observations: list[str]) -> list[str]:
@@ -35,11 +41,6 @@ def entity_gate_warnings(store: FalkorGraphStore, name: str, observations: list[
             f"(id: {existing[0].id})"
         )
     return warnings
-
-
-def non_causal_polarity_error(relation_type: str, polarity: str) -> str:
-    """Gate message for polarity on a non-causal (structural/epistemic) type."""
-    return f"Non-causal relation type '{relation_type}' must not have polarity, got: {polarity}"
 
 
 def relation_gate_errors(

@@ -138,6 +138,18 @@ class TestGuards:
             assert checks.guard_causal_polarity(relation) == []
             assert routing.relation_category(relation_type) == "structural"
 
+    def test_non_causal_polarity(self) -> None:
+        v = checks.guard_non_causal_polarity(
+            {"relationType": "calls", "from": "a", "to": "b", "polarity": "+"}
+        )
+        assert v[0]["code"] == "NON_CAUSAL_POLARITY"
+        assert v[0]["severity"] == "error"
+        assert checks.guard_non_causal_polarity({"relationType": "calls", "polarity": None}) == []
+        assert checks.guard_non_causal_polarity({"relationType": "causes", "polarity": "+"}) == []
+
+    def test_non_causal_polarity_is_a_registered_relation_guard(self) -> None:
+        assert "nonCausalPolarity" in checks.RELATION_GUARDS
+
     def test_self_loop(self) -> None:
         assert checks.guard_no_self_loop({"from": "a", "to": "a"})[0]["code"] == "SELF_LOOP"
 

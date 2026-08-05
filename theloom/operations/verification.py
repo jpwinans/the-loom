@@ -128,7 +128,7 @@ def _all_docs(store: FalkorGraphStore) -> tuple[list[Doc], list[Doc]]:
 # =============================================================================
 
 _CONSISTENCY_ENTITY_GUARDS = ["confidenceBounds", "entityType", "observationsRequired"]
-_CONSISTENCY_RELATION_GUARDS = ["causalPolarity", "noSelfLoop"]
+_CONSISTENCY_RELATION_GUARDS = ["causalPolarity", "nonCausalPolarity", "noSelfLoop"]
 
 
 def _run_consistency(entities: list[Doc], relations: list[Doc]) -> Doc:
@@ -361,7 +361,12 @@ def validate_spec(params: ValidateSpecInput, multi: MultiGraph) -> Doc:
 # =============================================================================
 
 _LGV_ENTITY_GUARDS = ["confidenceBounds", "entityType", "observationsRequired"]
-_LGV_RELATION_GUARDS = ["causalPolarity", "noSelfLoop", "noDuplicateRelation"]
+_LGV_RELATION_GUARDS = [
+    "causalPolarity",
+    "nonCausalPolarity",
+    "noSelfLoop",
+    "noDuplicateRelation",
+]
 
 
 def list_guard_violations(params: ListGuardViolationsInput, multi: MultiGraph) -> Doc:

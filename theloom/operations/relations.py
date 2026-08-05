@@ -3,7 +3,10 @@
 Semantics, including a few that look like bugs but are intentional:
 
 - Polarity auto-inference for causal types (CAUSAL_POLARITY_DEFAULTS) when the
-  caller passes null.
+  caller passes null — on create AND on an update that retypes an edge.
+- The polarity partition (causal types carry polarity, structural/epistemic
+  types carry none) is an invariant of the stored edge: update-relation gates
+  on the *resulting* type/polarity pair, not just create-relation.
 - The verification gate runs against the *resolved single store* BEFORE the
   bridge branch — so a cross-graph relation is blocked with an
   entity-does-not-exist gate error, and the bridge auto-creation path is
@@ -24,6 +27,7 @@ from pydantic import Field
 from theloom.errors import NotFoundError, OperationError
 from theloom.model import (
     CAUSAL_POLARITY_DEFAULTS,
+    CAUSAL_RELATION_TYPES,
     EntityFilter,
     Polarity,
     RelationCreate,
@@ -287,12 +291,46 @@ def read_relations(params: ReadRelationsInput, multi: MultiGraph) -> list[dict[s
     return [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
 
 
+def _gated_update_polarity(
+    params: UpdateRelationInput, multi: MultiGraph
+) -> tuple[bool, str | None]:
+    """The polarity the update must land on, and whether it has to be written.
+
+    The create-time partition (causal types carry polarity, everything else
+    carries none) is an invariant of the stored edge, not just of creation, so
+    an update that changes the type and/or the polarity is gated on the
+    *resulting* edge. Causal defaults are inferred exactly as on create.
+    """
+    if params.relation_type is None and not params.provided("polarity"):
+        return False, None
+    store = multi.get_store(params.graph)
+    existing = store.read_relations(params.from_, params.to)
+    if params.relation_id is not None:
+        existing = [r for r in existing if r.id == params.relation_id]
+    if not existing:
+        # No such edge — store.update_relation raises the NotFoundError.
+        return params.provided("polarity"), params.polarity
+    current = existing[0]
+    relation_type = params.relation_type or current.relation_type
+    polarity: str | None = params.polarity if params.provided("polarity") else current.polarity
+    if relation_type in CAUSAL_RELATION_TYPES:
+        if polarity is None:
+            polarity = CAUSAL_POLARITY_DEFAULTS.get(relation_type)
+    elif polarity is not None:
+        message = "Relation update blocked by verification gate: " + non_causal_polarity_error(
+            relation_type.value, polarity
+        )
+        raise OperationError(f"Error updating relation: {message}")
+    return polarity != current.polarity or params.provided("polarity"), polarity
+
+
 def update_relation(params: UpdateRelationInput, multi: MultiGraph) -> dict[str, Any]:
+    write_polarity, polarity = _gated_update_polarity(params, multi)
     updates: dict[str, Any] = {}
     if params.relation_type is not None:
         updates["relationType"] = params.relation_type.value
-    if params.provided("polarity"):
-        updates["polarity"] = params.polarity
+    if write_polarity:
+        updates["polarity"] = polarity
     if params.strength is not None:
         updates["strength"] = params.strength.value
     if params.provided("evidence"):

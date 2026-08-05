@@ -140,6 +140,39 @@ def test_code_relation_types_round_trip(multi: MultiGraph) -> None:
     assert references[0].polarity is None
 
 
+def test_bulk_import_rejects_polarity_on_non_causal_relation(multi: MultiGraph) -> None:
+    """bulk-import enforces the same polarity partition as create-relation: a
+    structural/epistemic edge must not carry polarity."""
+    result = run(
+        multi,
+        entities=ENTITIES,
+        relations=[
+            {"from": "Alpha", "to": "Beta", "relationType": "calls", "polarity": "+"},
+            {"from": "Beta", "to": "Alpha", "relationType": "supports", "polarity": "-"},
+        ],
+    )
+    assert result["relationsCreated"] == 0
+    assert result["relationsSkipped"] == 2
+    assert [e["type"] for e in result["errors"]] == ["validation_error", "validation_error"]
+    assert "must not have polarity" in result["errors"][0]["message"]
+    store = multi.get_store("default")
+    from_id, to_id = result["mapping"]["Alpha"], result["mapping"]["Beta"]
+    assert store.read_relations(from_id, to_id) == []
+    assert store.read_relations(to_id, from_id) == []
+
+
+def test_bulk_import_keeps_causal_polarity(multi: MultiGraph) -> None:
+    result = run(
+        multi,
+        entities=ENTITIES,
+        relations=[{"from": "Alpha", "to": "Beta", "relationType": "causes", "polarity": "-"}],
+    )
+    assert result["relationsCreated"] == 1
+    store = multi.get_store("default")
+    causes = store.read_relations(result["mapping"]["Alpha"], result["mapping"]["Beta"], "causes")
+    assert causes[0].polarity == "-"
+
+
 def test_codebase_extraction_imports_every_call_edge(multi: MultiGraph) -> None:
     """A relation whose endpoint was never created is dropped with a per-item
     error, not a failure — 1,270 call edges vanished that way. Importing the

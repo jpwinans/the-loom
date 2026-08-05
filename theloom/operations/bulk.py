@@ -7,9 +7,10 @@ entities by NAME; names resolve against the import batch first, then existing
 graph entities (non-retracted, active preferred). An existing relation of the
 same type between a resolved pair is skipped; other types between the same
 pair import normally (parallel typed edges are native to the storage model).
-``dryRun`` validates and maps (placeholder UUIDs)
-without writing. JSONL input parses per line with collected errors prepended
-to import errors.
+Relations are validated against the same polarity partition create-relation
+gates on: only causal types may carry polarity. ``dryRun`` validates and maps
+(placeholder UUIDs) without writing. JSONL input parses per line with collected
+errors prepended to import errors.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from pydantic import Field
 from theloom.model import (
     ALL_ENTITY_TYPES,
     ALL_RELATION_TYPES,
+    CAUSAL_RELATION_TYPES,
     EntityCreate,
     EntityFilter,
     RelationCreate,
@@ -31,6 +33,7 @@ from theloom.operations.common import CommandInput
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
+from theloom.verification.checks import non_causal_polarity_error
 
 MAX_ENTITIES_LIMIT = 100_000
 MAX_RELATIONS_LIMIT = 100_000
@@ -38,6 +41,7 @@ MAX_OBSERVATIONS_PER_ENTITY = 10_000
 
 _ENTITY_TYPE_VALUES = {t.value for t in ALL_ENTITY_TYPES}
 _RELATION_TYPE_VALUES = {t.value for t in ALL_RELATION_TYPES}
+_CAUSAL_RELATION_TYPE_VALUES = {t.value for t in CAUSAL_RELATION_TYPES}
 _NON_RETRACTED = EntityFilter.model_validate(
     {"statusFilter": ["active", "superseded", "deprecated", "investigating"]}
 )
@@ -199,6 +203,16 @@ def _validate_relation(relation: dict[str, Any]) -> dict[str, Any] | None:
                 f'Invalid relationType "{relation_type}": must be one of '
                 + ", ".join(t.value for t in ALL_RELATION_TYPES)
             ),
+        }
+    polarity = relation.get("polarity")
+    # The same partition create-relation gates on: polarity is causal-only, so
+    # bulk-import cannot be a side door for a polarized structural edge.
+    if polarity is not None and relation_type not in _CAUSAL_RELATION_TYPE_VALUES:
+        return {
+            "type": "validation_error",
+            "from": from_name,
+            "to": to_name,
+            "message": non_causal_polarity_error(str(relation_type), str(polarity)),
         }
     return None
 
