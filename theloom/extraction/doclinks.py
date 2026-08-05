@@ -1,0 +1,176 @@
+"""Documentation-to-code linking for codebase extraction.
+
+Markdown files already become file entities, but the per-file pass gives them
+no edges, so documentation sits as its own island: nothing connects a doc to
+the code it specifies, and drift between the two is invisible to every graph
+query. This pass is the join, and like ``theloom.extraction.resolution`` it is
+deterministic and LLM-free — a mention becomes an edge only when the doc names
+the target unambiguously:
+
+* a **repo-relative path** written in the text that is a file the extraction
+  actually produced (``theloom/store/falkor.py``) — the doc states the target,
+  so the edge is ``direct_observation``;
+* a **backtick-quoted symbol name** that is the project's only symbol of that
+  name — a deduction, so ``inference``.
+
+Everything else links to nothing. A bare word in prose is never a link (docs
+are full of English words that happen to be symbol names), a name defined more
+than once is never a link (picking one would be a guess presented as
+structure), a language builtin is never a link, and a name too short to be
+distinctive is never a link. These are the same guards the unique-name call
+resolver needed: a wrong edge is worse than a missing one, because every
+downstream analysis treats edges as fact.
+
+Out-degree is capped per document. One index page listing every file in the
+repo would otherwise become the most-connected node in the graph while saying
+nothing; the drop is reported in the extraction stats rather than hidden.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from theloom.extraction.resolution import BUILTIN_NAMES, file_entity_name
+
+Doc = dict[str, Any]
+
+# Text kinds this pass reads. Prose is where a path or a symbol name is a
+# deliberate reference; a lockfile mentioning one is coincidence.
+DOC_EXTENSIONS = frozenset({"md"})
+
+MAX_LINKS_PER_DOC = 50
+
+# Below this, a name is a word before it is a symbol (``id``, ``ok``, ``at``).
+MIN_SYMBOL_CHARS = 3
+
+# A path-shaped token: at least one dotted extension, no whitespace. Whether it
+# is real is decided by membership in the extracted file set, never by the shape.
+_PATH_RE = re.compile(r"[A-Za-z0-9_./-]*[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9]*")
+_BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+
+def _symbol_index(per_file: list[Doc]) -> dict[str, set[str]]:
+    """Every way a symbol can be written -> the entity names it could mean.
+
+    A method is keyed both qualified (``Reporter.summarize``) and bare
+    (``summarize``), so a doc may write either; the uniqueness guard is what
+    keeps the bare form honest.
+    """
+    index: dict[str, set[str]] = {}
+    for record in per_file:
+        for key, entity_name in record.get("symbols", {}).items():
+            index.setdefault(key, set()).add(entity_name)
+            bare = key.rsplit(".", 1)[-1]
+            if bare != key:
+                index.setdefault(bare, set()).add(entity_name)
+    return index
+
+
+def _path_mentions(line: str, doc_path: str, file_paths: frozenset[str]) -> list[tuple[str, str]]:
+    """``(mention text, target entity)`` for each real file path on the line."""
+    hits: list[tuple[str, str]] = []
+    for match in _PATH_RE.finditer(line):
+        text = match.group(0)
+        if text == doc_path or text not in file_paths:
+            continue
+        hits.append((text, file_entity_name(text)))
+    return hits
+
+
+def _symbol_mentions(line: str, index: dict[str, set[str]]) -> tuple[list[tuple[str, str]], int]:
+    """``(mentions, ambiguous count)`` for the backticked names on the line."""
+    hits: list[tuple[str, str]] = []
+    ambiguous = 0
+    for match in _BACKTICK_RE.finditer(line):
+        text = match.group(1).strip()
+        if text.endswith("()"):
+            text = text[:-2]
+        if _IDENTIFIER_RE.match(text) is None or len(text) < MIN_SYMBOL_CHARS:
+            continue
+        if text in BUILTIN_NAMES or text.rsplit(".", 1)[-1] in BUILTIN_NAMES:
+            continue
+        candidates = index.get(text)
+        if not candidates:
+            continue
+        if len(candidates) > 1:
+            # Counted per occurrence: how often the docs say something the
+            # project defines twice is worth knowing.
+            ambiguous += 1
+            continue
+        hits.append((text, next(iter(candidates))))
+    return hits, ambiguous
+
+
+def _relation(
+    source: str, target: str, mention: str, doc_path: str, line: int, *, proven: bool
+) -> Doc:
+    return {
+        "from": source,
+        "to": target,
+        "relationType": "references",
+        "polarity": None,
+        "strength": "moderate",
+        "evidence": f"mentions {mention} at {doc_path}:{line + 1}",
+        "confidence": {
+            "score": 0.95 if proven else 0.7,
+            "basis": "direct_observation" if proven else "inference",
+        },
+    }
+
+
+def resolve_doc_links(
+    docs: list[Doc],
+    file_paths: frozenset[str],
+    per_file: list[Doc],
+    *,
+    max_links: int = MAX_LINKS_PER_DOC,
+) -> Doc:
+    """Join each doc to the files and symbols it names.
+
+    ``docs`` is ``{path, content}`` per documentation file; ``file_paths`` is
+    every file the extraction produced an entity for (code and non-code alike);
+    ``per_file`` is the parsed record list the resolution pass also consumes.
+    Returns ``{relations, stats}``.
+    """
+    index = _symbol_index(per_file)
+    relations: list[Doc] = []
+    path_links = symbol_links = ambiguous = capped = 0
+
+    for doc in docs:
+        doc_path = str(doc["path"])
+        source = file_entity_name(doc_path)
+        seen: set[str] = set()
+        emitted = 0
+        for line_number, line in enumerate(str(doc.get("content", "")).splitlines()):
+            symbols, line_ambiguous = _symbol_mentions(line, index)
+            ambiguous += line_ambiguous
+            paths = _path_mentions(line, doc_path, file_paths)
+            hits = [(text, target, True) for text, target in paths]
+            hits.extend((text, target, False) for text, target in symbols)
+            for text, target, proven in hits:
+                if target == source or target in seen:
+                    continue
+                seen.add(target)
+                if emitted >= max_links:
+                    capped += 1
+                    continue
+                emitted += 1
+                if proven:
+                    path_links += 1
+                else:
+                    symbol_links += 1
+                relations.append(
+                    _relation(source, target, text, doc_path, line_number, proven=proven)
+                )
+
+    return {
+        "relations": relations,
+        "stats": {
+            "docPathReferences": path_links,
+            "docSymbolReferences": symbol_links,
+            "ambiguousDocMentionsSkipped": ambiguous,
+            "docReferencesCapped": capped,
+        },
+    }

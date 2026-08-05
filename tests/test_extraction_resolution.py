@@ -376,7 +376,14 @@ class TestEndToEnd:
         extraction used to spend it on call edges, which made the two
         indistinguishable once both were in one graph."""
         result = treesitter.extract_codebase("tests/fixtures/repo")
-        assert {r["relationType"] for r in result["relations"]} == {"part_of", "requires", "calls"}
+        assert {r["relationType"] for r in result["relations"]} == {
+            "part_of",
+            "requires",
+            "calls",
+            # A doc naming a file or a symbol; still structural, still not a
+            # semantic grounding link.
+            "references",
+        }
 
     def test_every_call_edge_is_anchored_at_its_call_site(self) -> None:
         """One machine-stable format, whichever resolver produced the edge."""

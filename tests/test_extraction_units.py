@@ -455,20 +455,21 @@ class TestExtractCodebaseDeterminism:
     def test_fixed_repo_stats(self) -> None:
         result = treesitter.extract_codebase("tests/fixtures/repo")
         assert result["stats"] == {
-            # 5 parsed sources + README.md and styles/tokens.css, which are
-            # entities but are never parsed
-            "totalFiles": 7,
-            "totalSymbols": 14,
-            # 21 symbols/files + the pkg:dataclasses node for the one
+            # 5 parsed sources + README.md, styles/tokens.css and the two docs,
+            # which are entities but are never parsed
+            "totalFiles": 9,
+            "totalSymbols": 15,
+            # 24 symbols/files + the pkg:dataclasses node for the one
             # third-party import in the fixture
-            "totalEntities": 22,
-            "totalRelations": 23,
+            "totalEntities": 25,
+            "totalRelations": 28,
             # `system` counts every file entity, code or not, plus the package
-            "entityBreakdown": {"system": 8, "procedure": 10, "concept": 3, "variable": 1},
+            "entityBreakdown": {"system": 10, "procedure": 11, "concept": 3, "variable": 1},
             # Call edges are typed `calls`; `related_to` now means only a
             # semantic link, which structural extraction never emits. Non-code
-            # files are roots: they add entities but no edges.
-            "relationBreakdown": {"part_of": 17, "calls": 3, "requires": 3},
+            # files are roots except for docs, whose unambiguous mentions of a
+            # file or a symbol become `references` edges into the code.
+            "relationBreakdown": {"part_of": 18, "calls": 3, "requires": 3, "references": 4},
         }
 
     def test_fixture_repo_carries_content_not_just_coordinates(self) -> None:

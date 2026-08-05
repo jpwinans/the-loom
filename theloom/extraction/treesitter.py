@@ -27,8 +27,12 @@ innermost enclosing symbol, or to the file entity at module level; ADR/RFC
 identifiers mentioned in a comment are recorded separately as ``cites:``.
 
 Non-code text files (stylesheets, config, docs — see ``TEXT_EXTENSIONS``) get a
-file entity too, with no edges, so an invariant anchored in e.g. a design-token
-stylesheet has something to point at.
+file entity too, so an invariant anchored in e.g. a design-token stylesheet has
+something to point at. Documentation additionally gets edges: a Markdown file
+is scanned for the paths and symbols it names, and each unambiguous mention
+becomes a ``references`` edge into the code (see
+``theloom.extraction.doclinks``), so docs are no longer an island the graph
+cannot reach.
 
 What counts as part of the codebase is decided by **git**, not by the
 filesystem. Inside a work tree, an ignored path never becomes an entity (it is
@@ -48,7 +52,7 @@ import re
 import subprocess
 from typing import Any
 
-from theloom.extraction import resolution
+from theloom.extraction import doclinks, resolution
 
 Doc = dict[str, Any]
 
@@ -1104,6 +1108,8 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
     all_relations: list[Doc] = []
     entity_names: set[str] = set()
     per_file: list[Doc] = []
+    doc_files: list[Doc] = []
+    file_paths: set[str] = set()
     for file in files:
         lang = detect_language(file["relativePath"])
         path = resolution.normalise_path(file["relativePath"])
@@ -1115,7 +1121,11 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
             if entity["name"] not in entity_names:
                 entity_names.add(entity["name"])
                 all_entities.append(entity)
+                file_paths.add(path)
+                if kind in doclinks.DOC_EXTENSIONS:
+                    doc_files.append({"path": path, "content": file["content"]})
             continue
+        file_paths.add(path)
         result = extract_from_source(file["content"], path, lang)
         for entity in result["entities"]:
             if entity["name"] not in entity_names:
@@ -1138,6 +1148,7 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
     imports = resolution.resolve_imports(per_file, known_files, external_entities=external_entities)
     calls = resolution.resolve_calls(per_file, known_files)
     inheritances = resolution.resolve_inheritances(per_file, known_files)
+    docs = doclinks.resolve_doc_links(doc_files, frozenset(file_paths), per_file)
     for entity in imports["entities"]:
         if entity["name"] not in entity_names:
             entity_names.add(entity["name"])
@@ -1145,11 +1156,17 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
     all_relations.extend(imports["relations"])
     all_relations.extend(calls["relations"])
     all_relations.extend(inheritances["relations"])
+    all_relations.extend(docs["relations"])
 
     return {
         "entities": all_entities,
         "relations": all_relations,
-        "resolution": {**imports["stats"], **calls["stats"], **inheritances["stats"]},
+        "resolution": {
+            **imports["stats"],
+            **calls["stats"],
+            **inheritances["stats"],
+            **docs["stats"],
+        },
     }
 
 

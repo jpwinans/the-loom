@@ -64,10 +64,14 @@ _DELETED = ("source_retracted", "file deleted")
 _CHANGED = ("outdated_knowledge", "code changed")
 
 # The edge types structural extraction emits — and the only ones this diff
-# touches. A semantic layer built on top of the same graph links into code with
-# ``related_to``; those edges are nobody's re-extraction to retract, so an
-# update leaves them exactly where they are.
-_STRUCTURAL_RELATION_TYPES = frozenset({"part_of", "requires", "calls", "instance_of"})
+# touches (``references`` included: a doc's links are re-derived from its text,
+# so editing the doc must retract the mentions it dropped). A semantic layer
+# built on top of the same graph links into code with ``related_to``; those
+# edges are nobody's re-extraction to retract, so an update leaves them exactly
+# where they are.
+_STRUCTURAL_RELATION_TYPES = frozenset(
+    {"part_of", "requires", "calls", "instance_of", "references"}
+)
 
 
 def _is_extractable(path: str) -> bool:

@@ -53,13 +53,14 @@ EXTERNAL_PREFIX = "pkg:"
 _CALLABLE_KINDS = frozenset({"procedure", "concept"})
 
 
-# Names that belong to a language runtime, not to any project symbol. A bare
+# Names that belong to a language runtime, not to any project symbol (shared
+# with the doc-linking pass, which needs the same guard). A bare
 # call to one of these is never a dependency on a file in this repository —
 # and because such a name may coincide with a single project symbol, the
 # unique-name rule would otherwise weld hundreds of callers to it. (Observed:
 # 288 Python ``len()`` calls resolving to a lone TypeScript ``len`` constant,
 # making it the most-connected node in the graph.)
-_BUILTINS = frozenset(
+BUILTIN_NAMES = frozenset(
     {
         # Python
         "len",
@@ -400,7 +401,7 @@ def _resolve_symbol_edges(
             proven = target is not None
 
             if target is None:
-                if callee in _BUILTINS:
+                if callee in BUILTIN_NAMES:
                     # A language builtin, not a project symbol.
                     ambiguous += 1
                     continue
