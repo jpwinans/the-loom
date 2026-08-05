@@ -19,7 +19,6 @@ from typing import Any
 
 import pytest
 from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import NotFoundError, OperationError
 from theloom.extraction import treesitter
@@ -33,11 +32,6 @@ Doc = dict[str, Any]
 
 FIXTURE_REPO = Path(__file__).parent / "fixtures" / "repo"
 GRAPH = "default"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph=GRAPH, key_prefix=namespace)
 
 
 @pytest.fixture()

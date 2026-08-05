@@ -12,17 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.composites.self_improve import SelfImproveInput, self_improve
 from theloom.model import EntityCreate
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def _fake_simulate_change(_input: Any, _multi: Any) -> dict[str, Any]:

@@ -13,8 +13,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import LoomError
 from theloom.operations.entity import (
@@ -33,11 +31,6 @@ from theloom.operations.relations import (
 from theloom.store.multigraph import MultiGraph
 
 EPOCH = "1970-01-01T00:00:00.000Z"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def make_entity(multi: MultiGraph, name: str, **overrides: object) -> dict[str, Any]:

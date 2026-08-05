@@ -16,7 +16,6 @@ from typing import Any
 
 import pytest
 from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.extraction import treesitter
 from theloom.model import RelationCreate
@@ -31,11 +30,6 @@ FIXTURE_REPO = Path(__file__).parent / "fixtures" / "repo"
 GRAPH = "default"
 
 SEMANTIC_EVIDENCE = "both participate in the onboarding flow"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph=GRAPH, key_prefix=namespace)
 
 
 @pytest.fixture()

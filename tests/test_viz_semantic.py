@@ -8,17 +8,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.model import EntityCreate
 from theloom.store.multigraph import MultiGraph
 from theloom.viz.semantic import assemble_semantic
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 class _StubEmbedder:

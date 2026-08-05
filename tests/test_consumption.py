@@ -18,18 +18,11 @@ import json
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.cli.registry import COMMANDS, run_handler
 from theloom.errors import ValidationError
 from theloom.model import RelationCreate
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def ent(

@@ -14,7 +14,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
 from redis import Redis
 
 from theloom.cli.registry import COMMANDS
@@ -26,11 +25,6 @@ from theloom.store.events import EventLog
 from theloom.store.multigraph import MultiGraph
 
 MISSING = "00000000-0000-4000-8000-000000000000"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def make_entity(multi: MultiGraph, name: str, **overrides: object) -> dict[str, Any]:

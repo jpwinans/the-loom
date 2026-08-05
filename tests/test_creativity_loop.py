@@ -12,10 +12,6 @@ real termination reasons.
 
 from __future__ import annotations
 
-import pytest
-from falkordb import FalkorDB
-from redis import Redis
-
 from theloom.composites.creativity_loop import (
     CreativityLoopInput,
     _map_to_config,
@@ -23,11 +19,6 @@ from theloom.composites.creativity_loop import (
 )
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def _seed_two_domains(multi: MultiGraph) -> None:

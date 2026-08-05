@@ -8,8 +8,6 @@ Bridges auto-create when a relation spans graphs.
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.model import EntityCreate, RelationCreate
@@ -20,11 +18,6 @@ def ent(name: str, entity_type: str = "concept") -> EntityCreate:
     return EntityCreate.model_validate(
         {"name": name, "entityType": entity_type, "observations": []}
     )
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def rel(from_id: str, to_id: str, relation_type: str = "related_to") -> RelationCreate:

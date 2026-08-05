@@ -24,8 +24,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.cli.registry import run_handler
 from theloom.errors import NotFoundError, ValidationError
@@ -33,11 +31,6 @@ from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
 AS_OF = "2026-08-04T00:00:00.000Z"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def ent(multi: MultiGraph, name: str, observations: list[str] | None = None) -> str:

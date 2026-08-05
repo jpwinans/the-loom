@@ -12,8 +12,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-from falkordb import FalkorDB
 from redis import Redis
 
 from theloom.migrate import import_folder
@@ -21,11 +19,6 @@ from theloom.store.events import EventLog
 from theloom.store.multigraph import MultiGraph
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def test_small_seed_round_trips_counts(multi: MultiGraph) -> None:

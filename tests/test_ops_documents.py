@@ -12,8 +12,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.documents.ingestion import IngestionError
 from theloom.errors import NotFoundError, OperationError, ValidationError
@@ -27,11 +25,6 @@ from theloom.operations.documents import (
     reingest_document,
 )
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def test_ingest_missing_file_is_not_found(multi: MultiGraph, tmp_path: Path) -> None:

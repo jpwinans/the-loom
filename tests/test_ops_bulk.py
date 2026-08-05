@@ -11,18 +11,9 @@ input parses line-by-line with per-line errors.
 
 from __future__ import annotations
 
-import pytest
-from falkordb import FalkorDB
-from redis import Redis
-
 from theloom.operations.bulk import BulkImportInput, bulk_import, parse_jsonl
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def run(multi: MultiGraph, **doc: object) -> dict:

@@ -12,17 +12,8 @@ import json
 import stat
 from pathlib import Path
 
-import pytest
-from falkordb import FalkorDB
-from redis import Redis
-
 from theloom.operations.init import run_init
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def test_init_creates_dir_and_config_with_restricted_modes(

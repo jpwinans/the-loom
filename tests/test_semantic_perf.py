@@ -16,8 +16,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 from redis.exceptions import ResponseError
 
 from theloom.model import EntityCreate
@@ -35,11 +33,6 @@ from theloom.operations.semantic import (
 from theloom.semantic import embed as embed_module
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 class _StubEmbedder:

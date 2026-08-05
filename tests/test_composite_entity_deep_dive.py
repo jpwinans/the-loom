@@ -8,18 +8,11 @@ escape hatch back to full relation/entity envelopes.
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.composites.entity_deep_dive import EntityDeepDiveInput, entity_deep_dive
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.operations.relations import CreateRelationInput, create_relation
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def ent(multi: MultiGraph, name: str, observations: list[str] | None = None) -> str:

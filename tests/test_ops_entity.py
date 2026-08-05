@@ -12,8 +12,6 @@ items/truncated envelope with it), and read-entities-by-name partitioning.
 from __future__ import annotations
 
 import pytest
-from falkordb import FalkorDB
-from redis import Redis
 
 from theloom.cli.registry import run_handler
 from theloom.errors import LoomError, NotFoundError
@@ -34,11 +32,6 @@ from theloom.operations.entity import (
 from theloom.store.multigraph import MultiGraph
 
 MISSING = "00000000-0000-4000-8000-000000000000"
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def make(multi: MultiGraph, name: str = "Systems Thinking", **overrides: object) -> dict:

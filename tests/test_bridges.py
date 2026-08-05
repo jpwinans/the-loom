@@ -20,11 +20,6 @@ from theloom.errors import NotFoundError, OperationError
 from theloom.store.multigraph import MultiGraph
 
 
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
-
-
 def bridge_doc(
     from_id: str = "e1",
     to_id: str = "e2",

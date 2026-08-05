@@ -8,10 +8,6 @@ the ops layer where the queue behaviour actually lives.
 
 from __future__ import annotations
 
-import pytest
-from falkordb import FalkorDB
-from redis import Redis
-
 from theloom.operations.reification import (
     ProcessTriggersInput,
     TriggerStatusInput,
@@ -19,11 +15,6 @@ from theloom.operations.reification import (
     trigger_status,
 )
 from theloom.store.multigraph import MultiGraph
-
-
-@pytest.fixture()
-def multi(db: FalkorDB, redis_client: Redis, namespace: str) -> MultiGraph:
-    return MultiGraph(db, redis_client, default_graph="default", key_prefix=namespace)
 
 
 def candidate(entity: str, component: str, score: float, recommendation: str) -> dict:
