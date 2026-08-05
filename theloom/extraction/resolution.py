@@ -28,15 +28,19 @@ import os
 import posixpath
 from typing import Any
 
-from theloom.extraction.encoding import call_evidence, file_entity_name, symbol_kind_observation
+from theloom.extraction.encoding import call_evidence as call_evidence
+from theloom.extraction.encoding import file_entity_name as file_entity_name
+from theloom.extraction.encoding import symbol_kind_observation
 
 Doc = dict[str, Any]
 
 # ``call_evidence`` and ``file_entity_name`` used to be defined here; they now
 # live in ``theloom.extraction.encoding`` (the one place the codebase-graph
-# encoding is built and parsed) and are imported back in so existing importers
-# (``from theloom.extraction.resolution import file_entity_name``, used by
-# ``theloom.extraction.doclinks``) keep working unchanged.
+# encoding is built and parsed) and are imported back in — with the explicit
+# ``as``-re-export mypy strict mode requires to treat them as this module's
+# own public names — so existing importers (``from theloom.extraction.resolution
+# import file_entity_name``, used by ``theloom.extraction.doclinks``) keep
+# working unchanged.
 
 # Suffix probes for a module specifier that omits its extension, in the order a
 # bundler would try them. ``/index`` forms come last so ``./x.ts`` wins over
