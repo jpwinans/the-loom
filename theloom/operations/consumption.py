@@ -47,13 +47,18 @@ from __future__ import annotations
 import json
 import math
 import posixpath
-import re
 from collections import defaultdict
 from typing import Any
 
 from pydantic import Field
 
 from theloom.errors import NotFoundError
+from theloom.extraction.encoding import (
+    is_file_entity_name,
+    parse_call_site_text,
+    parse_file_path,
+    parse_line_range,
+)
 from theloom.model import Relation, RelationFilter
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.operations.entity import compact_entity_doc
@@ -110,11 +115,6 @@ SECTION_KEYS = (
     "semantic",
 )
 
-#: ``<caller> calls <callee> at <file>:<line>`` — the fixed evidence form the
-#: codebase extractor writes for every call edge.
-_CALL_SITE_RE = re.compile(r"\bat\s+(?P<site>\S+:\d+)\s*$")
-_FILE_PATH_PREFIX = "file path:"
-_LINE_RANGE_PREFIX = "line range:"
 
 
 # =============================================================================
@@ -156,16 +156,8 @@ class BlastRadiusInput(CommandInput):
 # =============================================================================
 
 
-def _observation(doc: dict[str, Any], prefix: str) -> str | None:
-    for observation in doc.get("observations") or []:
-        text = str(observation)
-        if text.lower().startswith(prefix):
-            return text[len(prefix) :].strip()
-    return None
-
-
 def _file_of(doc: dict[str, Any]) -> str | None:
-    return _observation(doc, _FILE_PATH_PREFIX)
+    return parse_file_path(doc.get("observations") or [])
 
 
 def _definition(doc: dict[str, Any]) -> str | None:
@@ -173,8 +165,11 @@ def _definition(doc: dict[str, Any]) -> str | None:
     path = _file_of(doc)
     if path is None:
         return None
-    lines = _observation(doc, _LINE_RANGE_PREFIX)
-    return f"{path}:{lines}" if lines else path
+    line_range = parse_line_range(doc.get("observations") or [])
+    if line_range is None:
+        return path
+    start_line, end_line = line_range
+    return f"{path}:{start_line + 1}-{end_line + 1}"
 
 
 def _module_of(doc: dict[str, Any]) -> str:
@@ -189,10 +184,7 @@ def _module_of(doc: dict[str, Any]) -> str:
 
 
 def _call_site(evidence: str | None) -> str | None:
-    if not evidence:
-        return None
-    match = _CALL_SITE_RE.search(evidence)
-    return match.group("site") if match else None
+    return parse_call_site_text(evidence)
 
 
 def _is_semantic(doc: dict[str, Any]) -> bool:
@@ -406,7 +398,7 @@ def explore(params: ExploreInput, multi: MultiGraph) -> dict[str, Any]:
             elif relation_type == "part_of":
                 if outgoing:
                     sections["partOf"].append(_row(other))
-                    if file_id is None and str(other["name"]).startswith("file:"):
+                    if file_id is None and is_file_entity_name(str(other["name"])):
                         file_id = other_id
                 else:
                     sections["contains"].append(_row(other))
