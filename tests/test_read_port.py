@@ -310,3 +310,94 @@ def test_list_relations_narrows_by_polarity(harness: Harness) -> None:
     listed = harness.reader.list_relations(RelationFilter.model_validate({"polarity": "+"}))
 
     assert [r.id for r in listed] == [positive.id]
+
+
+# =============================================================================
+# get_relations / get_neighbors
+# =============================================================================
+
+
+def test_get_relations_defaults_to_incoming_edges_before_outgoing(harness: Harness) -> None:
+    hub = harness.entity("Hub")
+    upstream = harness.entity("Upstream")
+    downstream = harness.entity("Downstream")
+    out = harness.relation(hub.id, downstream.id)
+    incoming = harness.relation(upstream.id, hub.id)
+
+    attached = harness.reader.get_relations(hub.id)
+
+    # 'both' is incoming then outgoing — creation order does not reorder it.
+    assert [r.id for r in attached] == [incoming.id, out.id]
+
+
+def test_get_relations_narrows_by_direction(harness: Harness) -> None:
+    hub = harness.entity("Hub")
+    upstream = harness.entity("Upstream")
+    downstream = harness.entity("Downstream")
+    out = harness.relation(hub.id, downstream.id)
+    incoming = harness.relation(upstream.id, hub.id)
+
+    assert [r.id for r in harness.reader.get_relations(hub.id, "outgoing")] == [out.id]
+    assert [r.id for r in harness.reader.get_relations(hub.id, "incoming")] == [incoming.id]
+
+
+def test_get_relations_narrows_by_relation_type(harness: Harness) -> None:
+    hub = harness.entity("Hub")
+    other = harness.entity("Other")
+    causes = harness.relation(hub.id, other.id, relationType="causes")
+    harness.relation(hub.id, other.id, relationType="contradicts")
+
+    attached = harness.reader.get_relations(hub.id, "both", "causes")
+
+    assert [r.id for r in attached] == [causes.id]
+
+
+def test_get_relations_of_an_absent_entity_is_empty(harness: Harness) -> None:
+    harness.entity("Hub")
+
+    assert harness.reader.get_relations("no-such-id") == []
+
+
+def test_get_neighbors_deduplicates_across_parallel_edges(harness: Harness) -> None:
+    hub = harness.entity("Hub")
+    other = harness.entity("Other")
+    harness.relation(hub.id, other.id, relationType="causes")
+    harness.relation(hub.id, other.id, relationType="contradicts")
+
+    neighbors = harness.reader.get_neighbors(hub.id, "outgoing")
+
+    assert [e.name for e in neighbors] == ["Other"]
+
+
+def test_get_neighbors_follows_both_directions_by_default(harness: Harness) -> None:
+    hub = harness.entity("Hub")
+    upstream = harness.entity("Upstream")
+    downstream = harness.entity("Downstream")
+    harness.relation(hub.id, downstream.id)
+    harness.relation(upstream.id, hub.id)
+
+    neighbors = harness.reader.get_neighbors(hub.id)
+
+    assert [e.name for e in neighbors] == ["Upstream", "Downstream"]
+
+
+# =============================================================================
+# get_entity_vectors
+# =============================================================================
+
+
+def test_get_entity_vectors_returns_only_embedded_entities(harness: Harness) -> None:
+    embedded = harness.entity("Embedded")
+    harness.entity("Bare")
+    harness.vector(embedded.id, [0.25, -0.5, 1.0])
+
+    vectors = harness.reader.get_entity_vectors()
+
+    assert list(vectors) == [embedded.id]
+    assert vectors[embedded.id] == pytest.approx([0.25, -0.5, 1.0])
+
+
+def test_get_entity_vectors_is_empty_without_embeddings(harness: Harness) -> None:
+    harness.entity("Bare")
+
+    assert harness.reader.get_entity_vectors() == {}

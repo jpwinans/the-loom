@@ -97,3 +97,33 @@ class GraphReadPort(Protocol):
         at all — only an explicit value narrows.
         """
         ...
+
+    def get_relations(
+        self,
+        entity_id: str,
+        direction: Direction = "both",
+        relation_type: str | None = None,
+    ) -> list[Relation]:
+        """Edges attached to one entity; empty when the entity does not exist.
+
+        ``direction='both'`` returns the incoming edges first, then the
+        outgoing ones — each group in creation order.
+        """
+        ...
+
+    def get_neighbors(
+        self,
+        entity_id: str,
+        direction: Direction = "both",
+        relation_type: str | None = None,
+    ) -> list[Entity]:
+        """Entities adjacent to one entity, deduplicated, in the order their
+        first connecting edge appears in ``get_relations``."""
+        ...
+
+    # -- vectors ---------------------------------------------------------------
+
+    def get_entity_vectors(self) -> dict[str, list[float]]:
+        """Every embedded entity's vector, keyed by entity id, in entity
+        creation order. Entities without an embedding are absent."""
+        ...

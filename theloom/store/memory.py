@@ -34,7 +34,12 @@ from theloom.model import (
     RelationCreate,
     RelationFilter,
 )
-from theloom.store.filters import apply_entity_filters, apply_relation_filters
+from theloom.store.base import Direction
+from theloom.store.filters import (
+    apply_entity_filters,
+    apply_relation_filters,
+    extract_neighbor_ids,
+)
 from theloom.timeutil import iso_now
 
 
@@ -48,6 +53,8 @@ class InMemoryGraphStore:
         # Relation wire docs in creation order; parallel edges between the same
         # pair are as first-class here as they are in the graph.
         self._relations: list[dict[str, Any]] = []
+        # entity id -> embedding, for the entities that have one.
+        self._vectors: dict[str, list[float]] = {}
 
     # -- writes (scene setting; deliberately outside the port) -----------------
 
@@ -82,6 +89,10 @@ class InMemoryGraphStore:
         self._relations.extend(docs)
         return [Relation.model_validate(doc) for doc in docs]
 
+    def set_entity_vector(self, entity_id: str, vector: list[float]) -> None:
+        """Attach an embedding to an entity (same store, as in FalkorDB)."""
+        self._vectors[entity_id] = [float(x) for x in vector]
+
     # -- reads (the port) ------------------------------------------------------
 
     def read_entity(self, entity_id: str) -> Entity | None:
@@ -106,6 +117,46 @@ class InMemoryGraphStore:
         return apply_relation_filters(
             [Relation.model_validate(doc) for doc in self._relations], filter
         )
+
+    def get_entity_vectors(self) -> dict[str, list[float]]:
+        # Keyed in entity creation order, matching the graph's `ORDER BY id(n)`.
+        return {
+            entity_id: list(self._vectors[entity_id])
+            for entity_id in self._entities
+            if entity_id in self._vectors
+        }
+
+    def get_relations(
+        self,
+        entity_id: str,
+        direction: Direction = "both",
+        relation_type: str | None = None,
+    ) -> list[Relation]:
+        def attached(end: str) -> list[Relation]:
+            return [
+                Relation.model_validate(doc)
+                for doc in self._relations
+                if doc[end] == entity_id
+                and (relation_type is None or doc["relationType"] == relation_type)
+            ]
+
+        if direction == "outgoing":
+            return attached("from")
+        if direction == "incoming":
+            return attached("to")
+        # 'both' is incoming then outgoing, each in creation order.
+        return attached("to") + attached("from")
+
+    def get_neighbors(
+        self,
+        entity_id: str,
+        direction: Direction = "both",
+        relation_type: str | None = None,
+    ) -> list[Entity]:
+        relations = self.get_relations(entity_id, direction, relation_type)
+        neighbor_ids = extract_neighbor_ids(entity_id, relations, direction)
+        found = self.read_entities(neighbor_ids)
+        return [found[nid] for nid in neighbor_ids if nid in found]
 
     def read_relation(
         self, from_id: str, to_id: str, relation_type: str | None = None
