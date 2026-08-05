@@ -30,7 +30,13 @@ here are built around:
    grouped-by-file (``byFile``: ``theloom/operations/bulk.py: 12``), so the
    count and the location survive even when the names do not.
 4. The ``truncation`` block states what was cut (per section) and how to widen
-   it — ``shown + sum(cut) == total`` always.
+   it — ``shown + sum(cut) == total`` always. ``applied`` means "this answer is
+   incomplete", which includes blast-radius withholding a hub's subtree: those
+   rows are in neither count, so the flag is the only thing that can say so.
+5. Neighbourhood reads are reads of *current* state. Hydration by id has no
+   status filter of its own, so these commands apply one: an entity that has
+   been superseded or retracted is gone from every list here, exactly as it is
+   gone from ``list-entities`` and from the name resolver.
 
 Output is compact JSON with short strings, never prose blobs: the CLI's
 JSON-in/JSON-out contract holds.
@@ -48,7 +54,7 @@ from typing import Any
 from pydantic import Field
 
 from theloom.errors import NotFoundError
-from theloom.model import RelationFilter
+from theloom.model import Relation, RelationFilter
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.operations.entity import compact_entity_doc
 from theloom.store.falkor import FalkorGraphStore
@@ -256,6 +262,38 @@ def _section_rollup(key: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]
     return _rollup(rows, "entityType") if key == "semantic" else _rollup(rows)
 
 
+def _is_active(doc: dict[str, Any] | None) -> bool:
+    """Whether a doc is part of *current* state.
+
+    Updates invalidate, they never overwrite: a superseded / retracted /
+    deprecated / investigating entity has left the live projection, and its
+    edges are not deleted when it goes. Every list read in the repo defaults to
+    ``status=active`` (``EntityFilter.status_filter``); the neighbourhood reads
+    here hydrate by id, which has no such filter, so they apply it themselves.
+    An absent doc is an entity that is gone — also not current. Unset means
+    active (``Entity.effective_status``).
+    """
+    return doc is not None and str(doc.get("status") or "active") == "active"
+
+
+def _active_docs(docs: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {entity_id: doc for entity_id, doc in docs.items() if _is_active(doc)}
+
+
+def _unique_relations(relations: list[Relation]) -> list[Relation]:
+    """A ``both``-direction read runs the incoming and outgoing patterns as two
+    queries and concatenates them, so a self-edge — direct recursion, which the
+    extractor emits — comes back twice. One edge is one relation."""
+    seen: set[str] = set()
+    unique: list[Relation] = []
+    for relation in relations:
+        if relation.id in seen:
+            continue
+        seen.add(relation.id)
+        unique.append(relation)
+    return unique
+
+
 def _entity_doc(store: FalkorGraphStore, entity_id: str) -> dict[str, Any]:
     doc = store.read_entity_doc(entity_id)
     if doc is None:
@@ -322,12 +360,12 @@ def _semantic_rows(
 
     collect(list(docs), docs)
     if file_id is not None and file_id != entity_id:
-        file_relations = store.get_relations(file_id, "both", None)
+        file_relations = _unique_relations(store.get_relations(file_id, "both", None))
         file_neighbour_ids = [
             relation.to if relation.from_ == file_id else relation.from_
             for relation in file_relations
         ]
-        file_docs = store.read_entity_docs(file_neighbour_ids)
+        file_docs = _active_docs(store.read_entity_docs(file_neighbour_ids))
         collect(file_neighbour_ids, file_docs)
     return rows
 
@@ -340,36 +378,41 @@ def explore(params: ExploreInput, multi: MultiGraph) -> dict[str, Any]:
     doc = _entity_doc(store, entity_id)
     budget = params.budget if params.budget is not None else DEFAULT_BUDGET_TOKENS
 
-    relations = store.get_relations(entity_id, "both", None)
+    relations = _unique_relations(store.get_relations(entity_id, "both", None))
     neighbour_ids = [
         relation.to if relation.from_ == entity_id else relation.from_ for relation in relations
     ]
-    neighbour_docs = store.read_entity_docs(neighbour_ids)
+    neighbour_docs = _active_docs(store.read_entity_docs(neighbour_ids))
 
     sections: dict[str, list[dict[str, Any]]] = {key: [] for key in SECTION_KEYS}
     file_id: str | None = None
     for relation in relations:
-        outgoing = relation.from_ == entity_id
-        other_id = relation.to if outgoing else relation.from_
-        other = neighbour_docs.get(other_id)
-        if other is None:
-            continue
         relation_type = relation.relation_type.value
-        if relation_type == "calls":
-            key = "callsOut" if outgoing else "callersIn"
-            sections[key].append(_row(other, at=_call_site(relation.evidence)))
-        elif relation_type == "requires":
-            sections["imports" if outgoing else "importedBy"].append(_row(other))
-        elif relation_type == "part_of":
-            if outgoing:
-                sections["partOf"].append(_row(other))
-                if file_id is None and str(other["name"]).startswith("file:"):
-                    file_id = other_id
-            else:
-                sections["contains"].append(_row(other))
-        elif relation_type == "instance_of":
-            kind = "extends" if outgoing else "extendedBy"
-            sections["inheritance"].append(_row(other, kind=kind))
+        # A self-edge is genuinely both directions — direct recursion calls and
+        # is called — so it is filed under each, once. Every other edge matches
+        # exactly one arm.
+        for outgoing in (True, False):
+            if (relation.from_ if outgoing else relation.to) != entity_id:
+                continue
+            other_id = relation.to if outgoing else relation.from_
+            other = neighbour_docs.get(other_id)
+            if other is None:
+                continue
+            if relation_type == "calls":
+                key = "callsOut" if outgoing else "callersIn"
+                sections[key].append(_row(other, at=_call_site(relation.evidence)))
+            elif relation_type == "requires":
+                sections["imports" if outgoing else "importedBy"].append(_row(other))
+            elif relation_type == "part_of":
+                if outgoing:
+                    sections["partOf"].append(_row(other))
+                    if file_id is None and str(other["name"]).startswith("file:"):
+                        file_id = other_id
+                else:
+                    sections["contains"].append(_row(other))
+            elif relation_type == "instance_of":
+                kind = "extends" if outgoing else "extendedBy"
+                sections["inheritance"].append(_row(other, kind=kind))
 
     sections["semantic"] = _semantic_rows(store, entity_id, neighbour_docs, file_id)
 
@@ -455,7 +498,7 @@ def _explore_hint(budget: int, dropped: int) -> str:
 def _call_rows(store: FalkorGraphStore, entity_id: str, *, incoming: bool) -> list[dict[str, Any]]:
     relations = store.get_relations(entity_id, "incoming" if incoming else "outgoing", "calls")
     other_ids = [relation.from_ if incoming else relation.to for relation in relations]
-    docs = store.read_entity_docs(other_ids)
+    docs = _active_docs(store.read_entity_docs(other_ids))
     rows: list[dict[str, Any]] = []
     for relation in relations:
         other_id = relation.from_ if incoming else relation.to
@@ -603,7 +646,21 @@ def blast_radius(params: BlastRadiusInput, multi: MultiGraph) -> dict[str, Any]:
     )
 
     dependants, degree = _dependency_index(store)
-    members = _members_of(store, seed_id)
+    docs: dict[str, dict[str, Any]] = {seed_id: seed_doc}
+    hydrated: set[str] = {seed_id}
+
+    def hydrate(entity_ids: list[str]) -> None:
+        unknown = [entity_id for entity_id in entity_ids if entity_id not in hydrated]
+        if unknown:
+            hydrated.update(unknown)
+            docs.update(store.read_entity_docs(unknown))
+
+    # Retired state is not current state, and retiring an entity does not delete
+    # its edges — so a superseded member, dependant or hub is neither fallout
+    # nor a route to it, and is dropped before it can be reported as either.
+    candidate_members = _members_of(store, seed_id)
+    hydrate(candidate_members)
+    members = [member for member in candidate_members if _is_active(docs.get(member))]
     seeds = {seed_id, *members}
     threshold = _degree_threshold(list(degree.values()), percentile)
 
@@ -615,7 +672,7 @@ def blast_radius(params: BlastRadiusInput, multi: MultiGraph) -> dict[str, Any]:
     visited = set(seeds)
     frontier = sorted(seeds)
     for hop in range(depth):
-        next_frontier: list[str] = []
+        candidates: list[str] = []
         for node in frontier:
             node_degree = degree.get(node, 0)
             if node not in seeds and node_degree > threshold and node_degree >= MIN_HUB_DEGREE:
@@ -625,19 +682,19 @@ def blast_radius(params: BlastRadiusInput, multi: MultiGraph) -> dict[str, Any]:
                 if dependant in visited:
                     continue
                 visited.add(dependant)
-                affected[dependant] = hop + 1
-                next_frontier.append(dependant)
+                candidates.append(dependant)
+        hydrate(candidates)
+        next_frontier = [node for node in candidates if _is_active(docs.get(node))]
+        for node in next_frontier:
+            affected[node] = hop + 1
         frontier = next_frontier
         if not frontier:
             break
 
-    docs = store.read_entity_docs([*affected, *suppressed])
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for entity_id, hops in affected.items():
-        doc = docs.get(entity_id)
-        name = doc["name"] if doc is not None else entity_id
-        module = _module_of(doc) if doc is not None else UNKNOWN_MODULE
-        grouped[module].append({"name": name, "depth": hops})
+        doc = docs[entity_id]  # only live, hydrated nodes ever enter ``affected``
+        grouped[_module_of(doc)].append({"name": doc["name"], "depth": hops})
     for rows in grouped.values():
         rows.sort(key=lambda row: (row["depth"], row["name"]))
     modules = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
@@ -669,7 +726,10 @@ def blast_radius(params: BlastRadiusInput, multi: MultiGraph) -> dict[str, Any]:
         "affected": {"total": total, "byModule": by_module},
         "suppressedHubs": hub_rows,
         "truncation": {
-            "applied": shown < total,
+            # A suppressed hub withholds its whole dependant subtree, which
+            # never enters ``affected`` and so is counted by neither number:
+            # the list is incomplete even when every reached row is listed.
+            "applied": shown < total or bool(hub_rows),
             "shown": shown,
             "total": total,
             "hint": _blast_hint(total - shown, limit, hub_rows, percentile),

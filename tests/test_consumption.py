@@ -23,6 +23,7 @@ from redis import Redis
 
 from theloom.cli.registry import COMMANDS, run_handler
 from theloom.errors import ValidationError
+from theloom.model import RelationCreate
 from theloom.store.multigraph import MultiGraph
 
 
@@ -161,6 +162,55 @@ def test_explore_answers_a_symbol_in_one_call(multi: MultiGraph, code: dict[str,
     assert result["truncation"]["shown"] == result["truncation"]["total"]
 
 
+def test_explore_drops_retired_neighbours(multi: MultiGraph, code: dict[str, str]) -> None:
+    """Updates invalidate; they never overwrite. A superseded neighbour has left
+    the current projection, so it must leave every neighbourhood read too —
+    otherwise explore reports retired state as live and contradicts the
+    resolver, which is active-only."""
+    run_handler("update-entity", {"id": code["helper"], "status": "superseded"}, multi)
+    run_handler("update-entity", {"id": code["claim"], "status": "superseded"}, multi)
+
+    result = run_handler("explore", {"name": "run (a.py)"}, multi)
+    assert result["callsOut"]["total"] == 0
+    assert result["callsOut"]["shown"] == []
+    assert result["semantic"]["total"] == 0
+    # ... and what is still live is untouched.
+    assert [row["name"] for row in result["callersIn"]["shown"]] == ["caller_one (b.py)"]
+
+
+def test_explore_reports_recursion_once_in_each_direction(multi: MultiGraph) -> None:
+    """A self-edge is direct recursion: one call out, one caller in — and the
+    "both" store read returns it twice, which must not become a phantom row.
+
+    The create-relation *command* gates self-edges away, but the codebase
+    extractor writes call edges through ``store.create_relation`` directly, so
+    this is the shape recursion actually takes in an extracted graph.
+    """
+    fact = symbol(multi, "factorial (m.py)", "theloom/m.py", "1-5")
+    multi.get_store(None).create_relation(
+        RelationCreate.model_validate(
+            {
+                "from": fact,
+                "to": fact,
+                "relationType": "calls",
+                "strength": "moderate",
+                "evidence": "factorial calls factorial at theloom/m.py:3",
+            }
+        )
+    )
+
+    result = run_handler("explore", {"name": "factorial (m.py)"}, multi)
+    assert result["callsOut"]["total"] == 1
+    assert result["callersIn"]["total"] == 1
+    assert result["callsOut"]["shown"][0]["name"] == "factorial (m.py)"
+    assert result["callersIn"]["shown"][0]["name"] == "factorial (m.py)"
+    # ... and the dedicated call lists agree with explore.
+    callers = run_handler("find-callers", {"name": "factorial (m.py)"}, multi)["callers"]
+    callees = run_handler("find-callees", {"name": "factorial (m.py)"}, multi)["callees"]
+    assert len(callers) == 1
+    assert len(callees) == 1
+
+
 def test_explore_of_a_file_reports_imports_and_contents(
     multi: MultiGraph, code: dict[str, str]
 ) -> None:
@@ -211,9 +261,15 @@ def _wide_graph(multi: MultiGraph) -> str:
     return seed
 
 
+#: Big enough that the round-robin allocator actually runs — below the fixed
+#: overhead every section collapses to its unconditional first row, and an
+#: evenness assertion over [1, 1, 1] pins nothing.
+WIDE_BUDGET = 500
+
+
 def test_explore_budget_degrades_breadth_evenly(multi: MultiGraph) -> None:
     _wide_graph(multi)
-    result = run_handler("explore", {"name": "hot_spot (core.py)", "budget": 200}, multi)
+    result = run_handler("explore", {"name": "hot_spot (core.py)", "budget": WIDE_BUDGET}, multi)
 
     truncation = result["truncation"]
     assert truncation["applied"] is True
@@ -224,14 +280,25 @@ def test_explore_budget_degrades_breadth_evenly(multi: MultiGraph) -> None:
     # Every populated section survives: breadth degrades, sections do not vanish.
     for key in ("callersIn", "callsOut", "partOf", "semantic"):
         assert result[key]["shown"], key
-    # ... and no section hogged the whole budget.
+    # ... and no section hogged the whole budget. The allocator must have run
+    # past the unconditional first row, or evenness here would be vacuous.
     counts = [len(result[key]["shown"]) for key in ("callersIn", "callsOut", "semantic")]
+    assert min(counts) >= 2
     assert max(counts) - min(counts) <= 1
+
+
+def test_explore_budget_floor_is_one_row_per_section(multi: MultiGraph) -> None:
+    """Below the fixed overhead there is nothing left to allocate: every
+    populated section keeps exactly its first row, and nothing more."""
+    _wide_graph(multi)
+    result = run_handler("explore", {"name": "hot_spot (core.py)", "budget": 100}, multi)
+    for key in ("callersIn", "callsOut", "partOf", "semantic"):
+        assert len(result[key]["shown"]) == 1, key
 
 
 def test_explore_rolls_up_what_it_dropped(multi: MultiGraph) -> None:
     _wide_graph(multi)
-    result = run_handler("explore", {"name": "hot_spot (core.py)", "budget": 200}, multi)
+    result = run_handler("explore", {"name": "hot_spot (core.py)", "budget": WIDE_BUDGET}, multi)
 
     callers = result["callersIn"]
     assert callers["total"] == 12
@@ -244,7 +311,7 @@ def test_explore_rolls_up_what_it_dropped(multi: MultiGraph) -> None:
 def test_explore_rolls_up_semantic_by_type(multi: MultiGraph) -> None:
     """A claim lives in no file, so its rollup groups by type, not by file."""
     _wide_graph(multi)
-    semantic = run_handler("explore", {"name": "hot_spot (core.py)", "budget": 200}, multi)[
+    semantic = run_handler("explore", {"name": "hot_spot (core.py)", "budget": WIDE_BUDGET}, multi)[
         "semantic"
     ]
     assert "byFile" not in semantic
@@ -344,6 +411,15 @@ def test_find_callers_rolls_up_by_file_past_the_cap(multi: MultiGraph) -> None:
     }
     assert "limit" in truncation["hint"]
     assert sum(entry["count"] for entry in result["byFile"]) == 5
+
+
+def test_find_callers_drops_retired_callers(multi: MultiGraph, code: dict[str, str]) -> None:
+    """A superseded symbol is not a live caller — and explore of it raises
+    NOT_FOUND, so listing it here would make the surface contradict itself."""
+    run_handler("update-entity", {"id": code["caller"], "status": "superseded"}, multi)
+    result = run_handler("find-callers", {"name": "run (a.py)"}, multi)
+    assert result["callers"] == []
+    assert result["truncation"]["total"] == 0
 
 
 def test_find_callers_refuses_ambiguity(multi: MultiGraph) -> None:
@@ -456,6 +532,19 @@ def test_blast_radius_suppresses_hubs_and_says_so(multi: MultiGraph) -> None:
     assert [hub_row["name"] for hub_row in result["suppressedHubs"]] == ["log (util.py)"]
     assert result["suppressedHubs"][0]["degree"] == 13
     assert "hub" in result["truncation"]["hint"]
+    # A whole subtree (the hub's 12 dependants) was excluded, so the impact
+    # list is NOT complete — saying otherwise is the dishonest answer.
+    assert result["truncation"]["applied"] is True
+
+
+def test_blast_radius_ignores_retired_dependants(multi: MultiGraph, chain: dict[str, str]) -> None:
+    """A superseded dependant is neither fallout nor a route to fallout: beta
+    and gamma reach Widget only through alpha, so they leave with it."""
+    run_handler("update-entity", {"id": chain["alpha"], "status": "superseded"}, multi)
+    result = run_handler("blast-radius", {"name": "Widget (w.py)"}, multi)
+    names = {row["name"] for entry in result["affected"]["byModule"] for row in entry["entities"]}
+    assert names == {"SubWidget (s.py)"}
+    assert result["affected"]["total"] == 1
 
 
 def test_blast_radius_limit_spreads_across_modules(
