@@ -16,7 +16,9 @@ errors prepended to import errors.
 from __future__ import annotations
 
 import json
+import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field
@@ -234,6 +236,42 @@ def _existing_lookup(store: FalkorGraphStore) -> dict[str, Any]:
             if not existing_active and candidate_active:
                 lookup[key] = entity
     return lookup
+
+
+def resolve_bulk_import_document(input_doc: dict[str, Any]) -> dict[str, Any]:
+    """The bulk-import transport policy: file path / stdin-JSONL / inline modes.
+
+    This runs on the raw pre-validation input document (the CLI's raw_handler
+    hatch), because the transport mode selects which raw keys to forward
+    before ``BulkImportInput`` ever sees them — inline mode, in particular,
+    intentionally drops ``jsonlInput`` (JSONL is reachable via stdin only).
+    """
+    if isinstance(input_doc.get("file"), str):
+        file_data = json.loads(Path(input_doc["file"]).resolve().read_text(encoding="utf-8"))
+        return {
+            "entities": file_data.get("entities") or [],
+            "relations": file_data.get("relations") or [],
+            "graph": input_doc.get("graph"),
+            "dryRun": input_doc.get("dryRun"),
+        }
+    if input_doc.get("stdin") is True:
+        return {
+            "jsonlInput": sys.stdin.read(),
+            "graph": input_doc.get("graph"),
+            "dryRun": input_doc.get("dryRun"),
+        }
+    return {
+        "entities": input_doc.get("entities") or [],
+        "relations": input_doc.get("relations") or [],
+        "graph": input_doc.get("graph"),
+        "dryRun": input_doc.get("dryRun"),
+    }
+
+
+def bulk_import_raw(input_doc: dict[str, Any], multi: MultiGraph) -> dict[str, Any]:
+    """Resolve the raw input document's transport mode, then run the import."""
+    doc = resolve_bulk_import_document(input_doc)
+    return bulk_import(BulkImportInput.model_validate(doc), multi)
 
 
 def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:

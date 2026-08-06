@@ -6,7 +6,7 @@ All Loom commands grouped by function. Commands use kebab-case (e.g., `create-en
 
 ---
 
-## Entity & Relation CRUD (12 tools)
+## Entity & Relation CRUD (16 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -15,8 +15,12 @@ All Loom commands grouped by function. Commands use kebab-case (e.g., `create-en
 | `update-entity` | Update fields | `id`, `name?`, `observations?`, `confidence?`, `status?`, `graph?` |
 | `delete-entity` | Delete entity | `id`, `graph?` |
 | `list-entities` | Filter entities | `entityType?`, `query?`, `name?`, `includeSuperseded?`/`includeDeprecated?`/`includeRetracted?`/`includeInvestigating?`, `limit?`, `compact?`, `graph?` |
+| `read-entities-by-name` | Resolve a batch of entity names to UUIDs | `names`, `graph?` |
+| `merge-entities` | Merge a secondary entity into a primary one: union observations, redirect relations, supersede the secondary | `primary`, `secondary`, `dryRun?`, `graph?` |
 | `create-relation` | Create edge | `from`, `to`, `relationType`, `polarity`, `strength`, `evidence?`, `graph?` |
+| `create-relations` | Create multiple relations in a single invocation | `relations`, `continueOnError?` |
 | `read-relation` | Read relation | `id`, `graph?` |
+| `read-relations` | Read all relations between source and target entity IDs | `from`, `to`, `relationType?`, `graph?` |
 | `update-relation` | Update relation | `id`, `relationType?`, `strength?`, `graph?` |
 | `delete-relation` | Delete relation | `id`, `graph?` |
 | `list-relations` | Filter relations | `entityId?`, `relationType?`, `graph?` |
@@ -50,7 +54,7 @@ response when omitted). `list-entities` with `limit` returns
 
 ---
 
-## Semantic Operations (8 tools)
+## Semantic Operations (11 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -60,23 +64,26 @@ response when omitted). `list-entities` with `limit` returns
 | `embed-entities` | Embed all entities | `graph?` |
 | `embed-entity` | Embed single entity | `entityId`, `graph?` |
 | `embedding-status` | Check coverage | `graph?` |
+| `embedding-reconcile` | Reconcile entity status vs vector store | `dryRun?`, `cleanOrphans?`, `graph?` |
 | `flush-pending-embeddings` | Force pending | `graph?` |
 | `retry-failed-embeddings` | Retry failures | `graph?` |
+| `list-dead-letters` | List dead-letter queue entries | `graph?` |
 | `warm-embedder` | Pre-download the embedding model and run one query, ahead of a first `embed-entities`/search call | — |
 
 ---
 
-## Semantic Discovery (3 tools)
+## Semantic Discovery (4 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
 | `semantic-gaps` | Similar but unconnected entities | `minSimilarity?`, `limit?`, `graph?` |
 | `suggest-relations` | Propose missing relations | `limit?`, `graph?` |
+| `resolve-gaps` | Create relations for semantic gaps | `threshold?`, `maxResolutions?`, `relationTypeHint?`, `dryRun?`, `graph?` |
 | `propose-entities` | Suggest missing entities | `graph?` |
 
 ---
 
-## Document Operations (10 tools)
+## Document Operations (11 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -90,10 +97,11 @@ response when omitted). `list-entities` with `limit` returns
 | `extract-from-documents` | LLM extraction from docs | `category?`, `documentId?`, `query?`, `focus?`, `dryRun?`, `graph?` |
 | `extract-preview` | Preview extraction | `category?`, `maxChunks?`, `focus?`, `graph?` |
 | `extraction-rollback` | Rollback extraction | `graph?` |
+| `analyze-category` | Discover prevalent semantic themes in a document category | `category`, `topK?`, `similarityThreshold?`, `minClusterSize?`, `maxChunks?`, `graph?` |
 
 ---
 
-## Graph Topology (8 tools)
+## Graph Topology (9 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -105,6 +113,7 @@ response when omitted). `list-entities` with `limit` returns
 | `list-loops` | List detected loops | `graph?` |
 | `loop-details` | Detail for specific loop | `loopId`, `graph?` |
 | `list-leverage-points` | Find intervention points | `level?`, `minLevel?`, `maxLevel?`, `depthCategory?`, `graph?` |
+| `reify-patterns` | Reify recurring structural motifs as pattern entities | `minOccurrences?`, `maxDepth?`, `maxPatterns?`, `dryRun?`, `graph?` |
 
 ---
 
@@ -118,7 +127,7 @@ response when omitted). `list-entities` with `limit` returns
 
 ---
 
-## Epistemic Operations (11 tools)
+## Epistemic Operations (14 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -133,6 +142,9 @@ response when omitted). `list-entities` with `limit` returns
 | `claims-from-source` | Claims from a source | `sourceId`, `graph?` |
 | `provenance-chain` | Trace lineage | `entityId`, `maxDepth?`, `graph?` |
 | `propagate-credit` | Cascade confidence changes | `entityId`, `delta`, `maxDepth?`, `graph?` |
+| `cross-session-contradictions` | Contradictions across sessions | `limit?`, `includeAllStatuses?`, `session?`, `entityType?`, `minConfidence?`, `sessionIds?`, `maxDepth?`, `graph?` |
+| `trigger-status` | Status of the analogy trigger queue | `graph?` |
+| `process-triggers` | Dequeue pending analogy trigger candidates | `limit?`, `graph?` |
 
 ---
 
@@ -146,7 +158,7 @@ response when omitted). `list-entities` with `limit` returns
 
 ---
 
-## Algebraic Traversal (10 tools)
+## Algebraic Traversal (12 tools)
 
 Semiring-based graph computation for advanced path analysis.
 
@@ -158,16 +170,18 @@ Semiring-based graph computation for advanced path analysis.
 | `semiring-reachable` | Boolean reachability | `sourceId`, `graph?` |
 | `semiring-bottleneck` | Widest path (capacity) | `sourceId`, `graph?` |
 | `semiring-traverse` | Generic semiring traversal | `sourceId`, `semiring`, `graph?` |
+| `transitive-closure` | Boolean transitive closure pairs | `relationType?`, `maxDepth?`, `graph?` |
 | `adaptive-traverse` | Adaptive traversal | `sourceId`, `graph?` |
 | `adaptive-distances` | Adaptive distances | `sourceId`, `graph?` |
 | `metapath-traverse` | Type-constrained traversal | `sourceId`, `pattern`, `graph?` |
 | `cross-type-query` | Query across entity types | `sourceId`, `targetType?`, `graph?` |
+| `type-analyze` | Analyze a query into a routing plan | `source?`, `target?`, `relationTypes?`, `metapath?`, `graph?` |
 
 **Semiring types:** `boolean` (reachability), `tropical` (shortest path), `viterbi` (most confident), `counting` (path count), `capacity` (widest bottleneck)
 
 ---
 
-## Verification (8 tools)
+## Verification (9 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -179,10 +193,28 @@ Semiring-based graph computation for advanced path analysis.
 | `validate-mutation-trace` | Mutation history | `trace`, `graph?` |
 | `propagate-constraints` | Constraint propagation | `graph?` |
 | `list-guard-violations` | List violations | `graph?` |
+| `constrained-generate` | Generate graph structure satisfying type constraints | `maxEntities`, `maxRelations`, `requiredTypes?`, `commit?`, `graph?` |
 
 ---
 
-## Composite Operations (11 tools)
+## Inference Engine (8 tools)
+
+Declarative forward-chaining rules over the graph, with a queryable derivation trace.
+
+| Tool | Description | Key Params |
+|------|-------------|------------|
+| `inference-rule-create` | Create a declarative inference rule | `rule`, `graph?` |
+| `inference-rule-list` | List all inference rules stored in the graph | `graph?` |
+| `inference-rule-delete` | Delete an inference rule by its entity id | `ruleId`, `graph?` |
+| `run-inference` | Run the inference engine: evaluate enabled rules | `dryRun?`, `ruleId?`, `graph?` |
+| `inference-trace-list` | List inference traces | `ruleId?`, `limit?`, `graph?` |
+| `inference-trace-get` | Get full details of a specific inference trace | `traceId`, `graph?` |
+| `inference-trace-for-fact` | Find the inference trace that produced a relation | `relationId`, `graph?` |
+| `explain-inference` | Explain a derived fact by walking its inference trace | `relationId`, `graph?` |
+
+---
+
+## Composite Operations (16 tools)
 
 Bundled multi-step analyses. **Prefer these over manual multi-step workflows.**
 
@@ -199,10 +231,33 @@ Bundled multi-step analyses. **Prefer these over manual multi-step workflows.**
 | `gap-fill-cycle` | Detect + suggest + validate | `autoCreate?`, `graph?` |
 | `simulate-change` | Simulate mutation effects | `entityId`, `mutation?`, `graph?` |
 | `hypothesis-engine` | Gaps → propose → filter → dedup → rank | `maxResults?`, `minConfidence?`, `gapLimit?`, `strategies?`, `dedupThreshold?`, `dedupMode?`, `dedupEnabled?`, `graph?` |
+| `analogy-transfer` | Generate novel entities via CWSG analogy transfer from cross-domain mappings | `sourceDomain`, `targetDomain`, `temperature?`, `graph?` |
+| `creativity-loop` | Explore, retrieve, transfer, score, accept/reject, learn — read-only and deterministic, no LLM | `maxCycles?`, `maxEmptyCycles?`, `acceptanceThreshold?`, `slippageTemperature?`, `retrieveMaxCandidates?`, `maxProposalsPerCycle?`, `exploreTopK?`, `detectPlateau?`, `purpose?`, `generalizationBias?`, `graph?` |
+| `enrichment-crawl` | Crawl under-described frontier nodes and propose enrichment relations; WRITES when `dryRun` is false (default true) | `maxNodes?`, `maxCandidates?`, `numSamples?`, `minConfidence?`, `dryRun?`, `graph?` |
+| `explore-frontier` | Rank frontier regions by foraging signals with MVT advice and anti-pattern guards | `topK?`, `includeMvt?`, `includeAntiPatterns?`, `purpose?`, `graph?` |
+| `far-analogy-retrieval` | Full far-analogy retrieval pipeline: fingerprint, match, slip, transfer, score | `maxCandidates?`, `minStructuralSimilarity?`, `slippageTemperature?`, `maxProposals?`, `useSemanticFingerprint?`, `purpose?`, `explorationBoosted?`, `bridgingBoost?`, `graph?` |
 
 ---
 
-## Synthesis (6 tools)
+## Symbolic Mathematics (8 tools)
+
+SymPy-backed exact math: solve, simplify, verify, factor, expand, evaluate, and LaTeX
+rendering, plus a natural-language front end.
+
+| Tool | Description | Key Params |
+|------|-------------|------------|
+| `symbolic-solve` | Solve an equation or system for variables using SymPy | `equation?`, `equations?`, `variable?`, `variables?` |
+| `symbolic-simplify` | Simplify a mathematical expression using SymPy | `expression` |
+| `symbolic-verify` | Verify whether a proposed solution satisfies an equation | `equation`, `variable`, `value` |
+| `symbolic-factor` | Factor a polynomial expression using SymPy | `expression` |
+| `symbolic-expand` | Expand a product or power expression using SymPy | `expression` |
+| `symbolic-evaluate` | Numerically evaluate an expression, optionally with substitutions | `expression`, `substitutions?` |
+| `symbolic-latex` | Convert a mathematical expression to LaTeX notation | `expression` |
+| `solve-problem` | Solve a natural-language math problem via classify → translate → SymPy, with LLM fallback | `question` |
+
+---
+
+## Synthesis (8 tools)
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
@@ -212,6 +267,8 @@ Bundled multi-step analyses. **Prefer these over manual multi-step workflows.**
 | `synthesize-and-ingest` | Synthesize + ingest | `entityIds`, `graph?` |
 | `decompose-query` | Break into sub-questions | `query`, `graph?` |
 | `cegis-synthesize` | Counter-example guided | `spec`, `graph?` |
+| `explain-loop` | Natural language explanation of a feedback loop's dynamics — what reinforces or balances, entry points, likely behavior | `loopId`, `graph?` |
+| `explain-leverage-point` | Natural language explanation of a leverage point — why it matters, what it affects, its Meadows level context | `leveragePointId`, `graph?` |
 
 ---
 

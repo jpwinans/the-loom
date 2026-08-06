@@ -9,7 +9,7 @@ operation, not a reconstruction.
 
 ## What it does
 
-The CLI exposes **156 commands across 21 categories**, plus a special `init`
+The CLI exposes **164 commands across 23 categories**, plus a special `init`
 command and a set of high-level composites. In short:
 
 - **Entities & relations** — full CRUD, bulk/batch import, typed relations, and
