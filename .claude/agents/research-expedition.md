@@ -56,7 +56,7 @@ likeliest:
    structural richness.
 2. **Most-looped entity** — sits inside the most feedback dynamics.
 3. **Bridge entity** — connects otherwise-separate knowledge domains.
-4. **Highest-degree hub** (fallback): `loom analyze-centrality '{"metric": "degree", "limit": 5, "graph": "GRAPH_NAME"}'`.
+4. **Highest-degree hub** (fallback): `loom analyze-centrality '{"algorithm": "degree", "limit": 5, "graph": "GRAPH_NAME"}'`.
 
 Record the seed's ID and the selection reason. If the graph has entities but no meaningful
 structure at all, write findings with no discoveries and exit.

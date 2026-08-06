@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from theloom.config import load_config
+from theloom.config import get_embedder_override, load_config
 
 MODEL_ID = "nomic-ai/nomic-embed-text-v1.5"
 EMBEDDING_DIMENSIONS = 768
@@ -100,13 +100,33 @@ class Embedder:
 
 
 @lru_cache(maxsize=1)
-def get_embedder() -> Embedder:
-    """The process-wide embedder, its model cache pinned via the single
-    config path (theloom/config.py: modelCacheDir / LOOM_MODEL_CACHE_DIR)."""
+def _default_embedder() -> Embedder:
+    """The real, process-wide fastembed-backed embedder, its model cache
+    pinned via the single config path (theloom/config.py: modelCacheDir /
+    LOOM_MODEL_CACHE_DIR). Built once and cached; use ``get_embedder()`` to
+    fetch it, not this directly."""
     return Embedder(cache_dir=load_config().model_cache_dir)
 
 
+def get_embedder() -> Embedder | Any:
+    """The active embedder: the config-installed override
+    (:func:`theloom.config.set_embedder_override`), if a test has set one,
+    otherwise the real embedder. This is the one call every embedding call
+    site makes — inject a fake through the config override, not by
+    monkeypatching this function's name in each importing module."""
+    override = get_embedder_override()
+    return override if override is not None else _default_embedder()
+
+
 def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine of the angle between two vectors, or 0.0 when there is no
+    comparable signal — an empty vector, a zero vector, or two vectors of
+    different width. Stored vector widths are not enforced (a graph can hold
+    embeddings from an older or other model), and callers score a proposal
+    against every stored vector, so a width mismatch is ordinary input to be
+    scored 0 rather than an error to raise mid-loop."""
+    if len(a) != len(b):
+        return 0.0
     va = np.asarray(a, dtype=np.float64)
     vb = np.asarray(b, dtype=np.float64)
     denominator = float(np.linalg.norm(va) * np.linalg.norm(vb))

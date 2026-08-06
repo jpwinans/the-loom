@@ -57,12 +57,7 @@ from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import (
-    SectionResult,
-    build_composite_result,
-    failed_section,
-    time_section,
-)
+from theloom.composites.framework import failed_section, run_composite, time_section
 from theloom.exploration import embeddings_available
 from theloom.graph.hydrate import LoomGraph, hydrate_graph
 from theloom.model import CAUSAL_RELATION_TYPES
@@ -189,6 +184,9 @@ def _closure_candidates(graph: LoomGraph, entity_id: str) -> list[tuple[str, flo
 
 
 def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[str, Any]:
+    # Sections are built (and therefore executed) before the runner is called,
+    # so the runner is handed the crawl's real start — otherwise
+    # totalDurationMs would time only the envelope assembly.
     start = time.perf_counter()
     max_nodes = params.max_nodes if params.max_nodes is not None else DEFAULT_MAX_NODES
     max_candidates = (
@@ -464,14 +462,15 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
         else time_section(_summary)
     )
 
-    sections: dict[str, SectionResult] = {
-        "prioritize": prioritize_section,
-        "crawl": crawl_section,
-        "enrich": enrich_section,
-        "summary": summary_section,
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    result = build_composite_result(sections, total_ms)
+    result = run_composite(
+        [
+            ("prioritize", prioritize_section),
+            ("crawl", crawl_section),
+            ("enrich", enrich_section),
+            ("summary", summary_section),
+        ],
+        start=start,
+    )
     enrich_result: Doc | None = enrich_section["data"]
     # null, not 0: nothing was written *and* nothing was attempted.
     result["metadata"]["enrichedCount"] = (

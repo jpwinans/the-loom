@@ -87,3 +87,116 @@ def test_autoapply_reports_failed_relation_write_instead_of_swallowing(
     # other write — the failure of its sibling did not roll it back.
     relations = store.list_relations()
     assert any(r.from_ == applied[0]["createdEntityId"] and r.to == target.id for r in relations)
+
+
+def test_autoapply_causal_relation_gets_polarity_default(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proposal's causal relation must go through the same gated write path
+    as create-relation — including CAUSAL_POLARITY_DEFAULTS — not a bare
+    store call with polarity hardcoded to None."""
+    store = multi.get_store()
+    target = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "Causal Target", "entityType": "concept", "observations": ["obs"]}
+        )
+    )
+
+    proposal = {
+        "entity": {
+            "name": "Causal Proposal",
+            "entityType": "concept",
+            "observations": ["proposed obs"],
+        },
+        "relations": [
+            {"targetId": target.id, "relationType": "causes", "direction": "outgoing"},
+        ],
+        "rationale": "test causal proposal",
+        "capabilityViolation": None,
+        "confidence": 0.9,
+        "strategy": "pattern_completion",
+    }
+
+    monkeypatch.setattr(
+        "theloom.composites.self_improve.propose_entities_op",
+        lambda store, opts: {
+            "proposals": [proposal],
+            "strategyCounts": {"pattern_completion": 1, "llm_reasoning": 0},
+        },
+    )
+    monkeypatch.setattr("theloom.composites.self_improve.simulate_change", _fake_simulate_change)
+
+    result = self_improve(
+        SelfImproveInput.model_validate({"autoApply": True, "applyTopN": 1}),
+        multi,
+    )
+
+    applied = result["applied"]
+    assert len(applied) == 1
+    assert result["failedWrites"] == []
+
+    created_entity_id = applied[0]["createdEntityId"]
+    relations = store.list_relations()
+    causal_edges = [r for r in relations if r.from_ == created_entity_id and r.to == target.id]
+    assert len(causal_edges) == 1
+    # "causes" -> "+" is CAUSAL_POLARITY_DEFAULTS, an independently known
+    # domain literal, not a value recomputed the way the code computes it.
+    assert causal_edges[0].polarity == "+"
+
+
+def test_autoapply_rejects_relation_that_violates_gate(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proposal relation pointed at a retracted entity must be blocked by
+    the relation gate and reported in failedWrites, not written anyway."""
+    store = multi.get_store()
+    target = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "Retracted Target", "entityType": "concept", "observations": ["obs"]}
+        )
+    )
+    store.delete_entity(target.id)  # soft delete -> status 'retracted'
+
+    proposal = {
+        "entity": {
+            "name": "Gate Violation Proposal",
+            "entityType": "concept",
+            "observations": ["proposed obs"],
+        },
+        "relations": [
+            {"targetId": target.id, "relationType": "related_to", "direction": "outgoing"},
+        ],
+        "rationale": "test gate violation",
+        "capabilityViolation": None,
+        "confidence": 0.9,
+        "strategy": "pattern_completion",
+    }
+
+    monkeypatch.setattr(
+        "theloom.composites.self_improve.propose_entities_op",
+        lambda store, opts: {
+            "proposals": [proposal],
+            "strategyCounts": {"pattern_completion": 1, "llm_reasoning": 0},
+        },
+    )
+    monkeypatch.setattr("theloom.composites.self_improve.simulate_change", _fake_simulate_change)
+
+    result = self_improve(
+        SelfImproveInput.model_validate({"autoApply": True, "applyTopN": 1}),
+        multi,
+    )
+
+    applied = result["applied"]
+    assert len(applied) == 1
+    assert applied[0]["createdRelationIds"] == []
+
+    failed_writes = result["failedWrites"]
+    assert len(failed_writes) == 1
+    assert failed_writes[0]["targetId"] == target.id
+    assert failed_writes[0]["relationType"] == "related_to"
+    assert "retracted" in failed_writes[0]["reason"]
+
+    # The rejected relation must not exist at all — the gate is a real block,
+    # not a warning appended after the fact.
+    relations = store.list_relations()
+    assert not any(r.to == target.id for r in relations)

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import itertools
 import json
+import time
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -94,6 +96,23 @@ def test_create_entity_writes_nothing_when_the_event_append_fails(
         store.create_entity(spec())
     assert store.list_entities() == []
     assert log.read_all() == []
+
+
+def test_read_all_events_carry_a_timestamp_of_when_they_were_appended(
+    store: FalkorGraphStore, log: EventLog
+) -> None:
+    """Event.timestamp is the store's own record of when the event landed —
+    the seam callers like theloom.viz.temporal use instead of parsing the
+    Redis Stream entry id themselves. Bounds are wall-clock times captured
+    independently of whatever parsing the store does internally."""
+    before = time.time()
+    store.create_entity(spec())
+    after = time.time()
+
+    events = log.read_all()
+    assert len(events) == 1
+    parsed = datetime.fromisoformat(events[0].timestamp)
+    assert before - 1 <= parsed.timestamp() <= after + 1
 
 
 def test_update_entity_writes_nothing_when_the_event_append_fails(

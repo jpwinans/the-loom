@@ -8,6 +8,7 @@ HTTP statuses through one exception handler — never by substring-matching pros
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING, Any
 
 import pydantic
@@ -48,6 +49,7 @@ class ServeInput(CommandInput):
 
 
 def _build_bundle_input(
+    *,
     graph: str | None,
     mode: str,
     center: str | None,
@@ -120,18 +122,18 @@ def create_app(multi: MultiGraph, default_graph: str | None = None) -> FastAPI:
         title: str | None = Query(default=None),
     ) -> dict[str, Any]:
         params = _build_bundle_input(
-            graph if graph is not None else target_default,
-            mode,
-            center,
-            depth,
-            entityType,
-            relationType,
-            query,
-            analytics,
-            temporal,
-            semantic,
-            asOf,
-            title,
+            graph=graph if graph is not None else target_default,
+            mode=mode,
+            center=center,
+            depth=depth,
+            entity_type=entityType,
+            relation_type=relationType,
+            query=query,
+            analytics=analytics,
+            temporal=temporal,
+            semantic=semantic,
+            as_of=asOf,
+            title=title,
         )
         return assemble_bundle(params, multi)
 
@@ -146,18 +148,18 @@ def create_app(multi: MultiGraph, default_graph: str | None = None) -> FastAPI:
                 "Endpoint /api/as-of requires a non-empty 'asOf' query parameter."
             )
         params = _build_bundle_input(
-            graph if graph is not None else target_default,
-            "full",
-            None,
-            1,
-            None,
-            None,
-            None,
-            True,
-            True,
-            True,
-            asOf,
-            None,
+            graph=graph if graph is not None else target_default,
+            mode="full",
+            center=None,
+            depth=1,
+            entity_type=None,
+            relation_type=None,
+            query=None,
+            analytics=True,
+            temporal=True,
+            semantic=True,
+            as_of=asOf,
+            title=None,
         )
         return assemble_bundle(params, multi)
 
@@ -220,3 +222,30 @@ def run_uvicorn(app: FastAPI, host: str, port: int) -> None:  # thin wrapper —
     import uvicorn
 
     uvicorn.run(app, host=host, port=port)
+
+
+def serve(params: ServeInput, multi: MultiGraph) -> dict[str, Any]:
+    """Start the read-only live server. Prints the {host, port, url, graph}
+    handshake, then blocks in uvicorn until shutdown. `check: true` returns the
+    handshake without building the app or binding a port — the registry-level
+    test path, runnable even when the viz-serve extra is absent.
+
+    Calls through this module's own names (not re-imported into the CLI
+    registry) so tests can monkeypatch `theloom.viz.serve.run_uvicorn` and
+    have it take effect here."""
+    graph = params.graph or multi.default_graph
+    envelope: dict[str, Any] = {
+        "host": params.host,
+        "port": params.port,
+        "url": f"http://{params.host}:{params.port}",
+        "graph": graph,
+    }
+    if params.check:
+        return envelope
+    from theloom.cli.io import output_success
+
+    app = create_app(multi, default_graph=params.graph)
+    output_success(envelope)  # the handshake — uvicorn.run below never returns to the CLI
+    sys.stdout.flush()  # stdout is block-buffered off a TTY; run_uvicorn blocks forever below
+    run_uvicorn(app, params.host, params.port)
+    return envelope  # reached only after shutdown (Ctrl-C)

@@ -19,9 +19,16 @@ from __future__ import annotations
 
 import re
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    model_validator,
+)
 
 # =============================================================================
 # Scalar validation
@@ -209,10 +216,32 @@ class ChangeType(StrEnum):
 
 
 class EmbeddingStatus(StrEnum):
-    PENDING = "pending"
-    PROCESSING = "processing"
+    """The embedding state machine is binary in practice: ``None ->
+    COMPLETED`` (a successful embed) or ``None -> ERROR`` (a failed one).
+    There is no queue worker in this one-shot CLI, so no code path ever
+    writes a ``PENDING``/``PROCESSING`` state — those members were removed
+    rather than left declared and unreachable. See
+    :mod:`theloom.semantic.embedding_state` for the machine itself."""
+
     COMPLETED = "completed"
     ERROR = "error"
+
+
+# Graphs written by an older build could hold the queue states this machine no
+# longer has. Both meant "no vector yet", which is exactly ``None`` here, so a
+# read of such a record coerces rather than failing validation and taking the
+# whole row (and every list it appears in) down with it. Anything else is still
+# a validation error.
+_RETIRED_EMBEDDING_STATUSES = frozenset({"pending", "processing"})
+
+
+def _drop_retired_embedding_status(value: Any) -> Any:
+    return None if value in _RETIRED_EMBEDDING_STATUSES else value
+
+
+LegacyTolerantEmbeddingStatus = Annotated[
+    EmbeddingStatus | None, BeforeValidator(_drop_retired_embedding_status)
+]
 
 
 class Strength(StrEnum):
@@ -395,7 +424,7 @@ class Entity(LoomModel):
     expires_at: IsoUtcDatetime | None = Field(default=None, alias="expiresAt")
 
     # Layer 4: embedding metadata
-    embedding_status: EmbeddingStatus | None = Field(default=None, alias="embeddingStatus")
+    embedding_status: LegacyTolerantEmbeddingStatus = Field(default=None, alias="embeddingStatus")
     content_hash: str | None = Field(default=None, alias="contentHash")
     last_embedded_at: IsoUtcDatetime | None = Field(default=None, alias="lastEmbeddedAt")
     embedding_version: str | None = Field(default=None, alias="embeddingVersion")

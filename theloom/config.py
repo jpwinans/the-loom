@@ -46,6 +46,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from theloom.errors import ConfigError
 
@@ -279,3 +280,31 @@ def _resolve_llm(file_section: object, environment: Mapping[str, str]) -> LlmCon
         timeout_seconds=timeout_seconds,
         temperature=temperature,
     )
+
+
+# =============================================================================
+# Embedder injection
+# =============================================================================
+#
+# The one place to install a fake embedder. theloom.semantic.embed.get_embedder
+# (every call site's single entry point — embed_entity, embed_entities,
+# hybrid/semantic search, synthesis anchor search, document ingestion) checks
+# this override before falling back to the real fastembed-backed embedder, so
+# a test installs one double here instead of monkeypatching the function name
+# separately in every module that imports it.
+
+_embedder_override: Any | None = None
+
+
+def set_embedder_override(embedder: Any | None) -> None:
+    """Install a process-wide embedder override (``None`` clears it).
+
+    Tests are the only caller — production code never sets this. It exists so
+    every ``get_embedder()`` call site, however it imported that name, defers
+    to the same injected double."""
+    global _embedder_override
+    _embedder_override = embedder
+
+
+def get_embedder_override() -> Any | None:
+    return _embedder_override

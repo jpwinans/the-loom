@@ -121,7 +121,7 @@ Selection criteria (in priority order):
 
 If priorities 1-3 yield nothing, use centrality:
 ```bash
-loom analyze-centrality '{"metric":"degree","limit":5,"graph":"'"${GRAPH_NAME}"'"}'
+loom analyze-centrality '{"algorithm":"degree","limit":5,"graph":"'"${GRAPH_NAME}"'"}'
 ```
 
 Record THREAD_SEED (entity ID) and selection reason.

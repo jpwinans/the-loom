@@ -12,12 +12,11 @@ four run over the existing graph — so the whole command is testable.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite
 from theloom.operations.common import CommandInput
 from theloom.operations.epistemic import (
     EpistemicQueryInput,
@@ -64,7 +63,6 @@ def _guard_view(violations: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def verified_extract(params: VerifiedExtractInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     graph = params.graph
     extracted_ids: list[str] = []
 
@@ -103,8 +101,6 @@ def verified_extract(params: VerifiedExtractInput, multi: MultiGraph) -> dict[st
                 for d in documents
             ],
         }
-
-    extraction_section = time_section(_extraction)
 
     def _verification() -> dict[str, Any]:
         result = verify_graph(VerifyGraphInput.model_validate({"graph": graph}), multi)
@@ -185,12 +181,12 @@ def verified_extract(params: VerifiedExtractInput, multi: MultiGraph) -> dict[st
             ]
         }
 
-    sections = {
-        "extraction": extraction_section,
-        "verification": time_section(_verification),
-        "consistency": time_section(_consistency),
-        "creditUpdates": time_section(_credit_updates),
-        "contradictions": time_section(_contradictions),
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("extraction", _extraction),
+            ("verification", _verification),
+            ("consistency", _consistency),
+            ("creditUpdates", _credit_updates),
+            ("contradictions", _contradictions),
+        ]
+    )

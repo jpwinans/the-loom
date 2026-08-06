@@ -47,12 +47,14 @@ directory walk would be machine-dependent).
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import subprocess
+from collections.abc import Callable, Sequence
 from typing import Any
 
-from theloom.extraction import doclinks, resolution
+from theloom.extraction import doclinks, encoding, resolution
 
 Doc = dict[str, Any]
 
@@ -887,14 +889,18 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
     relations: list[Doc] = []
     entity_names: set[str] = set()
 
-    file_entity_name = f"file:{file_path}"
-    entity_names.add(file_entity_name)
-    file_observations = [f"File path: {file_path}", f"Language: {lang}", "Symbol kind: File"]
+    file_entity_key = encoding.file_entity_name(file_path)
+    entity_names.add(file_entity_key)
+    file_observations = [
+        encoding.file_path_observation(file_path),
+        f"Language: {lang}",
+        encoding.symbol_kind_observation("File"),
+    ]
     module_docstring = extraction.get("moduleDocstring")
     if module_docstring:
         file_observations.append(f"docstring: {module_docstring}")
     file_entity = {
-        "name": file_entity_name,
+        "name": file_entity_key,
         "entityType": "system",
         "observations": file_observations,
         "provenance": _provenance(file_path, 0),
@@ -918,9 +924,9 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
             symbol_name_map[sym["name"]] = entity_name
 
         observations = [
-            f"File path: {file_path}",
-            f"Line range: {sym['startLine'] + 1}-{sym['endLine'] + 1}",
-            f"Symbol kind: {sym['kind']}",
+            encoding.file_path_observation(file_path),
+            encoding.line_range_observation(sym["startLine"], sym["endLine"]),
+            encoding.symbol_kind_observation(sym["kind"]),
         ]
         if sym.get("signature"):
             observations.append(f"signature: {sym['signature']}")
@@ -938,7 +944,7 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
         relations.append(
             {
                 "from": entity_name,
-                "to": file_entity_name,
+                "to": file_entity_key,
                 "relationType": "part_of",
                 "polarity": None,
                 "strength": "strong",
@@ -993,7 +999,7 @@ def extract_from_source(source_code: str, file_path: str, lang: str) -> Doc:
                     "relationType": "calls",
                     "polarity": None,
                     "strength": "moderate",
-                    "evidence": resolution.call_evidence(
+                    "evidence": encoding.call_evidence(
                         caller_name, call["callee"], file_path, call["line"]
                     ),
                 }
@@ -1061,14 +1067,135 @@ def _git_visibility(root: str) -> tuple[set[str], set[str]] | None:
     return tracked, tracked | untracked
 
 
-def collect_source_files(project_path: str, include_tests: bool = True) -> list[Doc]:
+def _skips_a_component(rel_path: str) -> bool:
+    """True when a directory component of ``rel_path`` is out of scope.
+
+    Applied to every component but the last (the filename itself is judged by
+    extension/text-kind, not by this)."""
+    parts = rel_path.replace(os.sep, "/").split("/")
+    return any(part in SKIP_DIRS or part.startswith(".") for part in parts[:-1])
+
+
+def matches_globs(rel_path: str, patterns: Sequence[str] | None) -> bool:
+    """True when ``rel_path`` (forward-slash) matches any of ``patterns``.
+    ``fnmatch``-style: ``*`` matches across ``/`` too, so ``src/*`` and
+    ``src/**/*.py`` both work as a caller would expect."""
+    if not patterns:
+        return False
+    posix_rel = rel_path.replace(os.sep, "/")
+    return any(fnmatch.fnmatch(posix_rel, pattern) for pattern in patterns)
+
+
+def _static_scope(
+    rel: str,
+    visibility: tuple[set[str], set[str]] | None,
+    include_tests: bool,
+    include: Sequence[str] | None,
+    exclude: Sequence[str] | None,
+) -> bool:
+    """The part of the collection rule decidable from the path and git alone —
+    no stat, no read. Directory/dotfile skipping, extension/text-kind
+    recognition, git tracking visibility, the test-path exclusion, and the
+    caller's own ``include``/``exclude`` globs (``exclude`` wins; an empty or
+    absent ``include`` means no restriction).
+
+    Deliberately excludes symlink-ness, ``MAX_TEXT_FILE_BYTES``, and
+    decodability: those are properties of the file's *current bytes*, which
+    can regress out from under a previously-collected file — and catching
+    exactly that regression is what the incremental-update shrink guard
+    exists for (see ``codebasediff``). Folding them in here would let a
+    corrupted-in-place file quietly disappear from the diff instead of
+    tripping the guard.
+    """
+    if _skips_a_component(rel):
+        return False
+    lang = detect_language(rel)
+    if lang is None and detect_text_kind(rel) is None:
+        return False
+    if visibility is not None:
+        tracked, visible = visibility
+        allowed = visible if lang is not None else tracked
+        if rel.replace(os.sep, "/") not in allowed:
+            return False
+    if not include_tests and resolution.is_test_path(rel):
+        return False
+    if include and not matches_globs(rel, include):
+        return False
+    return not matches_globs(rel, exclude)
+
+
+def _collect_content(
+    root: str,
+    rel: str,
+    visibility: tuple[set[str], set[str]] | None,
+    include_tests: bool,
+    include: Sequence[str] | None,
+    exclude: Sequence[str] | None,
+) -> str | None:
+    """The file's text if ``collect_source_files`` would collect it, else
+    ``None`` — the single membership rule, usable per-path as well as during
+    the directory walk."""
+    if not _static_scope(rel, visibility, include_tests, include, exclude):
+        return None
+    full = os.path.join(root, rel)
+    if os.path.islink(full):
+        return None
+    if detect_language(rel) is None:
+        try:
+            if os.path.getsize(full) > MAX_TEXT_FILE_BYTES:
+                return None
+        except OSError:
+            return None
+    try:
+        with open(full, encoding="utf-8") as handle:
+            return handle.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def extractable_paths(
+    project_path: str,
+    *,
+    include_tests: bool = True,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> Callable[[str], bool]:
+    """A membership predicate for the *static* scope of ``collect_source_files``
+    — path shape, extension/text-kind, git visibility, ``include_tests``, and
+    the ``include``/``exclude`` globs — resolved once per project root rather
+    than once per path. Built for the incremental-update diff planner: it
+    decides which git-diff-named paths are candidates for reconciliation at
+    all (so an ignored, untracked, test-excluded, or filtered-out path never
+    becomes one), while leaving whether a candidate still actually collects
+    right now (not a symlink, under the size cap, decodable) to the real
+    extraction pass and the shrink guard that watches it — see
+    ``_static_scope`` for why that split matters.
+    """
+    root = os.path.abspath(project_path)
+    visibility = _git_visibility(root)
+
+    def in_static_scope(rel_path: str) -> bool:
+        return _static_scope(rel_path, visibility, include_tests, include, exclude)
+
+    return in_static_scope
+
+
+def collect_source_files(
+    project_path: str,
+    include_tests: bool = True,
+    *,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> list[Doc]:
     """Sorted list of {relativePath, content} for supported files (sorted so
     the walk is deterministic).
 
     Recognised non-code text files come along too — they become root file
     entities. A binary (which fails to decode) or an oversized data file is
     skipped, and inside a git work tree so is anything git ignores (see the
-    module docstring).
+    module docstring). ``include``/``exclude`` are ``fnmatch`` globs against
+    the project-relative path; ``exclude`` wins when a path matches both, and
+    an empty or absent ``include`` restricts nothing.
     """
     files: list[Doc] = []
     root = os.path.abspath(project_path)
@@ -1077,31 +1204,10 @@ def collect_source_files(project_path: str, include_tests: bool = True) -> list[
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
         for filename in sorted(filenames):
             full = os.path.join(dirpath, filename)
-            if os.path.islink(full):
-                continue
             rel = os.path.relpath(full, root)
-            lang = detect_language(rel)
-            if lang is None:
-                if detect_text_kind(rel) is None:
-                    continue
-                try:
-                    if os.path.getsize(full) > MAX_TEXT_FILE_BYTES:
-                        continue
-                except OSError:
-                    continue
-            if visibility is not None:
-                tracked, visible = visibility
-                allowed = visible if lang is not None else tracked
-                if rel.replace(os.sep, "/") not in allowed:
-                    continue
-            if not include_tests and _is_test_file(rel):
-                continue
-            try:
-                with open(full, encoding="utf-8") as handle:
-                    content = handle.read()
-            except (OSError, UnicodeDecodeError):
-                continue
-            files.append({"relativePath": rel, "content": content})
+            content = _collect_content(root, rel, visibility, include_tests, include, exclude)
+            if content is not None:
+                files.append({"relativePath": rel, "content": content})
     return sorted(files, key=lambda f: f["relativePath"])
 
 
@@ -1113,9 +1219,13 @@ def _text_file_entity(path: str, kind: str) -> Doc:
     was obtained.
     """
     return {
-        "name": f"file:{path}",
+        "name": encoding.file_entity_name(path),
         "entityType": "system",
-        "observations": [f"File path: {path}", f"Language: {kind}", "Symbol kind: File"],
+        "observations": [
+            encoding.file_path_observation(path),
+            f"Language: {kind}",
+            encoding.symbol_kind_observation("File"),
+        ],
         "provenance": {
             "sourceType": "observation",
             "sourceId": None,
@@ -1125,10 +1235,6 @@ def _text_file_entity(path: str, kind: str) -> Doc:
         },
         "confidence": _confidence(),
     }
-
-
-def _is_test_file(rel: str) -> bool:
-    return resolution.is_test_path(rel)
 
 
 def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> Doc:
@@ -1181,8 +1287,42 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
 
     known_files = frozenset(record["path"] for record in per_file)
     imports = resolution.resolve_imports(per_file, known_files, external_entities=external_entities)
-    calls = resolution.resolve_calls(per_file, known_files)
-    inheritances = resolution.resolve_inheritances(per_file, known_files)
+    # Cross-file calls (`calls`), anchored at the call site in the caller's
+    # file. `resolve_symbol_edges`'s generic proven/inferred/ambiguous stats
+    # are renamed here, the one place that calls it for calls.
+    raw_calls = resolution.resolve_symbol_edges(
+        per_file,
+        known_files,
+        field="unresolvedCalls",
+        relation_type="calls",
+        verb="calls",
+        anchored=True,
+    )
+    calls = {
+        "relations": raw_calls["relations"],
+        "stats": {
+            "importGuidedCalls": raw_calls["stats"]["proven"],
+            "uniqueNameCalls": raw_calls["stats"]["inferred"],
+            "ambiguousCallsSkipped": raw_calls["stats"]["ambiguous"],
+        },
+    }
+    # Base classes defined in another file (`instance_of`) — same resolver,
+    # renamed here for inheritances instead of calls.
+    raw_inheritances = resolution.resolve_symbol_edges(
+        per_file,
+        known_files,
+        field="unresolvedInheritances",
+        relation_type="instance_of",
+        verb="extends",
+    )
+    inheritances = {
+        "relations": raw_inheritances["relations"],
+        "stats": {
+            "importGuidedInheritances": raw_inheritances["stats"]["proven"],
+            "uniqueNameInheritances": raw_inheritances["stats"]["inferred"],
+            "ambiguousInheritancesSkipped": raw_inheritances["stats"]["ambiguous"],
+        },
+    }
     docs = doclinks.resolve_doc_links(doc_files, frozenset(file_paths), per_file)
     for entity in imports["entities"]:
         if entity["name"] not in entity_names:
@@ -1209,10 +1349,12 @@ def extract_codebase(
     project_path: str,
     *,
     include_tests: bool = True,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
 ) -> Doc:
     if not os.path.exists(project_path):
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
-    files = collect_source_files(project_path, include_tests)
+    files = collect_source_files(project_path, include_tests, include=include, exclude=exclude)
     result = extract_from_files(files)
     entities = result["entities"]
     relations = result["relations"]

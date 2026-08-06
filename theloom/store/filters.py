@@ -19,9 +19,41 @@ turns out to be needed, it lands there.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from theloom.model import Entity, EntityFilter, Relation, RelationFilter
+
+# Every status but 'retracted' — the population a name might still usefully
+# resolve against (a retracted entity is gone, full stop; the others are
+# still real nodes an edge can legitimately point at).
+NON_RETRACTED_ENTITY_STATUSES: tuple[str, ...] = (
+    "active",
+    "superseded",
+    "deprecated",
+    "investigating",
+)
+
+
+def prefer_active_by_name(entities: Iterable[Entity]) -> dict[str, Entity]:
+    """Collapse entities to one per ``name``, the one name->id tie-break used
+    everywhere a name is resolved against a non-retracted read: an active
+    candidate wins over a superseded/deprecated/investigating one, and the
+    first one seen wins a tie between two equally (in)active candidates.
+    Shared by bulk import's relation resolution and the incremental-update
+    diff planner's, so the two never drift into different answers for the
+    same ambiguous name.
+    """
+    by_name: dict[str, Entity] = {}
+    for entity in entities:
+        current = by_name.get(entity.name)
+        if current is None:
+            by_name[entity.name] = entity
+            continue
+        current_active = current.status is None or current.status == "active"
+        candidate_active = entity.status is None or entity.status == "active"
+        if not current_active and candidate_active:
+            by_name[entity.name] = entity
+    return by_name
 
 
 def matches_session(session: str, record_session: str | None, observations: Sequence[str]) -> bool:

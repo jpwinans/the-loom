@@ -25,7 +25,7 @@ from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite, time_section
 from theloom.exploration import (
     DEFAULT_TOP_K,
     MAX_DISPLAY_NAMES,
@@ -83,14 +83,13 @@ def explore_frontier(params: ExploreFrontierInput, multi: MultiGraph) -> Doc:
             "durationMs": 0,
             "error": None,
         }
-        total_ms = round((time.perf_counter() - start) * 1000)
-        return build_composite_result(
-            {
-                "regions": empty_regions,
-                "mvtAdvice": empty_mvt,
-                "antiPatterns": empty_anti_patterns,
-            },
-            total_ms,
+        return run_composite(
+            [
+                ("regions", empty_regions),
+                ("mvtAdvice", empty_mvt),
+                ("antiPatterns", empty_anti_patterns),
+            ],
+            start=start,
         )
 
     now = datetime.now(UTC)
@@ -317,8 +316,11 @@ def explore_frontier(params: ExploreFrontierInput, multi: MultiGraph) -> Doc:
 
     anti_patterns = time_section(_anti_patterns)
 
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(
-        {"regions": regions, "mvtAdvice": mvt_advice, "antiPatterns": anti_patterns},
-        total_ms,
+    return run_composite(
+        [
+            ("regions", regions),
+            ("mvtAdvice", mvt_advice),
+            ("antiPatterns", anti_patterns),
+        ],
+        start=start,
     )

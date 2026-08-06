@@ -10,13 +10,16 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from theloom.documents.chunker import chunk_blocks
 from theloom.documents.chunkstore import ChunkStore
+from theloom.documents.metadata import ChunkMetadata
 from theloom.documents.parsers import ParseError, detect_format, parse_document
 from theloom.documents.ssrf import SsrfError, fetch_url
+from theloom.semantic.embed import get_embedder
 from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
@@ -54,15 +57,59 @@ def _source_id_from_string(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
 
 
-def _embed_texts(texts: list[str]) -> list[list[float]] | None:
-    """Best-effort embeddings; None if the model can't load (chunks still
-    stored so ingest counts and list-documents stay correct)."""
+def _embed_texts(texts: list[str]) -> tuple[list[list[float]] | None, str | None]:
+    """Best-effort embeddings: (vectors, None) normally, or (None, reason) if
+    the model can't load or embed. Chunks are still stored either way (so
+    ingest counts and list-documents stay correct) — the reason is carried
+    back so the caller can record *why* no vector landed instead of the
+    failure vanishing silently."""
     try:
-        from theloom.semantic.embed import get_embedder
+        return get_embedder().embed_documents(texts), None
+    except Exception as exc:
+        return None, str(exc)
 
-        return get_embedder().embed_documents(texts)
-    except Exception:
-        return None
+
+@dataclass(frozen=True)
+class _Document:
+    """What every chunk of one document has in common.
+
+    Ingest and reingest used to build the ~20-key chunk metadata dict inline,
+    verbatim, once each — so the two could drift (and had: the reingest copy
+    dropped ``pageNumber``). They now describe the document once and ask it for
+    each chunk's metadata; the per-chunk fields come from the chunker and the
+    shape comes from :class:`ChunkMetadata`.
+    """
+
+    source_id: str
+    source_name: str
+    source_format: str
+    source_path: str | None
+    category: str | None
+    total_chunks: int
+    embedded_at: str
+
+    def metadata_for(
+        self, chunk: Doc, *, chunk_id: str | None = None, embedding_error: str | None = None
+    ) -> ChunkMetadata:
+        """The stored metadata for one chunk of this document. ``chunk_id``
+        overrides the chunker's fresh id (reingest writes an updated chunk
+        under the id it is already stored as)."""
+        return ChunkMetadata(
+            id=chunk_id or chunk["id"],
+            source_id=self.source_id,
+            source_name=self.source_name,
+            source_format=self.source_format,
+            source_path=self.source_path,
+            category=self.category,
+            chunk_index=chunk["chunkIndex"],
+            total_chunks=self.total_chunks,
+            content=chunk["content"],
+            content_hash=chunk["contentHash"],
+            embedded_at=self.embedded_at,
+            section_heading=chunk.get("sectionHeading") or None,
+            page_number=chunk.get("pageNumber") or None,
+            embedding_error=embedding_error,
+        )
 
 
 class DocumentIngestion:
@@ -79,33 +126,21 @@ class DocumentIngestion:
         now = iso_now()
 
         texts = [c["content"] for c in chunks]
-        vectors = _embed_texts(texts) if texts else []
+        vectors, embedding_error = _embed_texts(texts) if texts else ([], None)
+
+        document = _Document(
+            source_id=source_id,
+            source_name=source_name,
+            source_format=fmt,
+            source_path=options.get("sourcePath") or None,
+            category=category,
+            total_chunks=len(chunks),
+            embedded_at=now,
+        )
 
         chunks_created = 0
         for index, chunk in enumerate(chunks):
-            metadata = {
-                "id": chunk["id"],
-                "entityId": chunk["id"],
-                "entityType": "document_chunk",
-                "entryType": "document_chunk",
-                "name": source_name,
-                "contentHash": chunk["contentHash"],
-                "embeddedAt": now,
-                "sourceId": source_id,
-                "sourceName": source_name,
-                "sourceFormat": fmt,
-                "chunkIndex": chunk["chunkIndex"],
-                "totalChunks": len(chunks),
-                "content": chunk["content"],
-            }
-            if category is not None:
-                metadata["category"] = category
-            if chunk.get("sectionHeading"):
-                metadata["sectionHeading"] = chunk["sectionHeading"]
-            if chunk.get("pageNumber"):
-                metadata["pageNumber"] = chunk["pageNumber"]
-            if options.get("sourcePath"):
-                metadata["sourcePath"] = options["sourcePath"]
+            metadata = document.metadata_for(chunk, embedding_error=embedding_error)
             vector = vectors[index] if vectors is not None and index < len(vectors) else None
             self._store.upsert_chunk(chunk["id"], metadata, vector)
             chunks_created += 1
@@ -271,73 +306,64 @@ class DocumentIngestion:
         if not existing:
             raise IngestionNotFoundError(f"No document found with sourceId: {source_id}")
 
-        first = existing[0]
-        source_name = first.get("sourceName") or source_id
-        source_format = first.get("sourceFormat") or "txt"
-        category = first.get("category")
-        stored_source_path = first.get("sourcePath")
+        stored = [ChunkMetadata.coerce(doc) for doc in existing]
+        first = stored[0]
+        source_name = first.source_name or source_id
+        source_format = first.source_format or "txt"
+        category = first.category
+        stored_source_path = first.source_path
 
-        existing_by_index: dict[int, Doc] = {}
-        for chunk in existing:
-            existing_by_index[chunk["chunkIndex"]] = {
-                "contentHash": chunk["contentHash"],
-                "entityId": chunk["id"],
-            }
+        existing_by_index = {
+            chunk.chunk_index: chunk for chunk in stored if chunk.chunk_index is not None
+        }
 
-        content = _reread_source(stored_source_path, existing)
+        content = _reread_source(stored_source_path, stored)
         parsed = parse_document(content, source_format, None)
         new_chunks = chunk_blocks(parsed["blocks"], options.get("chunkOptions"))
-        now = iso_now()
+
+        document = _Document(
+            source_id=source_id,
+            source_name=source_name,
+            source_format=source_format,
+            source_path=stored_source_path,
+            category=category,
+            total_chunks=len(new_chunks),
+            embedded_at=iso_now(),
+        )
 
         created = updated = unchanged = 0
         processed_indices: set[int] = set()
-        to_embed: list[tuple[str, Doc]] = []
+        to_embed: list[tuple[str, ChunkMetadata]] = []
 
         for chunk in new_chunks:
             k = chunk["chunkIndex"]
             processed_indices.add(k)
             prior = existing_by_index.get(k)
-            metadata = {
-                "id": prior["entityId"] if prior else chunk["id"],
-                "entityId": prior["entityId"] if prior else chunk["id"],
-                "entityType": "document_chunk",
-                "entryType": "document_chunk",
-                "name": source_name,
-                "contentHash": chunk["contentHash"],
-                "embeddedAt": now,
-                "sourceId": source_id,
-                "sourceName": source_name,
-                "sourceFormat": source_format,
-                "chunkIndex": k,
-                "totalChunks": len(new_chunks),
-                "content": chunk["content"],
-            }
-            if category is not None:
-                metadata["category"] = category
-            if chunk.get("sectionHeading"):
-                metadata["sectionHeading"] = chunk["sectionHeading"]
-            if stored_source_path:
-                metadata["sourcePath"] = stored_source_path
+            # An updated chunk keeps the id it was stored under, so anything
+            # referring to it still resolves; a new one takes the chunker's.
+            chunk_id = prior.id if prior is not None and prior.id else chunk["id"]
+            metadata = document.metadata_for(chunk, chunk_id=chunk_id)
 
             if prior is None:
                 created += 1
                 to_embed.append((chunk["id"], metadata))
-            elif prior["contentHash"] == chunk["contentHash"]:
+            elif prior.content_hash == chunk["contentHash"]:
                 unchanged += 1  # unchanged chunks are not re-embedded/re-written
             else:
                 updated += 1
-                to_embed.append((prior["entityId"], metadata))
+                to_embed.append((chunk_id, metadata))
 
         if to_embed:
-            vectors = _embed_texts([m["content"] for _, m in to_embed])
+            vectors, embedding_error = _embed_texts([m.content or "" for _, m in to_embed])
             for i, (chunk_id, metadata) in enumerate(to_embed):
+                metadata.embedding_error = embedding_error
                 vector = vectors[i] if vectors is not None and i < len(vectors) else None
                 self._store.upsert_chunk(chunk_id, metadata, vector)
 
         deleted = 0
         for index, prior in existing_by_index.items():
-            if index not in processed_indices:
-                self._store.delete_chunk(prior["entityId"])
+            if index not in processed_indices and prior.id:
+                self._store.delete_chunk(prior.id)
                 deleted += 1
 
         result: Doc = {
@@ -360,7 +386,7 @@ class DocumentIngestion:
 # =============================================================================
 
 
-def _reread_source(stored_source_path: str | None, existing: list[Doc]) -> str:
+def _reread_source(stored_source_path: str | None, existing: list[ChunkMetadata]) -> str:
     if stored_source_path:
         if stored_source_path.startswith(("http://", "https://")):
             try:
@@ -373,8 +399,8 @@ def _reread_source(stored_source_path: str | None, existing: list[Doc]) -> str:
                 return Path(stored_source_path).read_text(encoding="utf-8")
             except OSError:
                 pass
-    ordered = sorted(existing, key=lambda c: c["chunkIndex"])
-    return "\n\n".join(c.get("content", "") for c in ordered)
+    ordered = sorted(existing, key=lambda c: c.chunk_index or 0)
+    return "\n\n".join(c.content or "" for c in ordered)
 
 
 def _safe_detect_format(file_path: str) -> str | None:

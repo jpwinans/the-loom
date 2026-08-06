@@ -21,6 +21,8 @@ from theloom.graph.hydrate import hydrate_graph
 from theloom.graph.paths import bidirectional
 from theloom.model import EntityCreate, RelationCreate
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
+from theloom.semantic.embed import get_embedder
+from theloom.semantic.search import SupportsQueryEmbedding, search_by_vector
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import fidelity as fidelity_mod
@@ -29,7 +31,7 @@ from theloom.synthesis.decomposer import decompose_query as decompose_query_core
 from theloom.synthesis.llm import SynthesisLlmClient, create_synthesis_client
 from theloom.synthesis.orderer import compute_core_numbers
 from theloom.synthesis.planner import plan_synthesis as plan_synthesis_core
-from theloom.synthesis.selector import HybridSearch, filter_entity_only_results
+from theloom.synthesis.selector import HybridSearch
 from theloom.synthesis.traverser import traverse_synthesis as traverse_synthesis_core
 
 Doc = dict[str, Any]
@@ -99,26 +101,37 @@ def _resolve_store(multi: MultiGraph, graph: str | None) -> FalkorGraphStore:
     return multi.get_store(graph)
 
 
-def _hybrid_search_for(stores: list[FalkorGraphStore]) -> HybridSearch:
-    """Vector-only anchor search: empty when no entity has an embedding, so
-    vectorless graphs deterministically take the keyword fallback."""
+def anchor_search_for(
+    stores: list[FalkorGraphStore], embedder: SupportsQueryEmbedding | None = None
+) -> HybridSearch:
+    """Vector anchor search across ``stores``, through the shared search core.
+
+    Empty when no entity has an embedding, so vectorless graphs
+    deterministically take the keyword fallback — decided by a LIMIT-1 probe
+    per store rather than by pulling every vector, and decided *before* the
+    query is embedded so a vectorless graph never pays for the model.
+
+    The core supplies the two things this used to get wrong on its own: scores
+    on the shared 1/(1+L2) scale (so an anchor score means the same thing as a
+    semantic-search score), and the active-only filter (an entity that was
+    superseded or deprecated keeps its embedding, and must not anchor a
+    synthesis).
+    """
 
     def search(query: str, limit: int) -> list[Doc]:
-        vector_maps = [s.get_entity_vectors() for s in stores]
-        if not any(vector_maps):
+        embedded = [s for s in stores if s.has_entity_vectors()]
+        if not embedded:
             return []
-        from theloom.semantic.embed import get_embedder
-
-        query_vector = get_embedder().embed_query(query)
+        resolved = embedder if embedder is not None else get_embedder()
+        query_vector = resolved.embed_query(query)
         hits: list[Doc] = []
-        for store, vectors in zip(stores, vector_maps, strict=True):
-            if vectors:
-                hits.extend(
-                    {"entityId": eid, "score": score}
-                    for eid, score in store.vector_knn(query_vector, limit)
-                )
+        for store in embedded:
+            hits.extend(
+                {"entityId": hit["id"], "score": hit["score"], "entryType": "entity"}
+                for hit in search_by_vector(store, query_vector, limit)
+            )
         hits.sort(key=lambda h: -h["score"])
-        return filter_entity_only_results(hits[:limit])
+        return hits[:limit]
 
     return search
 
@@ -283,7 +296,7 @@ def _run_pipeline(
         max_entities=min(params.max_entities, 1000) if params.max_entities is not None else None,
         ordering_metric=params.ordering_metric,
         llm_client=llm_client,
-        hybrid_search=_hybrid_search_for(resolved["falkor_stores"]),
+        hybrid_search=anchor_search_for(resolved["falkor_stores"]),
         entity_graph_origin=resolved["entityGraphOrigin"],
         graph_count=len(graph_names) if graph_names else None,
     )
@@ -470,7 +483,7 @@ def plan_synthesis(params: PlanSynthesisInput, multi: MultiGraph) -> Doc:
         max_entities=min(params.max_entities, 1000) if params.max_entities is not None else None,
         ordering_metric=params.ordering_metric,
         llm_client=llm_client,
-        hybrid_search=_hybrid_search_for(resolved["falkor_stores"]),
+        hybrid_search=anchor_search_for(resolved["falkor_stores"]),
         entity_graph_origin=resolved["entityGraphOrigin"],
         graph_count=len(graph_names) if graph_names else None,
     )
@@ -490,7 +503,7 @@ def traverse_synthesis(params: TraverseSynthesisInput, multi: MultiGraph) -> Doc
         max_entities=min(params.max_entities, 1000) if params.max_entities is not None else None,
         ordering_metric=params.ordering_metric,
         llm_client=llm_client,
-        hybrid_search=_hybrid_search_for(resolved["falkor_stores"]),
+        hybrid_search=anchor_search_for(resolved["falkor_stores"]),
     )
     return traverse_synthesis_core(plan, resolved["store"], mode=params.mode)
 

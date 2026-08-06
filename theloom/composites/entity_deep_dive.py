@@ -14,12 +14,11 @@ pre-compaction envelopes back.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite
 from theloom.operations.analysis import (
     AnalyzeCentralityInput,
     DetectLoopsInput,
@@ -27,7 +26,7 @@ from theloom.operations.analysis import (
     detect_loops,
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
-from theloom.operations.entity import _entity_doc
+from theloom.operations.entity import entity_doc
 from theloom.operations.relations import (
     GetNeighborsInput,
     GetRelationsInput,
@@ -97,14 +96,17 @@ def _relation_line(
 
 
 def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     graph = params.graph
     entity_id = resolve_entity_ref(
         multi.get_store(graph), entity_id=params.entity_id, name=params.name, id_field="entityId"
     )
 
+    # State threaded across sections (sections run sequentially): semantic
+    # neighbors needs the entity section's own data.
+    state: dict[str, Any] = {"entity_data": None}
+
     def _entity() -> dict[str, Any]:
-        doc = _entity_doc(multi.get_store(graph), entity_id)
+        doc = entity_doc(multi.get_store(graph), entity_id)
         if doc is None:
             raise RuntimeError(f"Entity not found: {entity_id}")
         info: dict[str, Any] = {
@@ -130,9 +132,8 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
             info["provenance"] = doc["provenance"]
         if doc.get("version"):
             info["version"] = doc["version"]
+        state["entity_data"] = info
         return info
-
-    entity_section = time_section(_entity)
 
     # The relations and neighbors sections both need the same compact neighbor
     # set; fetch it once and share it rather than paying two store round-trips.
@@ -232,7 +233,7 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
 
     def _semantic_neighbors() -> list[dict[str, Any]]:
         try:
-            data = entity_section["data"]
+            data = state["entity_data"]
             if not data:
                 return []
             query = f"{data['name']} {' '.join(data['observations'])}"
@@ -253,13 +254,13 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
         except Exception:  # noqa: BLE001 — degrade to [] on any failure.
             return []
 
-    sections = {
-        "entity": entity_section,
-        "relations": time_section(_relations),
-        "neighbors": time_section(_neighbors),
-        "centrality": time_section(_centrality),
-        "loopMembership": time_section(_loop_membership),
-        "semanticNeighbors": time_section(_semantic_neighbors),
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("entity", _entity),
+            ("relations", _relations),
+            ("neighbors", _neighbors),
+            ("centrality", _centrality),
+            ("loopMembership", _loop_membership),
+            ("semanticNeighbors", _semantic_neighbors),
+        ]
+    )

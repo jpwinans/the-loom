@@ -22,6 +22,7 @@ from theloom.operations.common import CommandInput
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis.llm import create_synthesis_client
+from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
 
@@ -31,12 +32,23 @@ Doc = dict[str, Any]
 # =============================================================================
 
 
+_INCLUDE_DESC = (
+    "Only collect files whose project-relative path matches one of these "
+    'fnmatch globs (e.g. "src/*", "**/*.py"); unset or empty means no '
+    "restriction."
+)
+_EXCLUDE_DESC = (
+    "Never collect files whose project-relative path matches one of these "
+    "fnmatch globs; takes priority over `include` when a path matches both."
+)
+
+
 class ExtractCodebaseInput(CommandInput):
     project_path: str = Field(alias="projectPath")
     graph: str | None = None
     include_tests: bool | None = Field(default=None, alias="includeTests")
-    include: list[str] | None = None
-    exclude: list[str] | None = None
+    include: list[str] | None = Field(default=None, description=_INCLUDE_DESC)
+    exclude: list[str] | None = Field(default=None, description=_EXCLUDE_DESC)
     dry_run: bool | None = Field(default=None, alias="dryRun")
 
 
@@ -45,8 +57,8 @@ class UpdateCodebaseInput(CommandInput):
     graph_name: str = Field(alias="graphName")
     git_ref: str | None = Field(default=None, alias="gitRef")
     include_tests: bool | None = Field(default=None, alias="includeTests")
-    include: list[str] | None = None
-    exclude: list[str] | None = None
+    include: list[str] | None = Field(default=None, description=_INCLUDE_DESC)
+    exclude: list[str] | None = Field(default=None, description=_EXCLUDE_DESC)
     dry_run: bool | None = Field(default=None, alias="dryRun")
     # Override the shrink guard (a collapsed extraction is refused by default).
     force: bool | None = None
@@ -161,10 +173,13 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
     # The tool handler wraps failures as
     # "Error in codebase extraction: <msg>"; "does not exist" then classifies
     # as OPERATION_ERROR (not NOT_FOUND).
+    started_at = iso_now()
     try:
         extraction = treesitter.extract_codebase(
             params.project_path,
             include_tests=params.include_tests if params.include_tests is not None else True,
+            include=params.include,
+            exclude=params.exclude,
         )
     except FileNotFoundError as exc:
         raise OperationError(f"Error in codebase extraction: {exc}") from exc
@@ -175,13 +190,14 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
         "extractionMethod": extraction["extractionMethod"],
     }
     if params.graph is not None:
+        dry_run = params.dry_run or False
         import_result = bulk_import(
             BulkImportInput.model_validate(
                 {
                     "entities": extraction["entities"],
                     "relations": extraction["relations"],
                     "graph": params.graph,
-                    "dryRun": params.dry_run or False,
+                    "dryRun": dry_run,
                 }
             ),
             multi,
@@ -191,7 +207,13 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
             multi.get_store(params.graph),
             extraction["relations"],
             import_result["mapping"],
-            dry_run=params.dry_run or False,
+            dry_run=dry_run,
+        )
+        result["runId"] = multi.run_store().save_codebase_run(
+            started_at=started_at,
+            created_entity_ids=import_result["createdEntityIds"],
+            created_relation_ids=import_result["createdRelationIds"],
+            dry_run=dry_run,
         )
     return result
 
@@ -213,6 +235,8 @@ def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
             params.graph_name,
             git_ref=params.git_ref or "HEAD~1..HEAD",
             include_tests=params.include_tests if params.include_tests is not None else True,
+            include=params.include,
+            exclude=params.exclude,
             dry_run=params.dry_run or False,
             force=params.force or False,
             multi=multi,
@@ -261,10 +285,15 @@ def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> D
     for relation_id in run.get("createdRelationIds", []):
         parts = relation_id.split("->")
         if len(parts) >= 2:
+            # The run recorded "<from>-><to>-><type>"; the type is load-bearing.
+            # A pair accumulates one typed edge per run, and without the type
+            # the store's untyped target rule picks the *oldest* edge — an edge
+            # an earlier run created, which this rollback must not touch.
+            relation_type = parts[2] if len(parts) >= 3 else None
             try:
                 # A rollback undoes a run that should never have landed, so it
                 # erases rather than retracts — there is no history to keep.
-                graph_store.delete_relation(parts[0], parts[1], hard=True)
+                graph_store.delete_relation(parts[0], parts[1], relation_type, hard=True)
                 deleted_relations += 1
             except Exception:
                 pass

@@ -24,14 +24,21 @@ Storage model — one FalkorDB graph per named Loom graph:
   tx_to}`` — the same bi-temporal shape for an edge that has left the live
   projection (``invalidate_relation``). An edge carries no status field, so
   retiring one means closing its system-time interval, not flipping a flag.
+
+Both version labels are read by ``read_graph_as_of``, the graph-level answer to
+"state as of time T": it is the only read that can see a closed interval, so
+anything reconstructing a past graph from the live projection alone is missing
+exactly what these nodes record.
 - Metadata = singleton node ``:_GraphMeta {_doc}``.
 
 Every mutation goes through ``_commit``: ONE Cypher statement plus its event
 append, sent as one Redis MULTI/EXEC transaction, so the projection and the log
-move together (see ``_commit`` for the exact guarantee, and ``_commit_steps``
-for the single batch case that needs more than one statement and what it owes
-in return). Status changes are validated against the lifecycle transition table
-here in the store.
+move together (see ``theloom.store.space.GraphSpace._commit`` for the exact
+guarantee, and ``_commit_steps`` for the single batch case that needs more than
+one statement and what it owes in return — both, with the graph handle, the
+event log, the paged read and the vector index, come from ``GraphSpace``, which
+the chunk store shares). Status changes are validated against the lifecycle
+transition table here in the store.
 
 Deletion invalidates. ``delete_entity`` retracts (status 'retracted', prior
 incarnation snapshotted, attached edges closed out bi-temporally, embedding
@@ -44,15 +51,11 @@ from __future__ import annotations
 
 import contextlib
 import json
-import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from falkordb import FalkorDB
-from redis import Redis
-
-from theloom.errors import NotFoundError, OperationError, ValidationError
+from theloom.errors import NotFoundError, ValidationError
 from theloom.model import (
     ALL_ENTITY_TYPES,
     ALL_RELATION_TYPES,
@@ -66,18 +69,18 @@ from theloom.model import (
     is_valid_transition,
 )
 from theloom.store.base import Direction, GraphStore
-from theloom.store.commit import commit_steps
-from theloom.store.events import EventLog
 from theloom.store.filters import (
     apply_entity_filters,
     apply_relation_filters,
     extract_neighbor_ids,
 )
-from theloom.store.paging import PAGE_SIZE, fetch_all_rows
+from theloom.store.paging import PAGE_SIZE
+from theloom.store.read_port import GraphSnapshot
+from theloom.store.space import VECTOR_PROPERTY, GraphSpace
 from theloom.timeutil import iso_now
 
 _ENTITY_LABEL = "_Entity"
-_VECTOR_PROPERTY = "_embedding"
+_VECTOR_PROPERTY = VECTOR_PROPERTY
 
 _IMMUTABLE_ENTITY_FIELDS = ("id", "created_at")
 _IMMUTABLE_RELATION_FIELDS = ("id", "from", "to", "created_at")
@@ -205,78 +208,16 @@ def _transition_error(from_status: str | None, to_status: str) -> str:
     return f"Invalid status transition from '{effective}' to '{to_status}'."
 
 
-class FalkorGraphStore(GraphStore):
-    """GraphStore over one FalkorDB graph + one event stream."""
+class FalkorGraphStore(GraphSpace, GraphStore):
+    """GraphStore over one FalkorDB graph + one event stream.
 
-    def __init__(
-        self, db: FalkorDB, redis: Redis, graph_name: str, key_prefix: str = "loom"
-    ) -> None:
-        self._graph = db.select_graph(f"{key_prefix}:graph:{graph_name}")
-        self._redis = redis
-        self._events = EventLog(redis, graph_name, key_prefix)
+    The graph handle, the connection, the event log, the commit primitive, the
+    paged read and the vector index all come from ``GraphSpace`` — the shared
+    store machinery — so this class is only the entity/relation rows and what
+    they mean.
+    """
 
-    # -- the mutation primitive ---------------------------------------------------
-
-    def _commit(
-        self,
-        step: tuple[str, dict[str, Any]],
-        events: Sequence[tuple[str, dict[str, Any]]],
-    ) -> tuple[list[Any], list[str]]:
-        """Run ONE Cypher statement and append its events as one unit.
-
-        The signature is the guarantee: a mutation is a single ``GRAPH.QUERY``,
-        because that is the only unit FalkorDB rolls back. Anything that needs
-        several effects (snapshot + swap + close out attached edges) expresses
-        them as clauses of one statement, not as several statements — Redis
-        MULTI is *not* a rollback boundary, so a second statement failing would
-        leave the first one applied. See ``_commit_steps`` for the one place
-        that genuinely needs several statements, and what it owes in return.
-
-        The transaction mechanism and its exact failure semantics — including
-        which half is compensated in which direction — live in
-        ``theloom.store.commit``; the chunk store shares them.
-
-        Returns ``(query results, appended event ids)``; the ids let a caller
-        that only learns the mutation was wrong *after* ``EXEC`` (see
-        ``create_relations``) discard the events it no longer earns.
-        """
-        return self._commit_steps([step], events)
-
-    def _commit_steps(
-        self,
-        steps: Sequence[tuple[str, dict[str, Any]]],
-        events: Sequence[tuple[str, dict[str, Any]]],
-    ) -> tuple[list[Any], list[str]]:
-        """``_commit`` for the batch case: several Cypher statements in one
-        MULTI/EXEC.
-
-        Weaker than ``_commit`` by exactly one thing, and the caller owes the
-        difference: MULTI is not a rollback boundary, so if statement *k*
-        fails, statements before it have already applied. Only
-        ``create_relations`` uses this (edge types cannot be parametrized, so a
-        mixed-type batch is one statement per type), and it pays the debt by
-        checking every endpoint before committing and by deleting the edges it
-        did create if the reply still disagrees.
-        """
-        results, event_ids = commit_steps(self._redis, self._graph, self._events, steps, events)
-        return list(results), event_ids
-
-    # -- query helpers ----------------------------------------------------------
-
-    def _query(self, cypher: str, params: dict[str, Any] | None = None) -> Any:
-        return self._graph.query(cypher, params or {})
-
-    def _rows(self, cypher: str, params: dict[str, Any] | None = None) -> list[list[Any]]:
-        result = self._query(cypher, params)
-        rows: list[list[Any]] = result.result_set or []
-        return rows
-
-    def _rows_paged(
-        self, cypher: str, params: dict[str, Any] | None = None, limit: int | None = None
-    ) -> list[list[Any]]:
-        """All rows of an ORDER BY-carrying query, immune to RESULTSET_SIZE.
-        ``limit`` caps the window server-side (the paging loop stops there)."""
-        return fetch_all_rows(self._rows, cypher, params, limit)
+    _VECTOR_LABEL = _ENTITY_LABEL
 
     # -- entities ----------------------------------------------------------------
 
@@ -313,79 +254,10 @@ class FalkorGraphStore(GraphStore):
         )
 
     # -- vectors (entity vectors live in the same store) ------------------------
-
-    def vector_index_dimension(self) -> int | None:
-        """The width of the entity vector index, or ``None`` if the graph has
-        no such index yet. The index is write-once — FalkorDB rejects a second
-        CREATE on the same property — so this is also the authority on whether
-        a vector already stored can ever be searched."""
-        rows = self._rows(
-            "CALL db.indexes() YIELD label, types, options RETURN label, types, options"
-        )
-        for label, types, options in rows:
-            if label != _ENTITY_LABEL:
-                continue
-            if "VECTOR" not in (dict(types or {}).get(_VECTOR_PROPERTY) or []):
-                continue
-            dimension = dict(dict(options or {}).get(_VECTOR_PROPERTY) or {}).get("dimension")
-            return int(dimension) if dimension is not None else None
-        return None
-
-    def ensure_vector_index(self, dimension: int = 768) -> None:
-        """Create the entity vector index at ``dimension`` if the graph has none.
-
-        Idempotent, but not blind: an existing index keeps whatever width it was
-        created with (a re-CREATE is an error, not a reshape), and any other
-        failure is surfaced rather than swallowed. Swallowing it is what let a
-        wrong-width index sit there silently indexing nothing.
-        """
-        if self.vector_index_dimension() is not None:
-            return
-        try:
-            self._query(
-                f"CREATE VECTOR INDEX FOR (e:_Entity) ON (e.{_VECTOR_PROPERTY}) "
-                f"OPTIONS {{dimension: {dimension}, similarityFunction: 'cosine'}}"
-            )
-        except Exception:
-            # Lost a race with a concurrent create: the index exists, which is
-            # all this method promised. Anything else is a real failure.
-            if self.vector_index_dimension() is None:
-                raise
-        self._wait_vector_index_operational()
-
-    def _wait_vector_index_operational(self, timeout: float = 30.0) -> None:
-        """Block until the entity vector index reports OPERATIONAL.
-
-        CREATE VECTOR INDEX returns while FalkorDB populates the index in the
-        background, and queryNodes against an index still under construction
-        can be rejected outright — measured on the linux/amd64 build: k=1 fails
-        with "Invalid arguments for procedure 'db.idx.vector.queryNodes'" until
-        construction finishes (k>=2 happens to work, and Apple-silicon builds
-        construct too fast to observe it). A create followed by a query is only
-        correct with this barrier in between.
-        """
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            rows = self._rows(
-                "CALL db.indexes() YIELD label, types, status RETURN label, types, status"
-            )
-            for label, types, status in rows:
-                if label != _ENTITY_LABEL:
-                    continue
-                if "VECTOR" not in (dict(types or {}).get(_VECTOR_PROPERTY) or []):
-                    continue
-                if status == "OPERATIONAL":
-                    return
-            time.sleep(0.05)
-        raise OperationError(f"Entity vector index did not become operational within {timeout}s")
-
-    def _stored_vector_dimension(self) -> int | None:
-        """The width of the vectors actually stored, or ``None`` if none are."""
-        rows = self._rows(
-            f"MATCH (n:_Entity) WHERE n.{_VECTOR_PROPERTY} IS NOT NULL "
-            f"RETURN n.{_VECTOR_PROPERTY} LIMIT 1"
-        )
-        return len(rows[0][0]) if rows else None
+    #
+    # The index itself — create, width, OPERATIONAL barrier, k-NN with its
+    # one retry — is ``GraphSpace``'s, keyed on ``_VECTOR_LABEL``. What is
+    # entity-specific is only what a vector is attached to and read back with.
 
     def set_entity_vector(self, entity_id: str, vector: list[float]) -> None:
         """Attach/update an entity's embedding vector (same store, one query)."""
@@ -402,37 +274,16 @@ class FalkorGraphStore(GraphStore):
         )
         return {row[0]: [float(x) for x in row[1]] for row in rows}
 
-    def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
-        """(entity id, cosine similarity) for the k nearest embedded entities.
-        FalkorDB returns cosine *distance*; similarity = 1 - distance.
+    def has_entity_vectors(self) -> bool:
+        """True when at least one entity carries an embedding — a LIMIT 1 probe
+        rather than ``get_entity_vectors()``, for callers that only need to know
+        whether searching this graph is worth embedding a query for."""
+        return self._stored_vector_dimension() is not None
 
-        If the graph has no vector index yet, one is created at the width of
-        the vectors already *stored* — never at the query vector's width, which
-        would let a single oddly-shaped query permanently fix the schema and
-        leave every real embedding unindexed. With nothing embedded there is
-        nothing to search and no index to guess at, so the answer is empty."""
-        if self.vector_index_dimension() is None:
-            stored = self._stored_vector_dimension()
-            if stored is None:
-                return []
-            self.ensure_vector_index(dimension=stored)
-        query = (
-            "CALL db.idx.vector.queryNodes('_Entity', '_embedding', $k, vecf32($q)) "
-            "YIELD node, score RETURN node.id, score"
-        )
-        try:
-            rows = self._rows(query, {"k": k, "q": query_vector})
-        except Exception as exc:
-            # An index created by another process can still be under
-            # construction here, and queryNodes against it is rejected with
-            # exactly this message (ensure_vector_index barriers only our own
-            # creates). Wait for construction once, retry once; anything else,
-            # or a second failure, is a real error and surfaces.
-            if "db.idx.vector.queryNodes" not in str(exc):
-                raise
-            self._wait_vector_index_operational()
-            rows = self._rows(query, {"k": k, "q": query_vector})
-        return [(row[0], 1.0 - float(row[1])) for row in rows]
+    def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
+        """(entity id, cosine similarity) for the k nearest embedded entities;
+        empty when nothing is embedded (see ``GraphSpace._vector_knn``)."""
+        return self._vector_knn(query_vector, k)
 
     def read_entity(self, entity_id: str) -> Entity | None:
         doc = self._read_doc(entity_id)
@@ -457,6 +308,79 @@ class FalkorGraphStore(GraphStore):
         if version_rows:
             return Entity.model_validate(json.loads(version_rows[0][0]))
         return None
+
+    def read_graph_as_of(self, timestamp: str) -> GraphSnapshot:
+        """The whole graph as it stood at ``timestamp`` (see the read port)."""
+        entities = self._entities_as_of(timestamp)
+        present = {entity.id for entity in entities}
+        relations = [
+            relation
+            for relation in self._relations_as_of(timestamp)
+            if relation.from_ in present and relation.to in present
+        ]
+        return GraphSnapshot(entities=entities, relations=relations)
+
+    def _entities_as_of(self, timestamp: str) -> list[Entity]:
+        """Every entity's incarnation current at ``timestamp``, creation order.
+
+        Two reads, not one per entity: the live nodes (whose ``tx_from`` opens
+        the current incarnation) and the closed ``:_EntityVersion`` intervals
+        containing the bound. A live node younger than the bound falls back to
+        its version; with no covering version the entity was not yet born.
+        """
+        live = self._rows_paged("MATCH (n:_Entity) RETURN n.id, n._doc, n.tx_from ORDER BY id(n)")
+        stale = [row[0] for row in live if row[2] > timestamp]
+        versions = self._entity_versions_as_of(stale, timestamp) if stale else {}
+        entities: list[Entity] = []
+        for entity_id, doc, tx_from in live:
+            covering = doc if tx_from <= timestamp else versions.get(entity_id)
+            if covering is not None:
+                entities.append(Entity.model_validate(json.loads(covering)))
+        return entities
+
+    def _entity_versions_as_of(self, entity_ids: Sequence[str], timestamp: str) -> dict[str, str]:
+        """``entity_id -> _doc`` for the closed version interval containing the
+        bound, for the ids asked about. Intervals per entity are disjoint, so
+        at most one row can match each."""
+        rows = self._rows_paged(
+            "MATCH (v:_EntityVersion) WHERE v.entity_id IN $ids "
+            "AND v.tx_from <= $t AND $t < v.tx_to "
+            "RETURN v.entity_id, v._doc ORDER BY id(v)",
+            {"ids": list(entity_ids), "t": timestamp},
+        )
+        return {row[0]: row[1] for row in rows}
+
+    def _relations_as_of(self, timestamp: str) -> list[Relation]:
+        """Every edge whose system-time interval was open at ``timestamp``.
+
+        Two sources, because an edge's interval can be open or closed: the live
+        edges (interval ``[created_at, ∞)``) created at/before the bound, then
+        the ``:_RelationVersion`` snapshots whose closed ``[tx_from, tx_to)``
+        contains it — an edge retired since the bound was still there then, and
+        it is this second read that keeps history queryable rather than merely
+        stored. Live edges come first, each group in creation order; an id
+        appearing in both (an edge retired and later recreated under the same
+        id) is answered by the live doc, the one still in the projection.
+        """
+        rows = self._rows_paged("MATCH ()-[r]->() RETURN r._doc ORDER BY id(r)")
+        docs: list[dict[str, Any]] = [
+            doc
+            for doc in (json.loads(row[0]) for row in rows)
+            if doc.get("created_at", "") <= timestamp
+        ]
+        live_ids = {doc["id"] for doc in docs}
+        version_rows = self._rows_paged(
+            "MATCH (v:_RelationVersion) WHERE v.tx_from <= $t AND $t < v.tx_to "
+            "RETURN v.relation_id, v._doc ORDER BY id(v)",
+            {"t": timestamp},
+        )
+        seen = set(live_ids)
+        for relation_id, doc_json in version_rows:
+            if relation_id in seen:
+                continue
+            seen.add(relation_id)
+            docs.append(json.loads(doc_json))
+        return [Relation.model_validate(doc) for doc in docs]
 
     def update_entity(self, entity_id: str, updates: Mapping[str, Any]) -> Entity:
         current = self._read_doc(entity_id)
@@ -588,6 +512,14 @@ class FalkorGraphStore(GraphStore):
         )
         docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
         return {doc["id"]: doc for doc in docs}
+
+    def read_entities(self, entity_ids: Iterable[str]) -> dict[str, Entity]:
+        """``read_entity_docs`` in the model dialect — the read port's bulk
+        entity read. One query, ids with no live node absent."""
+        return {
+            entity_id: Entity.model_validate(doc)
+            for entity_id, doc in self.read_entity_docs(entity_ids).items()
+        }
 
     def apply_entity_merge(
         self,

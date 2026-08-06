@@ -16,7 +16,9 @@ errors prepended to import errors.
 from __future__ import annotations
 
 import json
+import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 from pydantic import Field
@@ -31,6 +33,7 @@ from theloom.model import (
 )
 from theloom.operations.common import CommandInput
 from theloom.store.falkor import FalkorGraphStore
+from theloom.store.filters import NON_RETRACTED_ENTITY_STATUSES, prefer_active_by_name
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 from theloom.verification.checks import non_causal_polarity_error
@@ -42,9 +45,7 @@ MAX_OBSERVATIONS_PER_ENTITY = 10_000
 _ENTITY_TYPE_VALUES = {t.value for t in ALL_ENTITY_TYPES}
 _RELATION_TYPE_VALUES = {t.value for t in ALL_RELATION_TYPES}
 _CAUSAL_RELATION_TYPE_VALUES = {t.value for t in CAUSAL_RELATION_TYPES}
-_NON_RETRACTED = EntityFilter.model_validate(
-    {"statusFilter": ["active", "superseded", "deprecated", "investigating"]}
-)
+_NON_RETRACTED = EntityFilter.model_validate({"statusFilter": list(NON_RETRACTED_ENTITY_STATUSES)})
 
 
 class BulkImportInput(CommandInput):
@@ -236,6 +237,42 @@ def _existing_lookup(store: FalkorGraphStore) -> dict[str, Any]:
     return lookup
 
 
+def resolve_bulk_import_document(input_doc: dict[str, Any]) -> dict[str, Any]:
+    """The bulk-import transport policy: file path / stdin-JSONL / inline modes.
+
+    This runs on the raw pre-validation input document (the CLI's raw_handler
+    hatch), because the transport mode selects which raw keys to forward
+    before ``BulkImportInput`` ever sees them — inline mode, in particular,
+    intentionally drops ``jsonlInput`` (JSONL is reachable via stdin only).
+    """
+    if isinstance(input_doc.get("file"), str):
+        file_data = json.loads(Path(input_doc["file"]).resolve().read_text(encoding="utf-8"))
+        return {
+            "entities": file_data.get("entities") or [],
+            "relations": file_data.get("relations") or [],
+            "graph": input_doc.get("graph"),
+            "dryRun": input_doc.get("dryRun"),
+        }
+    if input_doc.get("stdin") is True:
+        return {
+            "jsonlInput": sys.stdin.read(),
+            "graph": input_doc.get("graph"),
+            "dryRun": input_doc.get("dryRun"),
+        }
+    return {
+        "entities": input_doc.get("entities") or [],
+        "relations": input_doc.get("relations") or [],
+        "graph": input_doc.get("graph"),
+        "dryRun": input_doc.get("dryRun"),
+    }
+
+
+def bulk_import_raw(input_doc: dict[str, Any], multi: MultiGraph) -> dict[str, Any]:
+    """Resolve the raw input document's transport mode, then run the import."""
+    doc = resolve_bulk_import_document(input_doc)
+    return bulk_import(BulkImportInput.model_validate(doc), multi)
+
+
 def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
 
@@ -265,6 +302,12 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
     entities_merged = 0
     relations_created = 0
     relations_skipped = 0
+    # What this call actually wrote — narrower than the counts above, which
+    # also credit dryRun's would-be creates: only these are safe for a caller
+    # (e.g. extraction-rollback) to hard-delete, since a merge only appended
+    # observations onto an entity that predates this run.
+    created_entity_ids: list[str] = []
+    created_relation_ids: list[str] = []
 
     lookup = _existing_lookup(store) if entities else {}
 
@@ -311,19 +354,14 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
             created = store.create_entity(EntityCreate.model_validate(doc))
             mapping[entity_input["name"]] = created.id
             lookup[key] = created
+            created_entity_ids.append(created.id)
             entities_created += 1
 
     # Combined name resolution: import batch first, then existing graph
     # entities (non-retracted, active preferred).
     if relations:
-        by_name: dict[str, list[Any]] = {}
-        for entity in store.list_entities(_NON_RETRACTED):
-            by_name.setdefault(entity.name, []).append(entity)
-        for name, candidates in by_name.items():
-            if name in mapping:
-                continue
-            active = next((e for e in candidates if e.status is None or e.status == "active"), None)
-            mapping[name] = (active or candidates[0]).id
+        for name, entity in prefer_active_by_name(store.list_entities(_NON_RETRACTED)).items():
+            mapping.setdefault(name, entity.id)
 
     for relation_input in relations:
         validation_error = _validate_relation(relation_input)
@@ -380,6 +418,7 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
                     }
                 )
             )
+            created_relation_ids.append(f"{from_id}->{to_id}->{relation_input['relationType']}")
             relations_created += 1
         except Exception as exc:  # per-item creation error, collected not raised
             errors.append(
@@ -398,6 +437,8 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
         "relationsSkipped": relations_skipped,
         "errors": [*parse_errors, *errors],
         "mapping": mapping,
+        "createdEntityIds": created_entity_ids,
+        "createdRelationIds": created_relation_ids,
     }
 
 
@@ -409,4 +450,6 @@ def _limit_result(message: str) -> dict[str, Any]:
         "relationsSkipped": 0,
         "errors": [{"type": "validation_error", "message": message}],
         "mapping": {},
+        "createdEntityIds": [],
+        "createdRelationIds": [],
     }

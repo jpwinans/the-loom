@@ -14,16 +14,10 @@ from typing import Any
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.composites.gap_fill_cycle import GapFillCycleInput, gap_fill_cycle
 from theloom.model import EntityCreate
 from theloom.store.multigraph import MultiGraph
-
-
-class _StubEmbedder:
-    """embed_query returns a fixed vector regardless of text (no real model)."""
-
-    def embed_query(self, text: str) -> list[float]:
-        return [1.0, 0.0, 0.0]
 
 
 def _seed_close_pair(multi: MultiGraph) -> tuple[str, str]:
@@ -47,7 +41,9 @@ def test_commit_threshold_zero_actually_commits(
     multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     a_id, b_id = _seed_close_pair(multi)
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _StubEmbedder())
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
 
     result = gap_fill_cycle(
         GapFillCycleInput.model_validate({"seedEntity": a_id, "commitThreshold": 0}),
@@ -66,7 +62,9 @@ def test_commit_threshold_does_not_commit_when_structural_gate_fails(
     when the structural gate (constraint/invariant) fails — the "skipped"
     fix must not turn the gate into an unconditional pass-through."""
     a_id, b_id = _seed_close_pair(multi)
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _StubEmbedder())
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
 
     def _failing_verify_graph(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {"pass": False, "tier1": None, "tier2": None, "tier2Skipped": True}
@@ -93,3 +91,33 @@ def test_registered_summary_says_commit_threshold_writes() -> None:
     descriptor = next(c for c in COMMANDS if c.name == "gap-fill-cycle")
     assert "commitThreshold" in descriptor.summary
     assert "WRITES" in descriptor.summary
+
+
+def test_total_duration_covers_work_done_in_the_sections(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``metadata.totalDurationMs`` is the whole cycle's wall clock, not the
+    runner's own bookkeeping."""
+    import time
+
+    from theloom.composites import gap_fill_cycle as module
+
+    a_id, _ = _seed_close_pair(multi)
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
+    real_semantic_gaps = module.semantic_gaps
+
+    def slow_semantic_gaps(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.05)
+        return real_semantic_gaps(*args, **kwargs)
+
+    monkeypatch.setattr(module, "semantic_gaps", slow_semantic_gaps)
+
+    result = gap_fill_cycle(GapFillCycleInput.model_validate({"seedEntity": a_id}), multi)
+
+    # The gaps section alone sleeps 50ms.
+    assert result["metadata"]["totalDurationMs"] >= 50
+    assert result["metadata"]["totalDurationMs"] >= max(
+        section["durationMs"] for section in result["result"].values()
+    )

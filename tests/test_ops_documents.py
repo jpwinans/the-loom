@@ -9,10 +9,13 @@ pattern-matching the failure's message text.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from tests.fakes import FailingEmbedder
+from theloom import config as config_module
 from theloom.documents.ingestion import IngestionError
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.operations.documents import (
@@ -25,6 +28,13 @@ from theloom.operations.documents import (
     reingest_document,
 )
 from theloom.store.multigraph import MultiGraph
+
+
+@pytest.fixture()
+def failing_embedder() -> Iterator[None]:
+    config_module.set_embedder_override(FailingEmbedder())
+    yield
+    config_module.set_embedder_override(None)
 
 
 def test_ingest_missing_file_is_not_found(multi: MultiGraph, tmp_path: Path) -> None:
@@ -67,6 +77,43 @@ def test_ingest_success_still_returns_a_document_summary(multi: MultiGraph, tmp_
         IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi
     )
     assert result["chunksCreated"] >= 1
+
+
+def test_ingest_records_the_embedding_failure_reason_on_the_chunk(
+    multi: MultiGraph, tmp_path: Path, failing_embedder: None
+) -> None:
+    """A failing embedder used to be swallowed silently: chunks landed with
+    vector=None and no trace of why. The reason is now recorded on the chunk
+    metadata as a fact, not lost."""
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nSome content.")
+
+    result = ingest_document(
+        IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi
+    )
+    assert result["chunksCreated"] >= 1
+
+    chunks = multi.chunk_store().query_chunks(source_id=result["sourceId"])
+    assert len(chunks) == result["chunksCreated"]
+    for chunk in chunks:
+        assert chunk["embeddingError"] == "embedding backend unavailable"
+
+
+def test_reingest_records_the_embedding_failure_reason_on_changed_chunks(
+    multi: MultiGraph, tmp_path: Path, failing_embedder: None
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nOriginal content.")
+    first = ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
+
+    doc_file.write_text("# Title\n\nContent that changed since the first ingest.")
+    result = reingest_document(
+        ReingestDocumentInput.model_validate({"source_id": first["sourceId"]}), multi
+    )
+    assert result["chunksUpdated"] + result["chunksCreated"] >= 1
+
+    chunks = multi.chunk_store().query_chunks(source_id=first["sourceId"])
+    assert any(c.get("embeddingError") == "embedding backend unavailable" for c in chunks)
 
 
 def test_translate_classifies_by_exception_class_not_message_text() -> None:

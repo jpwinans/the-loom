@@ -49,8 +49,8 @@ from theloom.analysis.sliced_wasserstein import find_semantic_far_analogy_candid
 from theloom.analysis.slippage import find_concept_slippages
 from theloom.composites.framework import (
     SectionResult,
-    build_composite_result,
     failed_section,
+    run_composite,
     time_section,
 )
 from theloom.graph.analytics import connected_components
@@ -446,8 +446,6 @@ def far_analogy_retrieval(params: FarAnalogyRetrievalInput, multi: MultiGraph) -
     score = time_section(_score)
 
     # -- Assemble result --------------------------------------------------------
-    total_ms = round((time.perf_counter() - start) * 1000)
-
     absence_results = shared["absence_surprise_results"]
     absence_surprise_section: SectionResult | None = None
     if absence_results:
@@ -462,18 +460,20 @@ def far_analogy_retrieval(params: FarAnalogyRetrievalInput, multi: MultiGraph) -
             "error": None,
         }
 
-    sections: dict[str, SectionResult] = {
-        "fingerprint": fingerprint,
-        "match": match,
-        "slip": slip,
-        "transfer": transfer,
-        "score": score,
-    }
+    section_specs: list[tuple[str, SectionResult]] = [
+        ("fingerprint", fingerprint),
+        ("match", match),
+        ("slip", slip),
+        ("transfer", transfer),
+        ("score", score),
+    ]
     if absence_surprise_section is not None:
-        sections["absenceSurprise"] = absence_surprise_section
-    sections["adaptability"] = adaptability
+        section_specs.append(("absenceSurprise", absence_surprise_section))
+    section_specs.append(("adaptability", adaptability))
 
-    composite = build_composite_result(sections, total_ms)
+    composite = run_composite(section_specs, start=start)
+    total_ms = composite["metadata"]["totalDurationMs"]
+    sections = composite["result"]
     summary = _build_summary(sections, shared["collected_proposals"], total_ms)
 
     candidate_feedback = [

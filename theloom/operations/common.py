@@ -18,6 +18,7 @@ import pydantic
 from pydantic import AfterValidator
 
 from theloom.errors import NotFoundError, ValidationError
+from theloom.extraction.encoding import FILE_PATH_PREFIX, find_observation
 from theloom.model import Entity, EntityFilter, EntityStatus, LoomModel
 
 if TYPE_CHECKING:
@@ -58,7 +59,6 @@ class CommandInput(LoomModel):
 # Name-first addressing
 # =============================================================================
 
-_FILE_PATH_PREFIX = "file path:"
 _MAX_CANDIDATES = 25
 # Name addressing must reach exactly what id addressing reaches: the id-matched
 # reads carry no status predicate, and status transitions are ordinary
@@ -70,11 +70,8 @@ _ALL_STATUSES = [status.value for status in EntityStatus]
 def _file_path_hint(entity: Entity) -> str:
     """The entity's File path observation, if it has one — the cheapest
     disambiguator for code symbols, which collide by name constantly."""
-    for observation in entity.observations:
-        text = str(observation)
-        if text.lower().startswith(_FILE_PATH_PREFIX):
-            return f" {text}"
-    return ""
+    observation = find_observation(entity.observations, FILE_PATH_PREFIX)
+    return f" {observation}" if observation is not None else ""
 
 
 def _candidate_line(entity: Entity) -> str:

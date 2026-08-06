@@ -10,12 +10,11 @@ that is *not* a legacy call edge is untouched.
 
 from __future__ import annotations
 
-import json
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
 
 from theloom.extraction import treesitter
 from theloom.model import RelationCreate
@@ -23,6 +22,7 @@ from theloom.operations.bulk import BulkImportInput, bulk_import
 from theloom.operations.extraction import ExtractCodebaseInput, extract_codebase
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
+from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
 
@@ -140,9 +140,14 @@ def test_dry_run_reports_the_legacy_edges_without_retiring_them(
 
 
 def test_retirement_is_bi_temporal_not_erasure(
-    db: FalkorDB, namespace: str, multi: MultiGraph, legacy_graph: tuple[str, str]
+    multi: MultiGraph, store: FalkorGraphStore, legacy_graph: tuple[str, str]
 ) -> None:
     """The legacy edge leaves the live projection but its history survives."""
+    from_id, to_id = legacy_graph
+    time.sleep(0.01)
+    before_retirement = iso_now()
+    time.sleep(0.01)
+
     extract_codebase(
         ExtractCodebaseInput.model_validate(
             {"projectPath": str(FIXTURE_REPO), "graph": GRAPH},
@@ -150,12 +155,14 @@ def test_retirement_is_bi_temporal_not_erasure(
         multi,
     )
 
-    rows = (
-        db.select_graph(f"{namespace}:graph:{GRAPH}")
-        .query("MATCH (v:_RelationVersion) RETURN v._doc, v.tx_to")
-        .result_set
-    )
-    retired = [json.loads(doc) for doc, tx_to in rows if tx_to]
-    assert [
-        r for r in retired if r["relationType"] == "related_to" and " calls " in str(r["evidence"])
+    # Retired: not in today's projection...
+    assert _related_to_evidence(store, from_id, to_id) == [SEMANTIC_EVIDENCE]
+    # ...but a bound from before the retirement still answers with it.
+    snapshot = store.read_graph_as_of(before_retirement)
+    legacy = [
+        r
+        for r in snapshot.relations
+        if r.relation_type.value == "related_to" and " calls " in str(r.evidence)
     ]
+    assert len(legacy) == 1
+    assert (legacy[0].from_, legacy[0].to) == (from_id, to_id)

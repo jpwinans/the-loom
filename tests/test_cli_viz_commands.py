@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.fakes import FakeEmbedder
+from theloom import config as config_module
 from theloom.cli.registry import COMMANDS, run_handler
 from theloom.errors import LoomError
 from theloom.model import EntityCreate
@@ -60,11 +62,7 @@ def test_export_bundle_search_scope(multi: MultiGraph, monkeypatch) -> None:  # 
     store.set_entity_vector(hit.id, [1.0, 0.0])
     store.set_entity_vector(miss.id, [0.0, 1.0])
 
-    class _Stub:
-        def embed_query(self, text: str) -> list[float]:
-            return [1.0, 0.0]
-
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _Stub())
+    monkeypatch.setattr(config_module, "_embedder_override", FakeEmbedder([1.0, 0.0]))
     result = run_handler("export-bundle", {"scope": {"mode": "search", "query": "vector"}}, multi)
     assert {e["name"] for e in result["entities"]} == {"vector search"}
     assert result["meta"]["scope"] == "search:vector"

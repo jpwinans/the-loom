@@ -1,4 +1,8 @@
-"""Semantic operations.
+"""Semantic operations — the command layer over retrieval and ranking.
+
+Retrieval lives in :mod:`theloom.semantic.search` and ranking in
+:mod:`theloom.semantic.ranking`; what is left here is input handling, the
+keyword signal, and the discovery commands built on top.
 
 Score semantics: every similarity that
 flows through vector search is ``1/(1+L2distance)`` — the vector store returns L2, and
@@ -8,8 +12,13 @@ prefix. Hybrid fusion uses raw (un-normalized) weights .6/.25/.15 over vector/
 keyword/graph signals, recency decays by half-life before MMR, and quality
 groups split on score gaps (mean*1.5*strategy, min 0.05).
 
-The one-shot CLI never accumulates queue state, so flush/retry/dead-letters/
-pipelineStatus report empty-queue shapes.
+The one-shot CLI never accumulates an in-memory queue, so pipelineStatus
+reports an empty-queue shape (isProcessing, lastProcessedAt, …) — but
+flush-pending-embeddings, retry-failed-embeddings and list-dead-letters are
+not queue reports; they act on the embedding state machine
+(theloom/semantic/embedding_state.py) directly: flush embeds everything
+needs_embedding, retry re-embeds status=error entities, and dead-letters
+lists status=error entities with their embeddingError.
 
 Tier note: document vectors are stored verbatim, but live query vectors come
 from fastembed — so ranked outputs are embedding-ranked, while
@@ -18,6 +27,7 @@ embed-*/status shapes are fully deterministic.
 
 from __future__ import annotations
 
+import datetime
 import math
 import re
 from typing import Any
@@ -27,7 +37,7 @@ from pydantic import Field
 from theloom.config import load_config
 from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
-from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityStatus, EntityType
+from theloom.model import ALL_RELATION_TYPES, EmbeddingStatus, EntityFilter, EntityType
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
@@ -36,9 +46,27 @@ from theloom.semantic.embed import (
     compute_content_hash,
     get_embedder,
 )
+from theloom.semantic.embedding_state import (
+    apply_reconcile_action,
+    mark_completed,
+    mark_error,
+    needs_embedding,
+    plan_reconcile,
+    status_counts,
+)
+from theloom.semantic.ranking import (
+    DEFAULT_RECENCY_HALF_LIFE_DAYS,
+    DEFAULT_RECENCY_MAX_BOOST,
+    apply_mmr,
+    apply_recency_boost,
+    assign_quality_groups,
+    expand_by_graph,
+    fuse_scores,
+    select_seeds,
+)
+from theloom.semantic.search import search_entities
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
-from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
 
@@ -87,14 +115,6 @@ STOP_WORDS = frozenset(
         "may",
     }
 )
-EMPTY_PROGRESS = {
-    "total": 0,
-    "completed": 0,
-    "skipped": 0,
-    "failed": 0,
-    "currentBatch": 0,
-    "totalBatches": 1,
-}
 
 
 def _empty_pipeline_status() -> dict[str, Any]:
@@ -112,11 +132,6 @@ def _empty_pipeline_status() -> dict[str, Any]:
     }
 
 
-def _lance_score(cos: float) -> float:
-    """L2-distance similarity: 1/(1+L2), with L2 = sqrt(2-2cos) for unit vectors."""
-    return 1.0 / (1.0 + math.sqrt(max(0.0, 2.0 - 2.0 * cos)))
-
-
 def _entity_docs(store: FalkorGraphStore, filter: EntityFilter | None = None) -> list[Doc]:
     return [e.model_dump(by_alias=True, exclude_unset=True) for e in store.list_entities(filter)]
 
@@ -126,12 +141,6 @@ def _query_text(entity: Doc) -> str:
     return f"{entity['name']} {observations}"
 
 
-# Neither the status nor the entityType filter can be pushed into the ANN
-# index, so a filtered call reads a candidate window and widens it by this
-# factor whenever the window ran out before `limit` was met.
-_CANDIDATE_GROWTH = 4
-
-
 def _search_similar(
     store: FalkorGraphStore,
     query_text: str,
@@ -139,66 +148,21 @@ def _search_similar(
     min_score: float | None = None,
     entity_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Similarity search over the entity vector index: embeds the query
-    (QUERY prefix), asks FalkorDB's ANN index for the nearest candidates
-    (``FalkorGraphStore.vector_knn``), scores 1/(1+L2) — L2 = sqrt(2-2cos) for
-    the cosine the index reports — filters, and truncates.
+    """This module's binding of :func:`theloom.semantic.search.search_entities`.
 
-    Only active entities are returned. A superseded or deprecated entity keeps
-    its embedding (mutations invalidate, they never overwrite), so the index
-    still offers it and the filter has to happen here — the same filter every
-    other default read applies. Retraction is the exception: it drops the
-    vector outright, so a retracted entity is not even a candidate.
-
-    No per-call full vector or entity scan. Entity metadata is a point lookup
-    per candidate. The ANN window is approximate: its *scores* are exact but
-    its membership and ordering are best-effort (observed on the emulated
-    linux/amd64 build: a k-window holding the farthest nodes while the true
-    nearest sat outside it), so candidates are re-sorted by our own computed
-    score, and the only thing treated as proof of exhaustion is the index
-    returning fewer than ``k`` rows. Filters the index can't answer (status,
-    entityType, ``min_score`` over an unlucky window) can starve a fixed-size
-    window, so the window *grows* until ``limit`` is met or the index is
-    exhausted: a rare type stays findable instead of silently returning fewer
-    hits than exist.
+    Private to ``operations.semantic``: the only thing it adds is resolving the
+    embedder from *this* module's ``get_embedder``, so the five command handlers
+    below share one injection point. Callers outside this module should import
+    ``theloom.semantic.search.search_entities`` directly.
     """
-    query_vector = get_embedder().embed_query(query_text)
-    resolved: dict[str, Any] = {}
-    k = max(limit, 1)
-    while True:
-        candidates = store.vector_knn(query_vector, k)
-        results: list[dict[str, Any]] = []
-        exhausted = len(candidates) < k
-        scored = sorted(
-            ((entity_id, _lance_score(cosine)) for entity_id, cosine in candidates),
-            key=lambda pair: -pair[1],
-        )
-        for entity_id, score in scored:
-            if min_score is not None and score < min_score:
-                break  # sorted: the rest of THIS window is below; growth decides the rest
-            if entity_id not in resolved:
-                resolved[entity_id] = store.read_entity(entity_id)
-            entity = resolved[entity_id]
-            if entity is None or entity.effective_status != EntityStatus.ACTIVE:
-                continue
-            if entity_types and entity.entity_type.value not in entity_types:
-                continue
-            results.append(
-                {
-                    "id": entity_id,
-                    "score": score,
-                    "metadata": {
-                        "name": entity.name,
-                        "entityType": entity.entity_type.value,
-                        "entryType": "entity",
-                    },
-                }
-            )
-            if len(results) >= limit:
-                break
-        if exhausted or len(results) >= limit:
-            return results
-        k *= _CANDIDATE_GROWTH
+    return search_entities(
+        store,
+        query_text,
+        limit,
+        min_score,
+        entity_types,
+        embedder=get_embedder(),
+    )
 
 
 def _spread_sample(items: list[Doc], max_items: int, seed: int | None = None) -> list[Doc]:
@@ -361,31 +325,22 @@ _EMBED_TYPES_MSG = (
 
 
 def _embed_one(store: FalkorGraphStore, entity: Doc, skip_hash_check: bool) -> dict[str, Any]:
-    """The pipeline's embedEntity: hash-skip, embed, store vector + metadata."""
-    current_hash = compute_content_hash(entity)
-    if (
-        not skip_hash_check
-        and entity.get("embeddingStatus") == "completed"
-        and entity.get("contentHash") == current_hash
-    ):
+    """The pipeline's embedEntity: hash-skip, embed, store vector + metadata.
+
+    The skip predicate and the transition writes both live in
+    :mod:`theloom.semantic.embedding_state` — this is thin over it."""
+    if not skip_hash_check and not needs_embedding(entity):
         return {"entityId": entity["id"], "status": "skipped"}
+    current_hash = compute_content_hash(entity)
     try:
         vector = get_embedder().embed_document(build_embedding_text(entity))
         store.ensure_vector_index()
         store.set_entity_vector(entity["id"], vector)
-        store.update_entity(
-            entity["id"],
-            {
-                "embeddingStatus": "completed",
-                "contentHash": current_hash,
-                "lastEmbeddedAt": iso_now(),
-                "embeddingVersion": EMBEDDING_VERSION,
-            },
-        )
+        mark_completed(store, entity["id"], current_hash)
         return {"entityId": entity["id"], "status": "embedded", "contentHash": current_hash}
     except Exception as exc:
         message = str(exc)
-        store.update_entity(entity["id"], {"embeddingStatus": "error", "embeddingError": message})
+        mark_error(store, entity["id"], message)
         return {"entityId": entity["id"], "status": "error", "error": message}
 
 
@@ -446,14 +401,38 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
     for start in range(0, total, batch_size):
         progress["currentBatch"] += 1
         for entity in entities[start : start + batch_size]:
-            if not params.force_reembed:
-                current_hash = compute_content_hash(entity)
-                if (
-                    entity.get("embeddingStatus") == "completed"
-                    and entity.get("contentHash") == current_hash
-                ):
-                    progress["skipped"] += 1
-                    continue
+            if not params.force_reembed and not needs_embedding(entity):
+                progress["skipped"] += 1
+                continue
+            result = _embed_one(store, entity, skip_hash_check=True)
+            if result["status"] == "embedded":
+                progress["completed"] += 1
+            elif result["status"] == "skipped":
+                progress["skipped"] += 1
+            else:
+                progress["failed"] += 1
+    return progress
+
+
+def _batch_embed(store: FalkorGraphStore, entities: list[Doc]) -> dict[str, Any]:
+    """Embed every entity in ``entities`` unconditionally (the caller already
+    decided the selection), batched for the same progress shape
+    ``embed_entities`` reports."""
+    batch_size = 16
+    total = len(entities)
+    progress = {
+        "total": total,
+        "completed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "currentBatch": 0,
+        "totalBatches": max(1, math.ceil(total / batch_size)),
+    }
+    if total == 0:
+        return progress
+    for start in range(0, total, batch_size):
+        progress["currentBatch"] += 1
+        for entity in entities[start : start + batch_size]:
             result = _embed_one(store, entity, skip_hash_check=True)
             if result["status"] == "embedded":
                 progress["completed"] += 1
@@ -465,62 +444,61 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
 
 
 def flush_pending_embeddings(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
-    # One-shot CLI: the in-memory queue is empty by construction.
-    return dict(EMPTY_PROGRESS)
+    """Embed every entity the state machine says needs it. The one-shot CLI
+    never accumulates an in-memory queue to drain — flushing IS embedding,
+    now, over exactly the ``needs_embedding`` set."""
+    store = multi.get_store(params.graph)
+    pending = [e for e in _entity_docs(store) if needs_embedding(e)]
+    return _batch_embed(store, pending)
 
 
 def retry_failed_embeddings(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
-    return {"retriedCount": 0, "results": dict(EMPTY_PROGRESS)}
+    """Re-embed every entity whose last attempt landed in ``error``."""
+    store = multi.get_store(params.graph)
+    failed = [
+        e for e in _entity_docs(store) if e.get("embeddingStatus") == EmbeddingStatus.ERROR.value
+    ]
+    return {"retriedCount": len(failed), "results": _batch_embed(store, failed)}
 
 
 def embedding_status(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
-    counts: dict[str, int] = {"pending": 0, "processing": 0, "completed": 0, "error": 0, "none": 0}
     entities = _entity_docs(store)
-    for entity in entities:
-        status = entity.get("embeddingStatus") or "none"
-        counts[status] = counts.get(status, 0) + 1
+    counts = status_counts(entities)
     counts["total"] = len(entities)
     return {"counts": counts, "pipelineStatus": _empty_pipeline_status()}
 
 
 def list_dead_letters(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
-    return {"deadLetters": [], "count": 0}
+    """Every entity currently in ``error``, with the reason it failed."""
+    store = multi.get_store(params.graph)
+    errored = [
+        e for e in _entity_docs(store) if e.get("embeddingStatus") == EmbeddingStatus.ERROR.value
+    ]
+    dead_letters = [
+        {
+            "entityId": e["id"],
+            "name": e["name"],
+            "entityType": e["entityType"],
+            "embeddingError": e.get("embeddingError"),
+        }
+        for e in errored
+    ]
+    return {"deadLetters": dead_letters, "count": len(dead_letters)}
 
 
 def embedding_reconcile(params: EmbeddingReconcileInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     dry_run = params.dry_run if params.dry_run is not None else True
     entities = _entity_docs(store)
-    vectors = store.get_entity_vectors()
-    status_fixed_missing = 0
-    status_fixed_has = 0
-    for entity in entities:
-        has_vector = entity["id"] in vectors
-        if entity.get("embeddingStatus") == "completed" and not has_vector:
-            status_fixed_missing += 1
-            if not dry_run:
-                store.update_entity(
-                    entity["id"],
-                    {
-                        "embeddingStatus": None,
-                        "contentHash": None,
-                        "lastEmbeddedAt": None,
-                        "embeddingVersion": None,
-                    },
-                )
-        elif entity.get("embeddingStatus") != "completed" and has_vector:
-            status_fixed_has += 1
-            if not dry_run:
-                store.update_entity(
-                    entity["id"],
-                    {
-                        "embeddingStatus": "completed",
-                        "contentHash": compute_content_hash(entity),
-                        "lastEmbeddedAt": iso_now(),
-                        "embeddingVersion": EMBEDDING_VERSION,
-                    },
-                )
+    by_id = {e["id"]: e for e in entities}
+    vector_ids = set(store.get_entity_vectors())
+    actions = plan_reconcile(entities, vector_ids)
+    if not dry_run:
+        for action in actions:
+            apply_reconcile_action(store, action, by_id[action.entity_id])
+    status_fixed_missing = sum(1 for a in actions if a.kind == "clear_status")
+    status_fixed_has = sum(1 for a in actions if a.kind == "mark_completed")
     return {
         "entitiesScanned": len(entities),
         "statusFixedMissingVector": status_fixed_missing,
@@ -571,21 +549,6 @@ def _keyword_scores(
     return matches
 
 
-def _match_source(scores: dict[str, float]) -> str:
-    v, k, g = scores["vector"] > 0, scores["keyword"] > 0, scores["graph"] > 0
-    if v and k and g:
-        return "semantic+keyword+graph"
-    if v and k:
-        return "semantic+keyword"
-    if v and g:
-        return "semantic+graph"
-    if k:
-        return "keyword"
-    if g:
-        return "graph"
-    return "semantic"
-
-
 def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict[str, Any]]:
     store = multi.get_store(params.graph)
     results = _search_similar(
@@ -610,6 +573,10 @@ def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict
 
 
 def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any]:
+    """Fetch, then rank: one vector fetch through the search core, then the
+    pure ranking stages in :mod:`theloom.semantic.ranking` — graph expansion,
+    score fusion, optional recency decay, optional MMR, optional quality
+    grouping — applied in that order."""
     store = multi.get_store(params.graph)
     weights = dict(DEFAULT_WEIGHTS)
     if params.weights is not None:
@@ -621,201 +588,78 @@ def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any
     limit = params.limit or 10
     quality_grouping = params.quality_grouping if params.quality_grouping is not None else True
     strategy = params.grouping_strategy or "similar"
+    query_summary = {
+        "text": params.query,
+        "weights": weights,
+        "graphHops": graph_hops,
+        "qualityGrouping": quality_grouping,
+    }
 
+    # --- fetch ---------------------------------------------------------------
     vector_k = max(limit * 3, 30)
-    vector_results = _search_similar(
+    hits = _search_similar(
         store,
         params.query,
         limit=vector_k,
         min_score=params.min_score,
         entity_types=_as_type_list(params.entity_type),
     )
-    if not vector_results:
-        return {
-            "results": [],
-            "totalCandidates": 0,
-            "qualityGroups": 0,
-            "query": {
-                "text": params.query,
-                "weights": weights,
-                "graphHops": graph_hops,
-                "qualityGrouping": quality_grouping,
-            },
-        }
+    if not hits:
+        return {"results": [], "totalCandidates": 0, "qualityGroups": 0, "query": query_summary}
 
+    vector_rows = [
+        {
+            "entityId": hit["id"],
+            "name": hit["metadata"]["name"],
+            "entityType": hit["metadata"]["entityType"],
+            "entryType": hit["metadata"]["entryType"],
+            "score": hit["score"],
+        }
+        for hit in hits
+    ]
     entities = {e["id"]: e for e in _entity_docs(store)}
-    query_terms = _tokenize(params.query)
-    keyword_matches = _keyword_scores(query_terms, entities, [r["id"] for r in vector_results])
-
-    # Graph expansion: top seeds ranked by vector+keyword blend, 1/hop scores.
-    seed_ranked = sorted(
-        vector_results,
-        key=lambda r: (
-            -(
-                weights["vector"] * float(r["score"])
-                + weights["keyword"] * float(keyword_matches.get(r["id"], {}).get("score", 0))
-            )
-        ),
+    keyword_matches = _keyword_scores(
+        _tokenize(params.query), entities, [row["entityId"] for row in vector_rows]
     )
-    max_seeds = min(5, max(1, math.ceil(len(vector_results) * 0.5)))
-    seed_ids = [r["id"] for r in seed_ranked[:max_seeds]]
-    seed_set = set(seed_ids)
-    graph_results: dict[str, dict[str, Any]] = {}
-    if graph_hops > 0:
-        for seed_id in seed_ids:
-            frontier = [seed_id]
-            for hop in range(1, graph_hops + 1):
-                next_frontier: list[str] = []
-                for node_id in frontier:
-                    neighbors = store.get_neighbors(node_id)[:10]
-                    for neighbor in neighbors:
-                        if neighbor.id in seed_set:
-                            continue
-                        existing = graph_results.get(neighbor.id)
-                        if not existing or existing["hopDistance"] > hop:
-                            graph_results[neighbor.id] = {
-                                "entityId": neighbor.id,
-                                "name": neighbor.name,
-                                "entityType": neighbor.entity_type.value,
-                                "hopDistance": hop,
-                                "expandedFrom": seed_id,
-                                "score": 1.0 / hop,
-                            }
-                        if not existing:
-                            next_frontier.append(neighbor.id)
-                frontier = next_frontier
 
-    result_map: dict[str, dict[str, Any]] = {}
-    for vr in vector_results:
-        km = keyword_matches.get(vr["id"])
-        scores = {
-            "vector": float(vr["score"]),
-            "keyword": float(km["score"]) if km else 0.0,
-            "graph": 0.0,
-        }
-        row: dict[str, Any] = {
-            "entityId": vr["id"],
-            "name": vr["metadata"]["name"],
-            "entityType": vr["metadata"]["entityType"],
-            "score": sum(weights[k] * scores[k] for k in weights),
-            "scores": scores,
-            "matchSource": _match_source(scores),
-            "entryType": vr["metadata"]["entryType"],
-        }
-        if km:
-            row["matchedTerms"] = km["matchedTerms"]
-        result_map[vr["id"]] = row
-    for gr in graph_results.values():
-        existing = result_map.get(gr["entityId"])
-        if existing is None:
-            scores = {"vector": 0.0, "keyword": 0.0, "graph": float(gr["score"])}
-            result_map[gr["entityId"]] = {
-                "entityId": gr["entityId"],
-                "name": gr["name"],
-                "entityType": gr["entityType"],
-                "score": sum(weights[k] * scores[k] for k in weights),
-                "scores": scores,
-                "matchSource": "graph",
-                "hopDistance": gr["hopDistance"],
-                "expandedFrom": gr["expandedFrom"],
-            }
-        else:
-            existing["scores"]["graph"] = max(existing["scores"]["graph"], gr["score"])
-            existing["score"] = sum(weights[k] * existing["scores"][k] for k in weights)
-            existing["matchSource"] = _match_source(existing["scores"])
-            existing["hopDistance"] = gr["hopDistance"]
-            existing["expandedFrom"] = gr["expandedFrom"]
+    def neighbors_of(entity_id: str) -> list[tuple[str, str, str]]:
+        return [(n.id, n.name, n.entity_type.value) for n in store.get_neighbors(entity_id)]
 
-    combined = sorted(result_map.values(), key=lambda r: -float(r["score"]))
+    # --- rank ----------------------------------------------------------------
+    graph_rows = expand_by_graph(
+        select_seeds(vector_rows, keyword_matches, weights), neighbors_of, graph_hops
+    )
+    ranked = fuse_scores(vector_rows, keyword_matches, graph_rows, weights)
 
     if params.recency_boost:
-        import datetime
+        ranked = apply_recency_boost(
+            ranked,
+            {
+                entity_id: entity.get("updated_at") or entity.get("created_at")
+                for entity_id, entity in entities.items()
+            },
+            now_ms=datetime.datetime.now(datetime.UTC).timestamp() * 1000,
+            max_boost=(
+                params.recency_max_boost
+                if params.recency_max_boost is not None
+                else DEFAULT_RECENCY_MAX_BOOST
+            ),
+            half_life_days=params.recency_half_life_days or DEFAULT_RECENCY_HALF_LIFE_DAYS,
+        )
 
-        max_boost = params.recency_max_boost if params.recency_max_boost is not None else 0.15
-        half_life_days = params.recency_half_life_days or 7
-        now_ms = datetime.datetime.now(datetime.UTC).timestamp() * 1000
-        for row in combined:
-            entity = entities.get(row["entityId"])
-            if entity is None:
-                continue
-            timestamp = entity.get("updated_at") or entity.get("created_at")
-            if not timestamp:
-                continue
-            parsed = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            age_ms = max(0.0, now_ms - parsed.timestamp() * 1000)
-            half_life_ms = max(1.0, half_life_days * 86_400_000)
-            decay = math.exp(-age_ms * math.log(2) / half_life_ms)
-            row["score"] *= 1 + max_boost * decay
-        combined.sort(key=lambda r: -float(r["score"]))
+    if params.mmr_lambda is not None:
+        ranked = apply_mmr(ranked, params.mmr_lambda, limit)
 
-    if params.mmr_lambda is not None and len(combined) > 1:
-        lam = params.mmr_lambda
-        token_sets = [
-            set(t for t in re.split(r"\W+", f"{r['name']} {r['entityType']}".lower()) if t)
-            for r in combined
-        ]
-        max_score = float(combined[0]["score"])
-        normalized = [(float(r["score"]) / max_score if max_score > 0 else 0.0) for r in combined]
-        selected = [0]
-        remaining = list(range(1, len(combined)))
-        count = min(limit, len(combined))
-        while len(selected) < count and remaining:
-            best_index, best_mmr = remaining[0], -math.inf
-            for index in remaining:
-                max_sim = 0.0
-                for sel in selected:
-                    a, b = token_sets[index], token_sets[sel]
-                    union = len(a | b)
-                    sim = (len(a & b) / union) if union else 0.0
-                    max_sim = max(max_sim, sim)
-                mmr = lam * normalized[index] - (1 - lam) * max_sim
-                if mmr > best_mmr:
-                    best_index, best_mmr = index, mmr
-            selected.append(best_index)
-            remaining.remove(best_index)
-        combined = [combined[i] for i in selected]
-
-    truncated = combined[:limit]
-
+    results = ranked[:limit]
     quality_groups = 0
-    if quality_grouping and truncated:
-        multiplier = 1.5 if strategy == "similar" else 1.0
-        ordered = sorted(truncated, key=lambda r: -float(r["score"]))
-        if len(ordered) == 1:
-            ordered[0]["qualityGroup"] = 1
-            groups = [[ordered[0]]]
-        else:
-            gaps = [
-                float(ordered[i]["score"]) - float(ordered[i + 1]["score"])
-                for i in range(len(ordered) - 1)
-            ]
-            mean_gap = sum(gaps) / len(gaps)
-            threshold = max(mean_gap * 1.5 * multiplier, 0.05)
-            groups = []
-            current: list[dict[str, Any]] = []
-            for i, row in enumerate(ordered):
-                current.append(row)
-                if i < len(gaps) and gaps[i] > threshold:
-                    groups.append(current)
-                    current = []
-            if current:
-                groups.append(current)
-            for number, group in enumerate(groups, start=1):
-                for row in group:
-                    row["qualityGroup"] = number
-        truncated = [row for group in groups for row in group]
-        quality_groups = len(groups)
+    if quality_grouping and results:
+        results, quality_groups = assign_quality_groups(results, strategy)
 
     return {
-        "results": truncated,
-        "totalCandidates": len(vector_results) + len(graph_results),
+        "results": results,
+        "totalCandidates": len(vector_rows) + len(graph_rows),
         "qualityGroups": quality_groups,
-        "query": {
-            "text": params.query,
-            "weights": weights,
-            "graphHops": graph_hops,
-            "qualityGrouping": quality_grouping,
-        },
+        "query": query_summary,
     }
 
 

@@ -5,7 +5,18 @@ Chunks are ``:_Chunk`` nodes in a dedicated per-prefix graph (``{prefix}:_chunks
 NOT inside any knowledge graph: documents are global across graphs, so
 ingest/list/delete take no graph param. Each node carries the verbatim metadata
 doc in ``_doc`` and an optional ``_embedding`` (vecf32) so analyze-category can
-cluster. Row order follows ``id(n)`` (insertion order).
+cluster and ``vector_knn`` can search. Row order follows ``id(n)`` (insertion
+order).
+
+This is a store over one FalkorDB graph like any other, so it *is* one:
+``ChunkStore`` extends :class:`theloom.store.space.GraphSpace` and owns no
+graph handle, no Redis connection, no commit primitive and no vector-index
+Cypher of its own. Chunk writes therefore get exactly the store's guarantees
+rather than a second, subtly different copy of them — the chunk vector index in
+particular used to be created by a hand-rolled statement that swallowed every
+error and never waited for the index to become operational, and (because
+nothing ever called it) was never created at all, leaving every chunk embedding
+unsearchable.
 
 Chunk writes are event-sourced like every other mutation: each one is a single
 Cypher statement plus its event append, committed as one MULTI/EXEC unit
@@ -26,14 +37,20 @@ from __future__ import annotations
 
 import contextlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from falkordb import FalkorDB
-from redis import Redis
+from theloom.documents.metadata import ChunkMetadata
 
-from theloom.store.commit import commit_steps
-from theloom.store.events import EventLog
+# The store's paging, called by name rather than through ``_rows_paged``: a
+# document delete must snapshot the ids it will remove, and the tests that pin
+# what happens when another writer moves in *during* that snapshot substitute
+# this function to open the window. Same machinery either way.
 from theloom.store.paging import fetch_all_rows
+from theloom.store.space import GraphSpace
+
+if TYPE_CHECKING:
+    from falkordb import FalkorDB
+    from redis import Redis
 
 Doc = dict[str, Any]
 CHUNK_GRAPH_SUFFIX = "_chunks"
@@ -44,45 +61,35 @@ CHUNK_GRAPH_SUFFIX = "_chunks"
 _MAX_CHUNKS_PER_DOCUMENT = 100_000
 
 
-class ChunkStore:
+class ChunkStore(GraphSpace):
+    """The document-chunk rows, over the shared store machinery."""
+
+    _VECTOR_LABEL = "_Chunk"
+
     def __init__(self, db: FalkorDB, key_prefix: str = "loom", redis: Redis | None = None) -> None:
-        self._graph = db.select_graph(f"{key_prefix}:graph:{CHUNK_GRAPH_SUFFIX}")
         # FalkorDB *is* the Redis server, so the chunk write and its event
         # append are two commands on one connection; default to the client the
         # graph handle already speaks through.
-        self._redis: Redis = redis if redis is not None else db.connection
-        self.events = EventLog(self._redis, CHUNK_GRAPH_SUFFIX, key_prefix)
+        super().__init__(
+            db,
+            redis if redis is not None else db.connection,
+            CHUNK_GRAPH_SUFFIX,
+            key_prefix,
+        )
 
-    def _query(self, cypher: str, params: Doc | None = None) -> Any:
-        return self._graph.query(cypher, params or {})
+    def upsert_chunk(
+        self, chunk_id: str, metadata: ChunkMetadata | Doc, vector: list[float] | None
+    ) -> None:
+        """Insert-or-replace a chunk row keyed by chunk id, and log it.
 
-    def _rows(self, cypher: str, params: Doc | None = None) -> list[list[Any]]:
-        result = self._query(cypher, params)
-        return result.result_set or []
-
-    def _commit(
-        self,
-        step: tuple[str, dict[str, Any]],
-        events: list[tuple[str, dict[str, Any]]],
-    ) -> Any:
-        """One Cypher statement plus its events, as one transaction; the
-        statement's result (so a caller can report what actually changed)."""
-        results, _ = commit_steps(self._redis, self._graph, self.events, [step], events)
-        return results[0]
-
-    def ensure_vector_index(self, dimension: int = 768) -> None:
-        with contextlib.suppress(Exception):
-            self._query(
-                "CREATE VECTOR INDEX FOR (c:_Chunk) ON (c._embedding) "
-                f"OPTIONS {{dimension: {dimension}, similarityFunction: 'cosine'}}"
-            )
-
-    def upsert_chunk(self, chunk_id: str, metadata: Doc, vector: list[float] | None) -> None:
-        """Insert-or-replace a chunk row keyed by chunk id, and log it."""
+        ``metadata`` is a :class:`ChunkMetadata` — or a raw wire doc, which is
+        validated into one, so what lands in ``_doc`` always has the declared
+        shape whichever way it arrived."""
+        chunk = ChunkMetadata.coerce(metadata)
         params: Doc = {
             "id": chunk_id,
-            "doc": json.dumps(metadata),
-            "sid": metadata.get("sourceId", ""),
+            "doc": json.dumps(chunk.to_doc()),
+            "sid": chunk.source_id or "",
         }
         if vector is None:
             cypher = "MERGE (c:_Chunk {id: $id}) SET c._doc = $doc, c.sourceId = $sid"
@@ -92,7 +99,7 @@ class ChunkStore:
                 "SET c._doc = $doc, c.sourceId = $sid, c._embedding = vecf32($vec)"
             )
             params["vec"] = vector
-        event = _chunk_event(chunk_id, metadata, vector)
+        event = _chunk_event(chunk_id, chunk, vector)
         self._commit((cypher, params), [("chunk_created", event)])
 
     def query_chunks(
@@ -112,10 +119,10 @@ class ChunkStore:
             params,
             limit=limit,
         )
-        docs = [json.loads(row[0]) for row in rows]
-        if category is not None:
-            docs = [d for d in docs if d.get("category") == category]
-        return docs
+        chunks = (ChunkMetadata.from_json(row[0]) for row in rows)
+        return [
+            chunk.to_doc() for chunk in chunks if category is None or chunk.category == category
+        ]
 
     def query_chunks_with_vectors(
         self, *, category: str | None = None, limit: int = 100000
@@ -127,12 +134,22 @@ class ChunkStore:
         )
         result: list[tuple[Doc, list[float] | None]] = []
         for row in rows:
-            meta = json.loads(row[0])
-            if category is not None and meta.get("category") != category:
+            chunk = ChunkMetadata.from_json(row[0])
+            if category is not None and chunk.category != category:
                 continue
             vector = [float(x) for x in row[1]] if row[1] is not None else None
-            result.append((meta, vector))
+            result.append((chunk.to_doc(), vector))
         return result
+
+    def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
+        """(chunk id, cosine similarity) for the k nearest embedded chunks.
+
+        The chunk vector index is created on first search at the width of the
+        vectors already stored, through the store's barrier-guarded path — see
+        ``GraphSpace._vector_knn``. Nothing embedded means nothing to search
+        and no index to guess at, so the answer is empty.
+        """
+        return self._vector_knn(query_vector, k)
 
     def delete_where_source(self, source_id: str) -> int:
         """Delete the document's chunks named by one snapshot; how many went.
@@ -157,7 +174,7 @@ class ChunkStore:
         chunk_ids = [str(row[0]) for row in rows]
         if not chunk_ids:
             return 0
-        result = self._commit(
+        results, _ = self._commit(
             ("MATCH (c:_Chunk) WHERE c.id IN $ids DELETE c", {"ids": chunk_ids}),
             [
                 (
@@ -166,7 +183,7 @@ class ChunkStore:
                 )
             ],
         )
-        return int(result.nodes_deleted)
+        return int(results[0].nodes_deleted)
 
     def delete_chunk(self, chunk_id: str) -> None:
         self._commit(
@@ -182,7 +199,7 @@ class ChunkStore:
             self.events.delete()
 
 
-def _chunk_event(chunk_id: str, metadata: Doc, vector: list[float] | None) -> Doc:
+def _chunk_event(chunk_id: str, chunk: ChunkMetadata, vector: list[float] | None) -> Doc:
     """The ``chunk_created`` payload: who the chunk is and where it came from.
 
     Deliberately not the chunk text — the log records that the write happened
@@ -190,10 +207,15 @@ def _chunk_event(chunk_id: str, metadata: Doc, vector: list[float] | None) -> Do
     """
     payload: Doc = {
         "chunkId": chunk_id,
-        "sourceId": metadata.get("sourceId", ""),
+        "sourceId": chunk.source_id or "",
         "embedded": vector is not None,
     }
-    for field in ("sourceName", "sourceFormat", "chunkIndex", "contentHash", "category"):
-        if metadata.get(field) is not None:
-            payload[field] = metadata[field]
+    coordinates = {
+        "sourceName": chunk.source_name,
+        "sourceFormat": chunk.source_format,
+        "chunkIndex": chunk.chunk_index,
+        "contentHash": chunk.content_hash,
+        "category": chunk.category,
+    }
+    payload.update({name: value for name, value in coordinates.items() if value is not None})
     return payload

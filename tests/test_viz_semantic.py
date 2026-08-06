@@ -9,20 +9,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.model import EntityCreate
 from theloom.store.multigraph import MultiGraph
 from theloom.viz.semantic import assemble_semantic
-
-
-class _StubEmbedder:
-    """Returns the seeded vector for a query, keyed on the entity's name (the
-    first token of `_query_text` = f"{name} {observations}")."""
-
-    def __init__(self, by_name: dict[str, list[float]]) -> None:
-        self._by_name = by_name
-
-    def embed_query(self, text: str) -> list[float]:
-        return self._by_name[text.split()[0]]
 
 
 def _seed(multi: MultiGraph, vectors: dict[str, list[float]]) -> dict[str, str]:
@@ -38,7 +28,7 @@ def _seed(multi: MultiGraph, vectors: dict[str, list[float]]) -> dict[str, str]:
 
 
 def _install_stub(monkeypatch: pytest.MonkeyPatch, vectors: dict[str, list[float]]) -> None:
-    stub = _StubEmbedder(vectors)
+    stub = FakeEmbedder(vectors)
     monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: stub)
 
 

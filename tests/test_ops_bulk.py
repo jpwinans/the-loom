@@ -11,7 +11,19 @@ input parses line-by-line with per-line errors.
 
 from __future__ import annotations
 
-from theloom.operations.bulk import BulkImportInput, bulk_import, parse_jsonl
+import io
+import json
+from pathlib import Path
+
+import pytest
+
+from theloom.operations.bulk import (
+    BulkImportInput,
+    bulk_import,
+    bulk_import_raw,
+    parse_jsonl,
+    resolve_bulk_import_document,
+)
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.store.multigraph import MultiGraph
 
@@ -87,6 +99,32 @@ def test_reimport_is_idempotent_merge_and_skip(multi: MultiGraph) -> None:
     merged = store.read_entity(result["mapping"]["Alpha"])
     assert merged is not None
     assert merged.observations == ["first", "third"]  # dedup, append new only
+
+
+def test_created_ids_name_only_what_this_call_actually_wrote(multi: MultiGraph) -> None:
+    """A rollback needs to erase exactly what one run created, never what it
+    merely merged into — so the id lists must stay narrower than the counts,
+    which also credit dry-run's would-be creates."""
+    first = run(multi, entities=ENTITIES, relations=RELATIONS)
+    assert set(first["createdEntityIds"]) == set(first["mapping"].values())
+    assert first["createdRelationIds"] == [
+        f"{first['mapping']['Alpha']}->{first['mapping']['Beta']}->supports"
+    ]
+
+    second = run(
+        multi,
+        entities=[{"name": "Alpha", "entityType": "concept", "observations": ["first", "third"]}],
+        relations=RELATIONS,
+    )
+    assert second["createdEntityIds"] == []
+    assert second["createdRelationIds"] == []
+
+
+def test_dry_run_creates_no_ids_to_roll_back(multi: MultiGraph) -> None:
+    result = run(multi, entities=ENTITIES, relations=RELATIONS, dryRun=True)
+    assert result["entitiesCreated"] == 2
+    assert result["createdEntityIds"] == []
+    assert result["createdRelationIds"] == []
 
 
 def test_relation_dedup_is_per_type_not_per_pair(multi: MultiGraph) -> None:
@@ -235,3 +273,52 @@ def test_jsonl_input_merges_with_arrays(multi: MultiGraph) -> None:
     result = run(multi, jsonlInput=jsonl, entities=[ENTITIES[0]], relations=[])
     assert result["entitiesCreated"] == 2
     assert set(result["mapping"]) == {"FromJsonl", "Alpha"}
+
+
+# =============================================================================
+# resolve_bulk_import_document / bulk_import_raw — the file/stdin/inline
+# transport modes (moved from the CLI registry's raw_handler hatch)
+# =============================================================================
+
+
+def test_resolve_bulk_import_document_inline_mode_drops_jsonl_input() -> None:
+    doc = resolve_bulk_import_document(
+        {"entities": ENTITIES, "relations": RELATIONS, "jsonlInput": "ignored", "graph": "g"}
+    )
+    assert doc == {"entities": ENTITIES, "relations": RELATIONS, "graph": "g", "dryRun": None}
+
+
+def test_resolve_bulk_import_document_file_mode_reads_json(tmp_path: Path) -> None:
+    path = tmp_path / "batch.json"
+    path.write_text(json.dumps({"entities": ENTITIES, "relations": RELATIONS}))
+    doc = resolve_bulk_import_document({"file": str(path), "graph": "g", "dryRun": True})
+    assert doc == {"entities": ENTITIES, "relations": RELATIONS, "graph": "g", "dryRun": True}
+
+
+def test_resolve_bulk_import_document_stdin_mode_reads_jsonl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jsonl = '{"type": "entity", "name": "FromStdin", "entityType": "concept", "observations": []}'
+    monkeypatch.setattr("sys.stdin", io.StringIO(jsonl))
+    doc = resolve_bulk_import_document({"stdin": True, "graph": "g"})
+    assert doc == {"jsonlInput": jsonl, "graph": "g", "dryRun": None}
+
+
+def test_bulk_import_raw_file_mode_end_to_end(multi: MultiGraph, tmp_path: Path) -> None:
+    path = tmp_path / "batch.json"
+    path.write_text(json.dumps({"entities": ENTITIES, "relations": RELATIONS}))
+    result = bulk_import_raw({"file": str(path)}, multi)
+    assert result["entitiesCreated"] == 2
+    assert result["relationsCreated"] == 1
+
+
+def test_bulk_import_raw_stdin_mode_end_to_end(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jsonl = (
+        '{"type": "entity", "name": "FromStdinRaw", "entityType": "concept", "observations": []}'
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(jsonl))
+    result = bulk_import_raw({"stdin": True}, multi)
+    assert result["entitiesCreated"] == 1
+    assert set(result["mapping"]) == {"FromStdinRaw"}

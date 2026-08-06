@@ -15,16 +15,10 @@ from __future__ import annotations
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.composites.enrichment_crawl import EnrichmentCrawlInput, enrichment_crawl
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
-
-
-class _StubEmbedder:
-    """embed_query returns a fixed vector regardless of text (no real model)."""
-
-    def embed_query(self, text: str) -> list[float]:
-        return [1.0, 0.0, 0.0]
 
 
 def _seed_frontier(multi: MultiGraph) -> dict[str, str]:
@@ -141,7 +135,9 @@ def test_semantic_context_is_used_when_entity_vectors_exist(
     store = multi.get_store()
     store.set_entity_vector(ids["beta"], [1.0, 0.0, 0.0])
     store.set_entity_vector(ids["gamma"], [0.99, 0.14, 0.0])
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _StubEmbedder())
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
 
     result = enrichment_crawl(EnrichmentCrawlInput(), multi)
 
@@ -343,4 +339,32 @@ def test_candidate_budget_is_not_burned_by_already_merged_pairs(multi: MultiGrap
     assert [by_name[name]["candidatesProposed"] for name in ("Beta", "Delta", "Gamma")] == [1, 1, 1]
     assert by_name["Alpha"]["candidatesProposed"] == 0, (
         "candidatesProposed must count real proposals, not skipped duplicates"
+    )
+
+
+def test_total_duration_covers_work_done_in_the_sections(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``metadata.totalDurationMs`` is the whole crawl's wall clock, not the
+    runner's own bookkeeping — a caller budgets crawl cost from it."""
+    import time
+
+    from theloom.composites import enrichment_crawl as module
+
+    _seed_frontier(multi)
+    real_get_relations = module.get_relations
+
+    def slow_get_relations(*args: object, **kwargs: object) -> object:
+        time.sleep(0.05)
+        return real_get_relations(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module, "get_relations", slow_get_relations)
+
+    result = enrichment_crawl(EnrichmentCrawlInput(), multi)
+
+    # One 50ms sleep per crawled frontier node, so the crawl itself cannot
+    # have taken less than 50ms.
+    assert result["metadata"]["totalDurationMs"] >= 50
+    assert result["metadata"]["totalDurationMs"] >= max(
+        section["durationMs"] for section in result["result"].values()
     )

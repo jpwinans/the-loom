@@ -214,6 +214,20 @@ def test_non_volatile_does_not_require_expires_at() -> None:
     assert make_entity(durability="stable").expires_at is None
 
 
+def test_entity_reads_a_legacy_queued_embedding_status_as_unembedded() -> None:
+    """The status machine is binary now (completed/error), but a graph written
+    by an older build can hold ``pending``/``processing``. Those mean "no
+    vector yet", so they load as ``None`` rather than making every read of
+    that entity raise."""
+    assert make_entity(embeddingStatus="pending").embedding_status is None
+    assert make_entity(embeddingStatus="processing").embedding_status is None
+
+
+def test_entity_still_rejects_an_unknown_embedding_status() -> None:
+    with pytest.raises(ValidationError):
+        make_entity(embeddingStatus="vibing")
+
+
 def test_entity_dump_uses_reference_wire_keys() -> None:
     # exclude_unset: explicitly-set nulls survive, unset optionals disappear —
     # the distinction the wire format relies on.

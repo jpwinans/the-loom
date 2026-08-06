@@ -8,8 +8,10 @@ mutation and bi-temporal point-in-time reads.
 
 from __future__ import annotations
 
+import itertools
 import re
 import time
+from collections.abc import Iterator
 
 import pytest
 from falkordb import FalkorDB
@@ -24,6 +26,7 @@ from theloom.model import (
 )
 from theloom.store.events import EventLog
 from theloom.store.falkor import FalkorGraphStore
+from theloom.timeutil import iso_now
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -567,6 +570,35 @@ def test_read_entity_as_of_before_creation_is_none(store: FalkorGraphStore) -> N
     assert store.read_entity_as_of(created.id, "2000-01-01T00:00:00.000Z") is None
 
 
+def test_read_graph_as_of_restores_a_retraction_and_the_edges_it_closed_out(
+    store: FalkorGraphStore,
+) -> None:
+    """Retraction closes out every attached edge, so the edges *and* the
+    entity's pre-retraction incarnation must come back from a bound before it —
+    the one write path where an as-of read that only sees live edges silently
+    loses a whole neighbourhood."""
+    a = store.create_entity(spec("Population"))
+    b = store.create_entity(spec("Resources"))
+    edge = store.create_relation(
+        RelationCreate.model_validate({"from": a.id, "to": b.id, "relationType": "causes"})
+    )
+    time.sleep(0.01)
+    pivot = iso_now()
+    time.sleep(0.01)
+    store.delete_entity(b.id)
+
+    snapshot = store.read_graph_as_of(pivot)
+
+    assert [e.name for e in snapshot.entities] == ["Population", "Resources"]
+    assert [e.status for e in snapshot.entities] == [None, None]  # not yet retracted
+    assert [r.id for r in snapshot.relations] == [edge.id]
+    # ...and today the edge is gone and the entity is retracted.
+    assert store.list_relations() == []
+    retracted = store.read_entity(b.id)
+    assert retracted is not None and retracted.status is not None
+    assert retracted.status.value == "retracted"
+
+
 # =============================================================================
 # Vector index readiness
 # =============================================================================
@@ -582,32 +614,48 @@ def _index_status_rows(status: str) -> list[list[object]]:
     return [["_Entity", {"_embedding": ["VECTOR"]}, status]]
 
 
+def _index_probe(statuses: Iterator[str], polls: dict[str, int]):  # type: ignore[no-untyped-def]
+    """Answer the two ``db.indexes()`` probes ensure_vector_index makes: the
+    width probe (no index yet, so the CREATE really runs) and the readiness
+    poll behind it, which walks ``statuses``."""
+
+    def probe(query: str, params: object = None) -> list[list[object]]:
+        assert "db.indexes" in query
+        if "options" in query:
+            return []
+        polls["count"] += 1
+        return _index_status_rows(next(statuses))
+
+    return probe
+
+
 def test_ensure_vector_index_waits_for_construction_to_finish(
     store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     statuses = iter(["UNDER CONSTRUCTION", "UNDER CONSTRUCTION", "OPERATIONAL"])
     polls = {"count": 0}
-
-    def fake_rows(query: str, params: object = None) -> list[list[object]]:
-        assert "db.indexes" in query
-        polls["count"] += 1
-        return _index_status_rows(next(statuses))
-
-    monkeypatch.setattr(store, "_rows", fake_rows)
+    monkeypatch.setattr(store, "_rows", _index_probe(statuses, polls))
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
-    store._wait_vector_index_operational(timeout=5.0)
+
+    store.ensure_vector_index(dimension=2)
+
     assert polls["count"] == 3
 
 
 def test_ensure_vector_index_raises_when_construction_never_finishes(
     store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        store, "_rows", lambda query, params=None: _index_status_rows("UNDER CONSTRUCTION")
-    )
+    polls = {"count": 0}
+    monkeypatch.setattr(store, "_rows", _index_probe(itertools.repeat("UNDER CONSTRUCTION"), polls))
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    # A clock that runs a minute per reading, so the 30s barrier expires on the
+    # second poll instead of really blocking the suite for half a minute.
+    clock = itertools.count(0.0, 60.0)
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+
     with pytest.raises(LoomError) as excinfo:
-        store._wait_vector_index_operational(timeout=0.01)
+        store.ensure_vector_index(dimension=2)
+
     assert "operational" in str(excinfo.value).lower()
 
 
