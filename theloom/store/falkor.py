@@ -33,10 +33,12 @@ exactly what these nodes record.
 
 Every mutation goes through ``_commit``: ONE Cypher statement plus its event
 append, sent as one Redis MULTI/EXEC transaction, so the projection and the log
-move together (see ``_commit`` for the exact guarantee, and ``_commit_steps``
-for the single batch case that needs more than one statement and what it owes
-in return). Status changes are validated against the lifecycle transition table
-here in the store.
+move together (see ``theloom.store.space.GraphSpace._commit`` for the exact
+guarantee, and ``_commit_steps`` for the single batch case that needs more than
+one statement and what it owes in return — both, with the graph handle, the
+event log, the paged read and the vector index, come from ``GraphSpace``, which
+the chunk store shares). Status changes are validated against the lifecycle
+transition table here in the store.
 
 Deletion invalidates. ``delete_entity`` retracts (status 'retracted', prior
 incarnation snapshotted, attached edges closed out bi-temporally, embedding
