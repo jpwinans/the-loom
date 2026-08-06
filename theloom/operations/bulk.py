@@ -31,6 +31,7 @@ from theloom.model import (
 )
 from theloom.operations.common import CommandInput
 from theloom.store.falkor import FalkorGraphStore
+from theloom.store.filters import NON_RETRACTED_ENTITY_STATUSES, prefer_active_by_name
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 from theloom.verification.checks import non_causal_polarity_error
@@ -42,9 +43,7 @@ MAX_OBSERVATIONS_PER_ENTITY = 10_000
 _ENTITY_TYPE_VALUES = {t.value for t in ALL_ENTITY_TYPES}
 _RELATION_TYPE_VALUES = {t.value for t in ALL_RELATION_TYPES}
 _CAUSAL_RELATION_TYPE_VALUES = {t.value for t in CAUSAL_RELATION_TYPES}
-_NON_RETRACTED = EntityFilter.model_validate(
-    {"statusFilter": ["active", "superseded", "deprecated", "investigating"]}
-)
+_NON_RETRACTED = EntityFilter.model_validate({"statusFilter": list(NON_RETRACTED_ENTITY_STATUSES)})
 
 
 class BulkImportInput(CommandInput):
@@ -316,14 +315,8 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
     # Combined name resolution: import batch first, then existing graph
     # entities (non-retracted, active preferred).
     if relations:
-        by_name: dict[str, list[Any]] = {}
-        for entity in store.list_entities(_NON_RETRACTED):
-            by_name.setdefault(entity.name, []).append(entity)
-        for name, candidates in by_name.items():
-            if name in mapping:
-                continue
-            active = next((e for e in candidates if e.status is None or e.status == "active"), None)
-            mapping[name] = (active or candidates[0]).id
+        for name, entity in prefer_active_by_name(store.list_entities(_NON_RETRACTED)).items():
+            mapping.setdefault(name, entity.id)
 
     for relation_input in relations:
         validation_error = _validate_relation(relation_input)

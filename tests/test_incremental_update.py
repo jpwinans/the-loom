@@ -339,6 +339,26 @@ def test_a_hand_authored_reference_into_changed_code_survives(
     assert result["stats"]["relationsRemoved"] == 2
 
 
+def test_a_new_mention_resolves_to_a_superseded_entity_sharing_its_name(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """A relation naming an entity this diff doesn't otherwise touch, and that
+    isn't currently active (superseded for some unrelated reason before this
+    update ran), resolves with the same active-preferred name->id tie-break
+    bulk import uses for its own relation resolution — rather than being
+    silently dropped because name_to_id only ever saw active entities."""
+    target = entity_by_name(store, "transfer (service)")
+    store.update_entity(target.id, {"status": "superseded", "statusReason": "duplicate"})
+
+    doc = seeded / "docs" / "architecture.md"
+    doc.write_text(doc.read_text(encoding="utf-8") + "\nSee also `transfer()`.\n", encoding="utf-8")
+    commit(seeded, "mention transfer in the docs")
+
+    update(seeded, multi)
+
+    assert ("file:docs/architecture.md", "transfer (service)", "references") in edges(store)
+
+
 def test_editing_a_doc_retracts_the_mentions_it_dropped(
     seeded: Path, multi: MultiGraph, store: FalkorGraphStore
 ) -> None:

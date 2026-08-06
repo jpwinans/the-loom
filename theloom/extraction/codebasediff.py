@@ -48,12 +48,18 @@ from typing import Any
 from theloom.errors import OperationError
 from theloom.extraction import doclinks, treesitter
 from theloom.extraction.encoding import is_file_entity_name, parse_file_entity_name, parse_file_path
-from theloom.model import Entity, EntityCreate, RelationCreate
+from theloom.model import Entity, EntityCreate, EntityFilter, RelationCreate
 from theloom.store.falkor import FalkorGraphStore
+from theloom.store.filters import NON_RETRACTED_ENTITY_STATUSES, prefer_active_by_name
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
+
+# Fallback pool for resolving a relation endpoint's name to an id when it
+# isn't among the (active-only) entities the planner already read — see
+# ``_plan_update``'s ``name_to_id`` fallback.
+_NON_RETRACTED = EntityFilter.model_validate({"statusFilter": list(NON_RETRACTED_ENTITY_STATUSES)})
 
 # (fromName, toName, relationType) — the identity of an edge across extractions.
 RelationKey = tuple[str, str, str]
@@ -188,8 +194,19 @@ def _plan_update(changed: list[Doc], extraction: Doc, store: FalkorGraphStore) -
     for entity in existing:
         existing_by_name.setdefault(entity.name, entity)
 
+    name_to_id = {name: entity.id for name, entity in existing_by_name.items()}
+    # A relation may name an entity this update doesn't otherwise touch and
+    # that isn't currently active (superseded by something unrelated to this
+    # diff) — resolved with the same name->id tie-break bulk import uses for
+    # its own relation resolution (prefer active, else first-seen over every
+    # non-retracted status) rather than left unresolvable and silently
+    # dropped just because `existing` above only ever saw actives.
+    if extraction["relations"]:
+        for name, entity in prefer_active_by_name(store.list_entities(_NON_RETRACTED)).items():
+            name_to_id.setdefault(name, entity.id)
+
     plan = _Plan(
-        name_to_id={name: entity.id for name, entity in existing_by_name.items()},
+        name_to_id=name_to_id,
         supersedable_total=sum(1 for e in existing if existing_file.get(e.name) is not None),
     )
 
