@@ -87,6 +87,16 @@
   stroke-linecap: round;
 }
 
+/* ---- Historical-scope note (top-right; projection is current-only) -------- */
+.semantic__temporalnote {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: 3;
+  background: var(--color-elevated);
+  box-shadow: 0 1px 3px rgba(18, 20, 28, 0.12);
+}
+
 /* ---- Legend (top-left; the free corner in this view) ---------------------- */
 .semantic__legend {
   position: absolute;

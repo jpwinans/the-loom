@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.errors import LoomError
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
@@ -101,3 +102,28 @@ def test_malformed_as_of_is_validation_error(multi: MultiGraph) -> None:
     with pytest.raises(LoomError) as err:
         assemble_bundle(ExportBundleInput.model_validate({"asOf": "not-a-timestamp"}), multi)
     assert err.value.code == "VALIDATION_ERROR"
+
+
+def test_as_of_stamps_analytics_and_semantic_as_current(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Analytics and semantic are never recomputed as-of a historical bound —
+    they must say so, rather than silently mixing two times in one bundle."""
+    store = multi.get_store()
+    vectors = {"a": [1.0, 0.0, 0.0], "b": [0.0, 1.0, 0.0], "c": [0.0, 0.0, 1.0]}
+    for name, vector in vectors.items():
+        entity = store.create_entity(
+            EntityCreate.model_validate({"name": name, "entityType": "concept", "observations": []})
+        )
+        store.set_entity_vector(entity.id, vector)
+    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: FakeEmbedder(vectors))
+    time.sleep(0.01)
+    pivot = iso_now()
+
+    now_doc = assemble_bundle(ExportBundleInput(), multi)
+    assert "temporalScope" not in now_doc["analytics"]
+    assert "temporalScope" not in now_doc["semantic"]
+
+    as_of_doc = assemble_bundle(ExportBundleInput.model_validate({"asOf": pivot}), multi)
+    assert as_of_doc["analytics"]["temporalScope"] == "current"
+    assert as_of_doc["semantic"]["temporalScope"] == "current"

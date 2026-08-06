@@ -42,15 +42,23 @@ const BundleContext = createContext<BundleContextValue | null>(null);
 export function BundleProvider({ children }: { children: ReactNode }) {
   const live = useMemo(() => detectLive(), []);
   const [bundle, setBundle] = useState<TapestryBundleRaw | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [requestedGraph, setRequestedGraph] = useState<string | undefined>(undefined);
   const [graphs, setGraphs] = useState<string[]>([]);
   const [nonce, setNonce] = useState(0);
+  const retry = () => setNonce((n) => n + 1);
 
   useEffect(() => {
     let alive = true;
-    loadBundle(live ? requestedGraph : undefined).then((loaded) => {
-      if (alive) setBundle(loaded);
-    });
+    setError(null);
+    loadBundle(live ? requestedGraph : undefined)
+      .then((loaded) => {
+        if (alive) setBundle(loaded);
+      })
+      .catch((err: unknown) => {
+        if (!alive) return;
+        setError(err instanceof Error ? err.message : String(err));
+      });
     return () => {
       alive = false;
     };
@@ -63,6 +71,16 @@ export function BundleProvider({ children }: { children: ReactNode }) {
       .catch(() => setGraphs([]));
   }, [live]);
 
+  if (error && !bundle) {
+    return (
+      <div className="app__loading app__loading--error" role="alert">
+        <p className="app__loadingmsg">Could not load the graph: {error}</p>
+        <button type="button" className="app__loadingretry" onClick={retry}>
+          Retry
+        </button>
+      </div>
+    );
+  }
   if (!bundle) {
     return <div className="app__loading">Loading graph…</div>;
   }

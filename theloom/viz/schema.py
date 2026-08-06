@@ -44,6 +44,11 @@ class AnalyticsSection(LoomModel):
     loops: list[dict[str, Any]]
     leverage_points: list[dict[str, Any]] = Field(alias="leveragePoints")
     bridges: list[dict[str, Any]]
+    # Present (always "current") only on an as-of bundle: analytics are never
+    # recomputed historically, so this section is the graph's *current* state
+    # even when `entities`/`relations` are bounded to `TapestryMeta.as_of`.
+    # See `theloom.viz.bundle.assemble_bundle`.
+    temporal_scope: str | None = Field(default=None, alias="temporalScope")
 
 
 class TemporalEvent(LoomModel):
@@ -68,6 +73,10 @@ class SemanticSection(LoomModel):
     method: str
     projection: dict[str, list[float]]
     clusters: list[SemanticCluster] | None = None
+    # Same current-time stamp as `AnalyticsSection.temporal_scope`, and for the
+    # same reason: the embedding projection is not recomputed as of the
+    # bundle's historical bound.
+    temporal_scope: str | None = Field(default=None, alias="temporalScope")
 
 
 class TapestryBundle(LoomModel):

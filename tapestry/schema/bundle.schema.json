@@ -46,6 +46,18 @@
           },
           "title": "Bridges",
           "type": "array"
+        },
+        "temporalScope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temporalscope"
         }
       },
       "required": [
@@ -121,6 +133,18 @@
           ],
           "default": null,
           "title": "Clusters"
+        },
+        "temporalScope": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Temporalscope"
         }
       },
       "required": [
