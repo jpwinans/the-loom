@@ -10,6 +10,9 @@
  *
  * In live mode the provider also tracks the requested graph and a reload nonce
  * (so the switcher and refresh button re-fetch), and fetches the graph list once.
+ * Load failures have two shapes: before any bundle is up, a full-screen error
+ * with Retry; after one is up (a failed switch or refresh), a banner over the
+ * still-valid data, with `currentGraph` reporting the loaded bundle's graph.
  * Static and dev modes are unchanged: `live` is `false`, `graphs` is `[]`, and
  * `setGraph`/`refresh` re-run `loadBundle`, which returns the same inline bundle —
  * a harmless no-op refetch.
@@ -84,15 +87,29 @@ export function BundleProvider({ children }: { children: ReactNode }) {
   if (!bundle) {
     return <div className="app__loading">Loading graph…</div>;
   }
+  // A load failure AFTER a bundle is up (a failed graph switch or refresh)
+  // must not silently keep stale data behind an advanced header: keep showing
+  // the loaded bundle, say so in a banner, and report the graph the data
+  // actually belongs to rather than the one that failed to load.
   return (
     <ReadyProvider
       bundle={bundle}
       live={live !== null}
       graphs={graphs}
-      currentGraph={requestedGraph ?? bundle.meta.graph}
+      currentGraph={error ? bundle.meta.graph : (requestedGraph ?? bundle.meta.graph)}
       setGraph={setRequestedGraph}
       refresh={() => setNonce((n) => n + 1)}
     >
+      {error && (
+        <div className="app__loadbanner" role="alert">
+          <span className="app__loadbannermsg">
+            Could not load the graph: {error} — still showing “{bundle.meta.graph}”.
+          </span>
+          <button type="button" className="app__loadingretry" onClick={retry}>
+            Retry
+          </button>
+        </div>
+      )}
       {children}
     </ReadyProvider>
   );
