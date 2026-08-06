@@ -39,6 +39,7 @@ import contextlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from theloom.documents.metadata import ChunkMetadata
 from theloom.store.paging import fetch_all_rows
 from theloom.store.space import GraphSpace
 
@@ -71,12 +72,19 @@ class ChunkStore(GraphSpace):
             key_prefix,
         )
 
-    def upsert_chunk(self, chunk_id: str, metadata: Doc, vector: list[float] | None) -> None:
-        """Insert-or-replace a chunk row keyed by chunk id, and log it."""
+    def upsert_chunk(
+        self, chunk_id: str, metadata: ChunkMetadata | Doc, vector: list[float] | None
+    ) -> None:
+        """Insert-or-replace a chunk row keyed by chunk id, and log it.
+
+        ``metadata`` is a :class:`ChunkMetadata` — or a raw wire doc, which is
+        validated into one, so what lands in ``_doc`` always has the declared
+        shape whichever way it arrived."""
+        chunk = ChunkMetadata.coerce(metadata)
         params: Doc = {
             "id": chunk_id,
-            "doc": json.dumps(metadata),
-            "sid": metadata.get("sourceId", ""),
+            "doc": json.dumps(chunk.to_doc()),
+            "sid": chunk.source_id or "",
         }
         if vector is None:
             cypher = "MERGE (c:_Chunk {id: $id}) SET c._doc = $doc, c.sourceId = $sid"
@@ -86,7 +94,7 @@ class ChunkStore(GraphSpace):
                 "SET c._doc = $doc, c.sourceId = $sid, c._embedding = vecf32($vec)"
             )
             params["vec"] = vector
-        event = _chunk_event(chunk_id, metadata, vector)
+        event = _chunk_event(chunk_id, chunk, vector)
         self._commit((cypher, params), [("chunk_created", event)])
 
     def query_chunks(
@@ -106,10 +114,10 @@ class ChunkStore(GraphSpace):
             params,
             limit=limit,
         )
-        docs = [json.loads(row[0]) for row in rows]
-        if category is not None:
-            docs = [d for d in docs if d.get("category") == category]
-        return docs
+        chunks = (ChunkMetadata.from_json(row[0]) for row in rows)
+        return [
+            chunk.to_doc() for chunk in chunks if category is None or chunk.category == category
+        ]
 
     def query_chunks_with_vectors(
         self, *, category: str | None = None, limit: int = 100000
@@ -121,11 +129,11 @@ class ChunkStore(GraphSpace):
         )
         result: list[tuple[Doc, list[float] | None]] = []
         for row in rows:
-            meta = json.loads(row[0])
-            if category is not None and meta.get("category") != category:
+            chunk = ChunkMetadata.from_json(row[0])
+            if category is not None and chunk.category != category:
                 continue
             vector = [float(x) for x in row[1]] if row[1] is not None else None
-            result.append((meta, vector))
+            result.append((chunk.to_doc(), vector))
         return result
 
     def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
@@ -186,7 +194,7 @@ class ChunkStore(GraphSpace):
             self.events.delete()
 
 
-def _chunk_event(chunk_id: str, metadata: Doc, vector: list[float] | None) -> Doc:
+def _chunk_event(chunk_id: str, chunk: ChunkMetadata, vector: list[float] | None) -> Doc:
     """The ``chunk_created`` payload: who the chunk is and where it came from.
 
     Deliberately not the chunk text — the log records that the write happened
@@ -194,10 +202,15 @@ def _chunk_event(chunk_id: str, metadata: Doc, vector: list[float] | None) -> Do
     """
     payload: Doc = {
         "chunkId": chunk_id,
-        "sourceId": metadata.get("sourceId", ""),
+        "sourceId": chunk.source_id or "",
         "embedded": vector is not None,
     }
-    for field in ("sourceName", "sourceFormat", "chunkIndex", "contentHash", "category"):
-        if metadata.get(field) is not None:
-            payload[field] = metadata[field]
+    coordinates = {
+        "sourceName": chunk.source_name,
+        "sourceFormat": chunk.source_format,
+        "chunkIndex": chunk.chunk_index,
+        "contentHash": chunk.content_hash,
+        "category": chunk.category,
+    }
+    payload.update({name: value for name, value in coordinates.items() if value is not None})
     return payload
