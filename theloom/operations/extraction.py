@@ -285,10 +285,15 @@ def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> D
     for relation_id in run.get("createdRelationIds", []):
         parts = relation_id.split("->")
         if len(parts) >= 2:
+            # The run recorded "<from>-><to>-><type>"; the type is load-bearing.
+            # A pair accumulates one typed edge per run, and without the type
+            # the store's untyped target rule picks the *oldest* edge — an edge
+            # an earlier run created, which this rollback must not touch.
+            relation_type = parts[2] if len(parts) >= 3 else None
             try:
                 # A rollback undoes a run that should never have landed, so it
                 # erases rather than retracts — there is no history to keep.
-                graph_store.delete_relation(parts[0], parts[1], hard=True)
+                graph_store.delete_relation(parts[0], parts[1], relation_type, hard=True)
                 deleted_relations += 1
             except Exception:
                 pass

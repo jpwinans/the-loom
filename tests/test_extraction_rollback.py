@@ -19,6 +19,7 @@ import pytest
 
 from theloom.errors import NotFoundError
 from theloom.extraction.codebasediff import update_codebase_diff
+from theloom.operations.bulk import BulkImportInput, bulk_import
 from theloom.operations.extraction import (
     ExtractCodebaseInput,
     ExtractionRollbackInput,
@@ -140,6 +141,58 @@ class TestExtractCodebaseRollback:
             extraction_status(
                 ExtractionStatusInput.model_validate({"runId": result["runId"]}), multi
             )
+
+
+class TestRollbackRelationTargeting:
+    def test_rollback_deletes_the_runs_own_typed_edge_not_the_oldest_one(
+        self, multi: MultiGraph, store: FalkorGraphStore
+    ) -> None:
+        """A pair can accumulate one typed edge per run. Rolling back the
+        second run must drop *its* edge and leave the first run's edge — a
+        codebase symbol that both calls and later extends the same target is
+        ordinary, and hard-deleting the wrong edge erases its history."""
+        first = bulk_import(
+            BulkImportInput.model_validate(
+                {
+                    "entities": [
+                        {"name": "Foo", "entityType": "concept", "observations": ["a"]},
+                        {"name": "Base", "entityType": "concept", "observations": ["b"]},
+                    ],
+                    "relations": [{"from": "Foo", "to": "Base", "relationType": "calls"}],
+                    "graph": GRAPH,
+                }
+            ),
+            multi,
+        )
+        second = bulk_import(
+            BulkImportInput.model_validate(
+                {
+                    "entities": [],
+                    "relations": [{"from": "Foo", "to": "Base", "relationType": "instance_of"}],
+                    "graph": GRAPH,
+                }
+            ),
+            multi,
+        )
+        foo_id = first["mapping"]["Foo"]
+        base_id = first["mapping"]["Base"]
+        assert {r.relation_type for r in store.read_relations(foo_id, base_id)} == {
+            "calls",
+            "instance_of",
+        }
+
+        run_id = multi.run_store().save_codebase_run(
+            started_at="2026-01-01T00:00:00Z",
+            created_entity_ids=[],
+            created_relation_ids=second["createdRelationIds"],
+            dry_run=False,
+        )
+        rollback = extraction_rollback(
+            ExtractionRollbackInput.model_validate({"runId": run_id, "graph": GRAPH}), multi
+        )
+
+        assert rollback["deletedRelations"] == 1
+        assert [r.relation_type for r in store.read_relations(foo_id, base_id)] == ["calls"]
 
 
 class TestUpdateCodebaseRollback:
