@@ -1,1003 +1,1219 @@
 ---
 repo: the-loom
-commit: 067a5b833e3f9e9ca898288403312140169f8df5
+commit: e4a12a1b188e5391ec431a8c5754d2fa4733b1f9
 graph: codebase-the-loom
-generated: 2026-08-05
-mode: full
+generated: 2026-08-06
+mode: incremental
 ---
 
 # The Loom — Architecture Map
 
 ## 1. Executive overview
 
-The Loom is a knowledge-graph substrate with a single JSON-in / JSON-out command
-line interface. One store — FalkorDB — holds the graph, the entity vectors, the
-document chunks and the full-text index, and every mutation is a single atomic
-statement paired with an append to an event log, so history is real and *state as
-of time T* is a first-class read. Above that store sits a layered Python package:
-a Pydantic domain model that is the single source of truth for every record shape,
-a semantics-free storage layer, an operations layer that adds the rules (polarity
-belongs to causal edges only, retracted entities cannot be relation endpoints,
-updates invalidate and never overwrite), pure algorithm libraries for graphs,
-semirings, symbolic math and synthesis, and a command registry from which the
-entire CLI and its published catalog are generated. A second, self-contained
-workspace — Tapestry — is a single-file React/sigma.js visualization that reads a
-schema-versioned bundle assembled by the same Python operations it visualizes.
-The two halves meet at exactly one artifact: a built HTML template with a data
-sentinel that the Python side substitutes at emit time.
+The Loom is a knowledge-graph substrate with exactly one user-facing surface: a
+JSON-in / JSON-out command line of 164 commands across 23 categories, all of them
+generated from a single declarative registry. Underneath that registry sits a thin
+command-operation layer that validates input, resolves which named graph to talk to,
+and delegates: to a FalkorDB-backed store that keeps graph topology, entity vectors,
+document chunks and an append-only event log in one transactional place; to a set of
+deliberately pure computation libraries (graph algebra, semiring traversal, symbolic
+math, computational-creativity scorers, exploration signals, verification predicates);
+and to a semantic layer that owns the single definition of "nearest". Above the
+commands sit composites — one-call bundles that chain many operations into a single
+structured answer with per-section fault isolation. A separate visualization arm turns
+a live graph into a bounded, versioned payload and ships it three ways: raw JSON, a
+self-contained HTML page carrying a committed React/sigma.js build, or a read-only
+REST service that the same page talks to in live mode. The shape that recurs
+everywhere is *pure core, thin shell*: the algorithm has no store and no I/O, and the
+module above it is a translation layer that shapes wire documents and typed errors.
 
 ### Stats
 
 | Measure | Value |
 |---|---|
-| Files described | 323 |
-| External packages referenced | 63 |
-| Symbols described (functions, methods, classes, types, module constants) | 4,000 |
-| — functions and methods | 2,219 |
-| — module-level constants and typed variables | 1,378 |
-| — classes, interfaces and type aliases | 403 |
-| Written architectural notes (purposes, patterns, invariants, risks) | 813 |
-| Total records in the graph | 5,256 |
-| Total relationships | 11,039 |
-| — containment (`part_of`) | 4,497 |
-| — call edges | 2,981 |
-| — semantic links (`related_to`) | 1,944 |
-| — import/dependency edges (`requires`) | 1,422 |
-| — instance-of (pattern instances) | 195 |
-| Language mix (by file) | Python 208, TypeScript 73, Markdown 14, JSON 14, CSS 9, JavaScript 2, YAML 1, TOML 1, lockfile 1 |
-| Files not parsed | 40 |
-| Module groups enriched | 38 of 38 |
+| Source files in the map | 368 |
+| External packages referenced | 65 |
+| Symbols (classes, functions, methods, variables) | 4,643 |
+| Written observations about the code (purposes, patterns, invariants, tensions) | 997 |
+| Records in the map, current state | 6,028 |
+| Records including superseded revisions | 6,717 |
+| Connections between them | 14,203 |
+| Files not parsed | 42 |
 
-The working tree was clean at extraction time, so this map describes commit
-`067a5b83` exactly.
+Connections break down as: containment 5,255; calls 3,530; general association 3,342;
+dependency 1,646; document-to-code references 205; type/instance links 199; supersession
+26.
 
-The 40 unparsed files are the formats the structural parser has no grammar for —
-CSS, some JSON, and a handful of assets. Markdown, JSON, YAML, TOML and the
-lockfile are still present as file records with written notes attached; they carry
-no symbol-level detail.
+Language mix, by file: Python 249, TypeScript 73, Markdown 18, JSON 14, CSS 9,
+JavaScript 2, YAML 1, TOML 1, lockfile 1.
+
+> **Working tree was dirty at extraction time.** `CLAUDE.md` had uncommitted edits and
+> `CONTEXT.md` was untracked when this map was built. Everything below is pinned to
+> commit `e4a12a1`; the two files above may differ on disk from what is described here.
+
+The 42 unparsed files are the formats tree-sitter has no grammar for in this
+configuration — Markdown, JSON, CSS, YAML, TOML and the lockfile. They still appear as
+files with their documentation links intact; only their internal symbols are absent.
 
 ---
 
 ## 2. Subsystem walkthrough
 
-### 2.1 The Python core
-
-#### `theloom` (root package)
-
-The contract layer everything else is written against. `model.py` (545 lines)
-defines every entity and relation shape in Pydantic and does the snake/camel
-translation at the wire boundary; `config.py` resolves configuration exactly once
-through one loader; `errors.py` gives every failure a structured code from birth;
-`timeutil.py` owns the canonical timestamp format; `migrate.py` imports snapshots.
-
-The shapes are stated as invariants, not conventions. Every wire timestamp is ISO
-8601 UTC with millisecond precision and a `Z` suffix (`theloom/timeutil.py:12-15`,
-regex-anchored at `theloom/model.py:31`). Confidence is bounded to [0,1] at both
-the field and the label boundary (`theloom/model.py:341`, `:445`, `:265-277`).
-Unknown fields are rejected everywhere — every wire model forbids extras
-(`theloom/model.py:332-335`). The five-state lifecycle is explicit: retracted is
-terminal, and only *investigating* may return to active
-(`theloom/model.py:285-309`). A `volatile` record must carry an expiry
-(`theloom/model.py:404-409`). Errors carry their code from birth and the CLI never
-classifies by message text (`theloom/errors.py:12-19`, `:32-53`). Configuration
-precedence is flags > env > file > defaults, resolved in one pass
-(`theloom/config.py:149-218`). Snapshot import wipes the prefix first, which is
-what makes it idempotent (`theloom/migrate.py:35`).
-
-#### `theloom/store` — the one transactional store
-
-`falkor.py` (1,208 lines) is the whole storage model and the mutation primitive;
-`base.py` is the abstract interface that documents the contract; `events.py` is
-the per-graph Redis Stream event log; `multigraph.py` manages named graphs and the
-cross-graph bridge registry; `filters.py` is the semantics oracle for filtering.
-
-Every mutation funnels through one single-statement commit so the write and its
-event-log entry land together or not at all
-(`theloom/store/falkor.py:231-268`, `:286-312`). Updates snapshot the prior
-incarnation into a version node rather than overwriting it
-(`theloom/store/falkor.py:536-553`); deletion invalidates by default and `hard=True`
-is the only path that destroys history (`:555-612`, `:1070-1091`). Retracting an
-entity also nulls its vector, which is precisely why it leaves the semantic reads
-(`:594-596`). Server-side filtering is only ever a *superset* prefilter — the
-Python `filters.py` path remains the semantics oracle, and the server limit is
-applied only when the pushdown is provably exact (`:129-148`, `:744-772`). Any
-full-scan read must page or FalkorDB silently truncates it
-(`theloom/store/paging.py:1-11`, `:24-45`). Because Redis cannot roll back at
-`EXEC`, all-or-nothing relation batches are bought with an explicit compensating
-write (`theloom/store/falkor.py:841-894`). The vector index is written once and
-sized from stored vectors, never from a query (`:367-404`, `:455-468`), and a
-create-then-query is only correct behind an operational barrier (`:406-430`).
-
-#### `theloom/operations` — the rules layer (three groups)
-
-Twenty-two modules that wrap the semantics-free store with the domain's rules.
-Group 1 is the shared plumbing and the read surface: `common.py` (the
-`CommandInput` base, the name-first entity resolver), `consumption.py` (the
-`explore` / `find-callers` / `blast-radius` family and the truncation contract),
-`analysis.py` (16 traversal and analytics commands), `algebra.py`, `bulk.py`.
-Group 2 is the write surface: `entity.py`, `relations.py`, `epistemic.py`,
-`inference.py`, `merge.py`. Group 3 is the outward-facing surface:
-`semantic.py` (1,121 lines, the largest), `synthesis.py`, `verification.py`,
-`solve.py`, `work_memory.py`.
-
-Addressing takes exactly one of an id or a name, and a blank name is not a name
-(`theloom/operations/common.py:115-120`). Budgeted reads are honest about what
-they dropped: shown plus cut equals total, and the first row of every populated
-section is unconditional (`theloom/operations/consumption.py:319`, `:429-449`).
-Neighbourhood reads apply their own active-status filter (`:265-281`).
-Blast radius counts the seed and its members as seeds, never as fallout
-(`:661-670`, `:678-689`). Every ops-layer update bumps the version and
-self-references the previous version — the store deliberately does not
-(`theloom/operations/entity.py:266-267`). Retracted stays terminal, gated before
-any write (`:244-248`). The causal/polarity partition is an invariant of the
-*stored* edge, not just of creation (`theloom/operations/relations.py:308-338`),
-and a failing strict batch still persists its valid prefix (`:266-269`). Merging
-supersedes rather than deletes, and a re-merge is a no-op
-(`theloom/operations/merge.py:172-175`). On the read-and-search side, similarity
-is `1/(1+L2)` and never raw cosine (`theloom/operations/semantic.py:115-117`),
-embedding is opt-in and content-hash idempotent (`:363-389`, `:449-456`), and
-`record-outcome` writes nothing at all if any citation is bad
-(`theloom/operations/work_memory.py:103-123`, `:162-169`). Mutation-trace
-validation never touches the target graph — it clones to a temp graph and replays
-there (`theloom/operations/verification.py:624-636`, `:660-687`).
-
-#### `theloom/cli` — the registry is the CLI
-
-`registry.py` (1,688 lines) declares 163 command descriptors across 23 categories
-plus `run_handler`; `app.py` generates the Typer commands from them; `io.py` is the
-single JSON parse/format and typed-error boundary; `docs.py` projects the registry
-into the published catalog.
-
-Every command except `version` and `init` is generated from the registry
-(`theloom/cli/app.py:108-109`). Input validation happens once, in `run_handler`,
-and Pydantic failures become `VALIDATION_ERROR`
-(`theloom/cli/registry.py:1678-1688`). Unknown input keys are ignored; only missing
-required keys fail (`:72-75`). `stdout` carries exactly the result document,
-diagnostics go to `stderr`, failures exit 1 (`theloom/cli/io.py:79-84`,
-`theloom/cli/app.py:96-102`). `COMMANDS.md` is byte-identical to `generate_docs()`
-output and is regenerated, never hand-edited (`theloom/cli/docs.py:15-36`).
-Non-finite floats serialize as `null` so the output stays valid JSON
-(`theloom/cli/io.py:56-69`).
-
-#### `theloom/graph` — pure graph algebra
-
-`hydrate.py` builds an insertion-ordered multigraph from wire documents;
-`analytics.py` does centrality and components; `cycles.py` does DFS cycles,
-Johnson circuits and loop classification; `paths.py` does bidirectional BFS and
-bounded DFS; `motifs.py` mines frequent subgraphs.
-
-Hydration drops dangling relations so no edge can reference an absent node
-(`theloom/graph/hydrate.py:118`). Neighbour iteration is deduplicated and
-order-fixed at IN-then-OUT (`:87-96`). Loop polarity is the parity of negative
-edges, with missing polarity read as positive
-(`theloom/graph/cycles.py:258-267`), and `classify_loop` demands a closed path of
-length ≥ 3 (`:244-257`). PageRank converges to its stated tolerance or raises,
-rather than returning provisional scores (`theloom/graph/analytics.py:55-68`).
-Motif identity is the canonical signature; the pattern id is only a per-response
-ordinal (`theloom/graph/motifs.py:38-41`, `:164-167`).
-
-#### `theloom/algebra` — semirings and routing
-
-`core.py` holds the semirings, extractors and the single DFS engine;
-`routing.py` holds the category registry, the morphism table, query analysis and
-the three execution strategies.
-
-Traversal is a backtracking DFS, not Bellman-Ford: value and path are decoupled
-(`theloom/algebra/core.py:191-207`). Adjacency emission order is part of the
-public contract — ties keep first discovery (`:141-148`, `:5-7`). Relation
-categorization is total, with causal as the open-world default
-(`theloom/algebra/routing.py:31-49`). The only approximate morphisms are the
-tropical/viterbi pair, and they are labelled as such (`:64-68`, `:94-103`).
-Segmented execution short-circuits on first arrival (`:311-316`, `:399-401`), and
-a missing source yields an empty result map rather than an error
-(`theloom/algebra/core.py:234-235`, `:265-266`).
-
-#### `theloom/extraction` — how a repository becomes a graph
-
-`treesitter.py` (1,193 lines) is the per-file parser and the public API;
-`resolution.py` is the whole-project join that turns names into edges;
-`codebasediff.py` is the incremental replay; `selfmodel.py` drives the
-self-model; `pipeline.py` is the separate LLM document path.
-
-An incremental update supersedes entities; it never deletes them
-(`theloom/extraction/codebasediff.py:371-381`). A structural edge belongs to a
-changed file when either endpoint does (`:225-244`). The structural diff never
-touches the semantic layer's `related_to` edges (`:66-70`, `:230`, `:242`) — this
-is what keeps a re-run from wiping the written notes. Cross-file resolution
-refuses to guess: an ambiguous symbol name resolves to no edge at all, filtered
-first by language and callability (`theloom/extraction/resolution.py:411-422`).
-Extraction output is deterministic for a given tree (`treesitter.py:1038-1066`)
-and git, not the filesystem, decides what counts as in the codebase. The
-self-model update refuses any repository that is not The Loom
-(`theloom/extraction/selfmodel.py:30-62`).
-
-#### `theloom/semantic` — embeddings and proposal gating
-
-`embed.py` owns the embedding contract and the process-wide embedder singleton;
-`deduplication_gate.py` is the similarity gate for proposals;
-`entity_proposer.py` is the pattern-completion and LLM proposal engine.
-
-Every stored vector is L2-normalized before it leaves the embedder
-(`theloom/semantic/embed.py:83-87`). Documents and queries get different prefixes
-(`:28-29`, `:90-99`), and embedding text is truncated at 30k characters
-(`:45-57`). The dedup gate only compares proposals against entities of the same
-type (`theloom/semantic/deduplication_gate.py:124-130`) and clamps its threshold
-to [0.5, 0.99] regardless of caller input (`:94-97`). The proposer is read-only:
-it returns proposals and never writes (`theloom/semantic/entity_proposer.py:96-152`),
-and LLM-proposed types are allowlist-validated before they can become proposals
-(`:44-61`, `:478`).
-
-#### `theloom/verification` — the gates
-
-`checks.py` holds the read-side guards, invariants and cycle detection;
-`guards.py` is the mutation gate; `capability_spec.py` is the capability DSL;
-`propagation.py` is AC-3 constraint propagation.
-
-Polarity belongs to causal relation types only, enforced on write and mirrored on
-read (`theloom/verification/guards.py:64-71`, `checks.py:92-129`). Retracted
-entities read back but cannot be relation endpoints (`guards.py:97-107`). The
-endpoint verdict takes a *status*, not a store, which is what stops single and
-batch writes from diverging (`guards.py:81-101`). The entity gate warns without
-blocking; the relation gate errors and blocks (`guards.py:41-78`). Read-side
-guards judge only fields that are present — absence is the model's job
-(`checks.py:41-95`). AC-3 pops its worklist LIFO, and that order is part of the
-response (`propagation.py:104`).
-
-#### `theloom/synthesis` — plan, traverse, realize
-
-`planner.py`, `traverser.py`, `realizer.py`, `cegis.py` and `llm.py` form a staged
-pipeline over plain wire dictionaries, with the LLM optional at every call site.
-
-Output is fully deterministic when no LLM is configured
-(`theloom/synthesis/llm.py:215-218`, `realizer.py:314-317`). The PRNG is a
-bit-exact 32-bit mulberry32, so a seed determines the candidate graph exactly
-(`theloom/synthesis/generator.py:28-60`). CEGIS verification touches no store;
-only a successful commit does (`theloom/synthesis/cegis.py:368`, `:129-163`), and
-the loop always terminates (`:382-418`, `:73-74`). Generated graphs contain no
-self-loops and no duplicate `(from, to, relationType)` triples
-(`generator.py:374-411`). Provenance is append-only and sealed at finalize
-(`traverser.py:51-56`, `:77-86`).
-
-#### `theloom/analysis` — analogy and transfer
-
-`cwsg.py` composes the transfer pipeline; `crossdomain.py` produces the structural
-role mapping every analogy starts from; `slippage.py` handles temperature-driven
-concept slippage; `absence_surprise.py` scores what the analogy predicts but the
-target lacks; `adaptability.py` is the accept/warn/reject gate.
-
-Novel endpoints are `__NOVEL__` placeholders, never graph ids
-(`theloom/analysis/cwsg.py:31`, `:110-119`). Only relations attached to the matched
-relational core transfer (`:81-85`, `:370-393`). Cross-domain mapping is strictly
-one-to-one (`crossdomain.py:196-220`). Temperature is clamped to [0,1] and lowers
-the slippage threshold monotonically (`slippage.py:37`, `:54-56`). Absence
-surprise reports the maximum absence, not the average
-(`absence_surprise.py:359-361`). Adaptability verdicts align positionally with
-proposals (`adaptability.py:167-173`).
-
-#### `theloom/exploration` — where to look next
-
-`composite_signals.py` combines the weighted signals; `guards.py` holds six
-anti-pattern detectors; `exploration_state.py` holds visit and gain state;
-`coverage_gap.py` is the embedding-ranked signal.
-
-Every signal score is clamped to [0,1] (`age_staleness.py:98-99`,
-`bridging_potential.py:83`). Absent signals are dropped and the weights
-renormalized — never treated as zero (`composite_signals.py:70-89`). Missing
-evidence scores as maximally explorable, not as zero
-(`age_staleness.py:92-93`, `composite_signals.py:50-51`). Region identity is the
-smallest entity id in sorted order (`exploration_state.py:89-97`), region state is
-derived at query time and never persisted (`:63-76`, `:153-193`), and gain
-histories are bounded ring buffers of 100 entries (`:30-34`, `:127-144`). The
-quadratic coverage-gap cost is bounded by capping vectors per region at 500
-(`coverage_gap.py:27-28`, `:116-122`).
-
-#### `theloom/documents` — ingestion and chunking
-
-`ingestion.py` orchestrates; `chunker.py` is the chunking algorithm; `parsers.py`
-normalizes every format to one block shape; `chunkstore.py` persists to FalkorDB;
-`ssrf.py` is the egress guard.
-
-A chunk's content hash covers the overlap prefix, not just the body
-(`theloom/documents/chunker.py:205-229`). Groups containing code or list blocks are
-exempt from the size limit — atomic blocks beat it (`:165-167`, `:76-81`). Chunk
-indices are zero-based, dense and contiguous after merges (`:233-234`). Every
-fetch hop requires *all* resolved addresses to be globally routable, revalidated
-on each redirect (`theloom/documents/ssrf.py:58-80`). Chunks live in one
-per-prefix chunk graph, global across knowledge graphs
-(`theloom/documents/chunkstore.py:27`). Reingest preserves chunk identity and
-skips unchanged chunks (`theloom/documents/ingestion.py:300-333`), and `sourceId`
-is a deterministic sha256 prefix of the resolved path, URL or caller id
-(`:48-54`, `:224`).
-
-#### `theloom/reification` — structural fingerprints
-
-One 163-line module, `fingerprint.py`, implementing Weisfeiler-Leman colour
-refinement by recursive hashing.
-
-Fingerprints are order-independent: equal structure implies equal digest
-(`theloom/reification/fingerprint.py:49-53`, `:75-78`). Depth is clamped to
-[0, MAX_DEPTH_LIMIT] at every public entry point (`:93`, `:133`). The module is
-pure — it hydrates and reads, never mutates (`:10`, `:15-18`). Memo cache keys
-carry the depth, so one cache is safe across mixed-depth calls on one graph
-(`:57`, `:81`).
-
-#### `theloom/symbolic` — the SymPy bridge
-
-One 1,026-line module, `core.py`, dispatching 21 operations through a registry
-table with a two-level umbrella/sub-operation scheme.
-
-`core.run` returns an envelope rather than propagating handler exceptions
-(`theloom/symbolic/core.py:1017-1022`). Every successful handler returns `result`
-and `latex_result` as strings (`:61-75`). The watchdog is clamped to 1–120 seconds
-and always restores prior signal state (`:1008-1009`, `:1023-1025`). `op_verify`
-selects its mode by parameter shape, in a fixed precedence (`:138-141`,
-`:200-202`).
-
-#### `theloom/composites` — the orchestration commands (two groups)
-
-Multi-step commands that chain existing operations behind one timed-section
-envelope. Group 1: `framework.py` (the shared envelope), `far_analogy_retrieval.py`
-(five chained sections), `entity_deep_dive.py`, `gap_fill_cycle.py`,
-`hypothesis_engine.py`. Group 2: `self_improve.py`, `simulate_change.py`,
-`reflect.py`, `influence_map.py`, `verified_extract.py`.
-
-`time_section` never raises — every section outcome is a three-key result
-(`theloom/composites/framework.py:39-53`), a non-null section error always
-accompanies `data: None` (`:49-58`), and aggregate counts are derived from the
-error field rather than tracked separately (`:65-66`). `framework.py` imports
-nothing from `theloom`, which is what prevents a layering leak (`:15-22`).
-Composite handlers are pure orchestrators: no domain algorithm is defined in the
-package (`far_analogy_retrieval.py:39-60`). `gap-fill-cycle` is the only
-graph-mutating composite in its group and every write passes the structural gate
-(`gap_fill_cycle.py:229-243`); a *skipped* consistency check must not veto a
-commit, only an explicit failure blocks (`:226`, `:237-238`). `simulate-change`
-never mutates the graph it is asked about — it clones to a disposable graph
-(`simulate_change.py:100-110`, `:246-249`). `self-improve` is read-only unless
-`autoApply` is explicitly true (`self_improve.py:299-301`, `:53`).
-
-#### `theloom/viz` — one assembler, three transports
-
-`bundle.py` is the single assembler; `schema.py` is the wire contract;
-`scope.py` selects the slice; `html.py` emits the static single file;
-`serve.py` is the optional live mode.
-
-Every emitted bundle is a schema-versioned, model-validated `TapestryBundle`
-(`theloom/viz/bundle.py:136-155`, `schema.py:13`). Injected bundle JSON can never
-terminate the template's script block (`theloom/viz/html.py:33`), and a missing or
-unbuilt frontend template fails as a typed config error (`:28-44`). Degree
-truncation is deterministic and always disclosed in the metadata
-(`bundle.py:66-76`, `:114-118`). The bundle ships entities of every status, not
-just active ones (`scope.py:44`, `:60-72`). Live mode is read-only — every route
-is a GET (`serve.py:106-214`) — and its HTTP status comes from a typed-code lookup
-table, never from prose (`serve.py:27-34`, `:94-101`). A graph with fewer than
-three vectors omits the semantic section entirely (`viz/semantic.py:19`, `:65-67`).
-
-### 2.2 Tapestry — the visualization workspace
-
-#### App shell and view-agnostic libraries
-
-`lib/BundleContext.tsx`, `lib/data.ts`, `App.tsx`, `design/tokens.css`,
-`lib/exportSvg.ts`. The organizing habit here is *pure core, impure shell*: every
-browser-coupled behaviour has a testable pure module behind it.
-
-Live / static / dev mode is decided by parsed *shape*, never by comparing against
-the sentinel literal (`tapestry/src/lib/data.ts:33-45`, `lib/live.ts:1-29`). Views
-never observe a null bundle or a null graph
-(`lib/BundleContext.tsx:66-68`), and the bundle hooks throw outside a provider
-rather than returning a default (`:109-113`). A drag's `moved` latch is sticky and
-the trailing click it suppresses is consumed exactly once
-(`lib/dragState.ts:46-57`, `lib/dragNodes.ts:85-159`); the normalization box is
-frozen for the gesture so mid-drag re-renders cannot rescale the graph
-(`lib/dragNodes.ts:95`, `:120`). Every entity type resolves to a defined colour
-token (`design/palette.ts:7-39`, `design/tokens.css:99-119`). Global shortcuts
-never fire while the reader is typing (`lib/keyboard.ts:20-39`). SVG export
-serializes only what is on screen and re-checks edge endpoints
-(`lib/exportSvg.ts:139-190`); PNG export must call `sigma.refresh()` synchronously
-before reading the canvases (`:284-299`). Saved-view reads and imports never throw
-(`lib/savedViews.ts:25-122`). The URL hash is a continuously maintained projection
-of store state (`App.tsx:243-253`).
-
-#### State, Chronicle and the replay engine
-
-`state/store.ts`, `state/urlHash.ts`, `views/chronicle/replay.ts`,
-`views/chronicle/Chronicle.tsx`, `views/chronicle/EventList.tsx`. A pure replay
-engine sits behind an impure view, and sigma reducers act as a non-destructive
-projection layer.
-
-Retraction replays as a status change, never as a node removal
-(`views/chronicle/replay.ts:150-169`). An item with no creation event is present
-from the start of the timeline (`:231-232`, `:250-251`). An edge is visible only
-when both endpoints are (`:248-256`). The timeline's start and end are never equal
-(`:208-212`). The diff window is half-open and order-independent (`:266-291`), a
-node wears exactly one diff badge, and the summary counts match the canvas
-(`Chronicle.tsx:386-401`, `:493-502`). `parseHash` is total — a malformed fragment
-yields an empty patch (`state/urlHash.ts:15-22`). The help dialog traps focus while
-open and hands it back on close (`views/HelpOverlay.tsx:70-116`).
-
-#### Explorer, Overview and the Semantic Map
-
-`views/explorer/Explorer.tsx` (the weave and its interaction layers),
-`views/explorer/buildGraph.ts` (bundle to graph model plus every visual encoding),
-`views/explorer/filters.ts`, `views/overview/stats.ts`,
-`views/semantic/SemanticView.tsx`.
-
-Visibility and emphasis never mutate the shared graph — they are computed per
-frame (`views/explorer/filters.ts:45-62`). Dangling relations are skipped when
-rendering but counted as a health signal (`views/explorer/buildGraph.ts:197-198`).
-Entities without a confidence score always pass the confidence floor and are
-reported separately (`filters.ts:36-40`, `FilterPanel.tsx:137`). `ENTITY_TYPES` is
-the single ordering authority for every type list in every view
-(`views/explorer/legendRows.ts:23-34`). Every sigma instance, layout driver and
-listener is destroyed in its effect cleanup (`Explorer.tsx:299-307`,
-`SemanticView.tsx:274-279`). Path search is undirected for reachability, but every
-rendered hop keeps its true edge direction (`views/explorer/pathMode.ts:25-57`).
-Pre-layout node positions are a deterministic function of the entity id
-(`buildGraph.ts:138-178`).
-
-#### Systems view and semantic geometry
-
-`views/systems/systems.ts` (pure causal model helpers),
-`views/systems/SystemsView.tsx`, `views/systems/LoopPanel.tsx`,
-`views/semantic/semanticMap.ts`.
-
-The Systems graph contains only causal-family relations and the entities they
-touch (`views/systems/systems.ts:63-107`). Loop edge resolution is directed —
-out-edges, never undirected edges (`:125-140`). `flowIntensity` is a wrapped
-raised cosine in [0,1] with phase 1 identical to phase 0 (`:193-201`). Flow
-animation exists only while a loop is isolated, and never spins an animation frame
-loop under reduced motion (`SystemsView.tsx:358-370`, `:537-540`). The mount effect
-releases every resource it acquired (`:316-327`, `:382-416`). The semantic scatter
-is a subset: only entities with a 2-D projection coordinate appear
-(`views/semantic/semanticMap.ts:33-38`), and hull and lasso geometry degrade to
-empty or pass-through on degenerate input (`:71-123`).
-
-#### Build and contract toolchain
-
-`package.json`, `vite.config.ts`, `scripts/emit-template.mjs`,
-`schema/bundle.schema.json`, `playwright.config.ts`.
-
-The build is a three-stage gate: typecheck, then bundle, then emit
-(`tapestry/package.json:8`). No template is emitted unless the data sentinel
-survived bundling (`scripts/emit-template.mjs:4-8`), and
-`theloom/viz/static/tapestry.html` is the only artifact that crosses from the Node
-workspace into the Python package (`emit-template.mjs:8`). The bundle envelope is
-closed while entity and relation payloads stay open
-(`schema/bundle.schema.json:295`, `:304-319`). Vitest must never load the
-Playwright specs (`vite.config.ts:10-12`). Live e2e assumes an externally started
-server and runs serially (`playwright.live.config.ts:4-15`).
-
-#### End-to-end suites and fixtures
-
-`e2e/smoke.spec.ts`, `e2e/a11y.spec.ts`, `e2e/savedviews.spec.ts`,
-`e2e/drag.spec.ts`, `e2e/export.spec.ts`, plus the committed
-`fixtures/dev-bundle.json` golden bundle and the four-assertion live smoke.
-
-The e2e suite renders through the same sentinel substitution as
-`theloom/viz/html.py` (`e2e/smoke.spec.ts:18-21`). Each spec owns a distinct temp
-artifact so parallel specs never clobber each other (`e2e/smoke.spec.ts:15` and
-siblings). The accessibility gate is zero serious or critical violations, by
-construction (`e2e/a11y.spec.ts:42-45`). A `#view` deep link only applies on a
-genuinely fresh document load (`e2e/savedviews.spec.ts:125-140`). In the fixture,
-analytics and semantic sections are id-keyed subsets, so views must tolerate
-missing entities (`fixtures/dev-bundle.json:292-326`, `:1461-1498`); exported
-relations carry polarity only for causal types while strength and evidence are
-always present (`:224-290`).
-
-### 2.3 Tests
-
-`tests/` is four groups plus the fixture folder, and it is where most of the
-system's invariants are actually pinned.
-
-**Group 1 — CLI, consumption and contract.** Every live-store test is namespaced
-and leaves the store as it found it (`tests/conftest.py:36-43`). Documented `loom`
-invocations must validate against the live CLI input models
-(`tests/test_claude_examples_contract.py:146-160`). Truncation is arithmetic, not
-an apology: shown + cut == total (`tests/test_consumption.py:277-309`). Superseded
-entities leave every read surface at once (`:165-179`, `:416-422`, `:540-548`). No
-registered command may silently no-op (`tests/test_creativity_loop.py:24-29`).
-Error codes come from the typed hierarchy, never from prose
-(`tests/test_cli_io.py:78-85`).
-
-**Group 2 — store, extraction and incremental update.** Every store mutation
-appends exactly one typed event, in order (`tests/test_falkor_store.py:495-540`).
-Deletion is bi-temporal close-out, not erasure (`:99-124`, `:369-392`).
-`related_to` belongs to the semantic layer and structural extraction never emits
-it (`tests/test_extraction_resolution.py:374-379`). No extracted relation may
-reference a name that is not also an extracted entity (`:397-429`). Unique-name
-call resolution is fenced by language, callability and ambiguity guards
-(`:239-294`). Re-extraction is idempotent — a second run creates nothing and
-retires nothing (`tests/test_extraction_legacy_calls.py:114-128`). A dry run
-reports exactly the plan the applied run executes
-(`tests/test_incremental_update.py:459-477`).
-
-**Group 3 — operations semantics.** Deletion retracts by default and the record
-stays readable (`tests/test_ops_entity.py:145-157`). Polarity belongs to causal
-types only, at every writer (`tests/test_ops_relations.py:86-168`). The
-verification gate runs before the bridge branch (`:211-219`). A retracted entity
-is not a usable relation endpoint at any arity (`:191-208`, `:265-286`). Name
-resolution refuses ambiguity rather than guessing
-(`tests/test_name_addressing.py:99-151`). Parallel typed edges are native: dedup
-and addressing are per relation type (`tests/test_ops_bulk.py:101-118`).
-
-**Group 4 — atomicity, pushdown and the bundle.** A mutation and its event append
-succeed or fail as one unit (`tests/test_store_atomicity.py:85-166`), and every
-mutation is one Cypher statement precisely because Redis cannot roll back at
-`EXEC` (`:190-244`). Server-side filter pushdown is semantically identical to the
-Python path, proved over a 26-case matrix (`tests/test_store_pushdown.py:170-227`).
-The committed Tapestry JSON Schema must equal the live Pydantic model
-(`tests/test_viz_schema_drift.py:11-16`). Bundle HTML injection escapes the
-script-close sequence (`tests/test_viz_html.py:23-28`). SSRF rejection happens
-before any connection (`tests/test_ssrf.py:16-61`).
-
-**Fixtures.** Snapshot seeds are byte-identical contracts, not merely valid
-documents (`tests/fixtures/small/default.json:57-65`). The fixture repository is
-frozen and its exact entity and relation counts are asserted; each cross-file
-resolution idiom appears exactly once (`tests/fixtures/repo/src/service.py:3`,
-`lib/index.ts:1`, `src/models.py:3`), and `src/policy.py` is a deliberate orphan —
-defined, never imported (`tests/fixtures/repo/src/policy.py:3`).
-
-### 2.4 Documentation and repository root
-
-**Specs and plans (`docs/`).** Four groups of design documents and TDD-scaffolded
-implementation plans. They are not decoration: a plan carries the artifact
-verbatim rather than describing it, and every task is a red-green-gates-commit
-cycle. The map-codebase design states the two-layer rule directly — a semantic
-record is only in the map layer if it is stamped with `map_layer` and
-`module_group`
-(`docs/superpowers/specs/2026-08-03-map-codebase-design.md:152-155`) — and the
-cartographer is read-only, so the map is a view and not a second source of truth
-(`docs/superpowers/plans/2026-08-03-map-codebase.md:452-460`). Enrichment halts the
-pipeline when records were attempted but none verified (`:113-120`). Every
-documented `loom` example must be literal JSON because CI executes the docs as a
-contract (`:19`). On the Tapestry side: `asOf` bounds entities, relations and the
-event log only — analytics and semantic stay current
-(`docs/superpowers/plans/2026-07-11-tapestry-phase-2.md:174-182`); every new visual
-channel is redundantly encoded, never colour alone (`:98-102`); live mode never
-becomes a required dependency of the core install
-(`docs/superpowers/plans/2026-07-11-tapestry-phase-4.md:24-26`); and performance is
-measured and recorded, never asserted in CI
-(`docs/superpowers/plans/2026-07-11-tapestry-phase-5.md:104-107`).
-
-**Repository root.** `pyproject.toml` is the sole manifest for dependencies, entry
-points and all three quality gates (`pyproject.toml:10-78`); `mypy --strict` covers
-only `theloom`, leaving scripts and tests as untyped territory (`:67-70`). Both
-console entry points resolve to a single `main` (`:38-40`). FalkorDB persistence
-depends on mounting the volume at `/var/lib/falkordb/data` — the incident that
-taught this is recorded inline (`docker-compose.yml:9-14`). Seed and bench scripts
-never import the embedder (`scripts/gen_bench_graph.py:15-18`). The lockfile is
-the transitive closure of the declared dependencies, digest-pinned to a single
-index (`uv.lock:26-27`, `:4215-4243`), and it materializes support for five Python
-bands from 3.11 to 3.15 (`uv.lock:3-22`).
+### 2.1 The core package — `theloom/`
+
+**Purpose.** The root package holds the cross-cutting contracts every other subsystem
+depends on and which depend on almost nothing themselves. `model.py` is the single
+source of truth for the domain: every enum in a stable wire order, the entity and
+relation shapes, confidence and provenance, the paired create-schemas, the filter
+shapes, and the five-state status lifecycle table. `errors.py` defines six structured
+error codes as a typed exception hierarchy. `config.py` is the one configuration
+resolution path. `timeutil.py` fixes the canonical timestamp shape, and `migrate.py`
+loads an exported graph folder back into the store.
+
+**Key files.** `theloom/model.py` (~575 lines), `theloom/config.py`,
+`theloom/errors.py`, `theloom/timeutil.py`, `theloom/migrate.py`.
+
+**How it is built.** Python attributes are snake_case and wire names are camelCase,
+translated by Pydantic field aliases rather than by hand. Enums are the stable wire
+contract and runtime inventories are derived from them. The exception hierarchy carries
+its own error code, so nothing downstream ever has to guess. Configuration resolves in
+one pass through layered overrides. Domain shapes and their `*Input` twins are kept
+separate so "stored" and "supplied" never blur. Retired enum members are coerced by a
+validator rather than breaking old data.
+
+**What must stay true.**
+
+- Every wire timestamp is ISO 8601 UTC with a `Z` suffix — `theloom/model.py:38-49`.
+- Confidence is bounded to `[0.0, 1.0]` at both the field and the label boundary —
+  `theloom/model.py:370`, `:475`.
+- `durability: volatile` requires `expiresAt` — `theloom/model.py:433-438`.
+- The five-state lifecycle: retracted is terminal, and only *investigating* returns to
+  active — `theloom/model.py:314-338`.
+- Unknown fields are rejected; every wire model forbids extras —
+  `theloom/model.py:361-364`.
+- Errors carry their structured code from birth; the CLI never classifies by message
+  text — `theloom/errors.py:12-19`, `:25`.
+- Configuration resolves once, flags > environment > file > defaults —
+  `theloom/config.py:150-219`.
+- Snapshot import is idempotent because it wipes the prefix first —
+  `theloom/migrate.py:34-36`.
+
+**Where it strains.** Config file handling is fail-open on a parse error but fail-loud
+on a field error (`theloom/config.py:125-147` vs `:114-122`). The requiredness of
+relation fields is split between the model and the command layer
+(`theloom/model.py:453-459`, `:524-528`). The model enforces two invariants at the type
+level but only *advises* on the lifecycle (`:433-438` vs `:341-353`). Verbatim snapshot
+import deliberately bypasses the event log (`theloom/migrate.py:50-58`). A
+process-global embedder test seam lives inside the otherwise-pure config module
+(`theloom/config.py:285-310`).
+
+---
+
+### 2.2 Persistence — `theloom/store/`
+
+**Purpose.** The place where the two hardest architecture invariants stop being prose
+and become code. It maps the domain model onto one FalkorDB instance so topology,
+vectors and the append-only event log share a single transactional store, and it makes
+every mutation event-sourced and bi-temporal: a write is one Cypher statement plus its
+event append inside one Redis `MULTI`/`EXEC`; an update snapshots the prior incarnation
+as a version node instead of overwriting it; a delete invalidates unless the caller
+explicitly asks for erasure.
+
+**Key files.** `theloom/store/falkor.py` (70 symbols, the widest file in the package),
+`theloom/store/space.py`, `theloom/store/commit.py`, `theloom/store/read_port.py`,
+`theloom/store/multigraph.py`, `theloom/store/bridges.py`.
+
+**How it is built.** A shared `GraphSpace` chassis gives the entity store and the chunk
+store the same handle, event log, commit primitive, paged read and vector index. One
+commit primitive owns the write, with compensation in both directions. Writes snapshot
+into version nodes. A derived read index prefilters and Python confirms, so the
+pushdown may only ever be a superset of the true filter. Index migration happens lazily,
+triggered by a read. Every full-scan read is wrapped in SKIP/LIMIT paging. A narrow,
+typed read port sits alongside a second, non-throwaway in-memory adapter. Guards live
+*inside* the write, not in front of it.
+
+**What must stay true.**
+
+- A mutation and its event are committed as one unit or neither reaches the server —
+  `theloom/store/commit.py:91-103`, `theloom/store/events.py:75-82`.
+- Exactly one half of a committed pair can fail at `EXEC`, and each is compensated —
+  `theloom/store/commit.py:105-127`.
+- Updates invalidate: the prior incarnation is snapshotted, never overwritten —
+  `theloom/store/falkor.py:410-427`.
+- Deletion invalidates by default; `hard=True` is the only path that destroys history —
+  `theloom/store/falkor.py:429-486`, `:921-973`.
+- A retracted entity leaves semantic reads because its vector is dropped —
+  `theloom/store/falkor.py:467-470`.
+- `filters.py` is the semantics oracle; the Cypher pushdown may only be a superset —
+  `theloom/store/falkor.py:154-178`, `:616-669`.
+- Any full-scan read pages, or FalkorDB silently truncates it —
+  `theloom/store/paging.py:1-45`, `theloom/store/space.py:113-118`.
+- The vector index is write-once and sized from stored vectors, never from a query —
+  `theloom/store/space.py:122-158`; a create-then-query is only correct behind an
+  OPERATIONAL barrier — `:159-187`.
+- Legacy bridge migration is crash-safe and never drops an undrained document —
+  `theloom/store/bridges.py:230-281`.
+
+**Where it strains.** Entity updates snapshot but relation updates overwrite in place
+(`theloom/store/falkor.py:913-919` vs `:410-427`) — the sharpest inconsistency in the
+layer. As-of reads reconstruct the past by scanning the whole present
+(`:312-383`). Cross-graph lookup scans every graph and builds a store per graph to do
+it (`theloom/store/multigraph.py:96-97`, `:132-137`). Bridges are graph records that
+live outside every graph (`theloom/store/bridges.py:1-44`). There are two read surfaces
+and the abstract base class is not the one consumers use
+(`theloom/store/base.py:44-161` vs `theloom/store/read_port.py:1-35`). A committed
+mutation whose event repair fails can leave the log short or out of order — documented
+as an explicit non-promise at `theloom/store/commit.py:36-43`.
+
+---
+
+### 2.3 The command line — `theloom/cli/`
+
+**Purpose.** The whole user-facing surface, containing no domain behaviour of its own.
+`registry.py` declares every command once as a frozen descriptor built from a
+declarative spec row; `app.py` mechanically generates one Typer subcommand per
+descriptor at import time; `io.py` owns the wire protocol; `docs.py` renders
+`COMMANDS.md` as a pure projection of the same descriptor list.
+
+**Key files.** `theloom/cli/registry.py` (1,676 lines; 164 descriptors across 23
+categories built by 16 category factories), `theloom/cli/app.py` (119 lines),
+`theloom/cli/io.py` (85 lines), `theloom/cli/docs.py` (37 lines).
+
+**How it is built.** Command generation is registry-driven; every spec row funnels
+through one construction path; documentation is a projection of the registry, not a
+parallel document; there is a single typed-error protocol boundary; heavy or optional
+dependencies are imported lazily at the call site; handlers are thin adapters that
+shape results.
+
+**What must stay true.**
+
+- Every command except `version` and `init` is generated from the registry —
+  `theloom/cli/app.py:108-109`.
+- Input validation happens once, in `run_handler`; Pydantic failures become
+  `VALIDATION_ERROR` — `theloom/cli/registry.py:1666-1676`.
+- Unknown input keys are ignored and camelCase wire names resolve to snake_case fields —
+  `theloom/cli/registry.py:68`, `:76-91`.
+- stdout carries exactly the result document; diagnostics go to stderr and failures exit
+  1 — `theloom/cli/io.py:79-80`, `:83-84`.
+- `COMMANDS.md` is byte-identical to `generate_docs()` output —
+  `theloom/cli/docs.py:15-36`, pinned by `tests/test_generate_docs.py:35-40`.
+- Input is JSON from the argument or stdin, must be an object, and stdin is capped at
+  100 MB — `theloom/cli/io.py:17`, `:20-27`.
+- Non-finite floats serialize as null, keeping output valid JSON —
+  `theloom/cli/io.py:56-64`.
+- Every command states its stdin stance explicitly; `allow_empty` has no default —
+  `theloom/cli/registry.py:112-123`.
+
+**Where it strains.** The store client is imported lazily but the science stack is not:
+`theloom/cli/registry.py:33` pulls the analysis package in at import time. The
+`raw_handler` escape hatch bypasses the typed-error boundary (`:1669-1670` vs
+`:1671-1674`). Every registry command opens a store connection before its handler runs
+(`theloom/cli/app.py:81-86`). Command-name uniqueness is assumed but never enforced
+(`registry.py:1659`).
+
+---
+
+### 2.4 Command semantics — `theloom/operations/` (three groups)
+
+**Purpose.** The seam between the CLI registry and everything below it. Each module
+owns one command family and exposes one plain module-level function per command with
+the uniform shape `(params: CommandInput, multi: MultiGraph) -> dict`. The layer does
+five things and delegates the rest: declare the wire schema as a Pydantic input model,
+resolve which graph store to talk to, add operation-level semantics the raw store does
+not have, translate library exceptions into the six typed error codes, and shape the
+JSON the CLI prints. No graph algorithm, no semiring math, no chunking and no Cypher is
+written here.
+
+**Part 1 — shared machinery, CRUD, traversal, consumption.** Covers the shared input
+base (`common.py`), entity CRUD (`entity.py`), the semiring and adaptive-routing
+commands (`algebra.py`), the 16 traversal and analytics commands (`analysis.py`), bulk
+import (`bulk.py`), the agent-facing comprehension commands `explore` / `find-callers`
+/ `find-callees` / `blast-radius` (`consumption.py`) with their two store-free cores,
+and the global document ingest (`documents.py`).
+
+*Invariants:* entity addressing takes exactly one of id or name, and a blank name is not
+a name (`common.py:112-117`); consumption and blast-radius reads apply their own
+active-status filter (`consumption.py:254-269`); explore truncation accounting is exact,
+shown plus cut equals total (`consumption.py:400-416`); bulk import enforces the same
+causal-only polarity partition as `create-relation` (`bulk.py:208-217`) and is
+idempotent on the `name::entityType` composite key (`bulk.py:221-237`); blast-radius
+counts the seed and its members as seeds, never as fallout
+(`blast_radius_traversal.py:132`, `:139-144`); `update-entity` refuses illegal status
+transitions (`entity.py:249-252`); `delete-entity` retracts by default
+(`entity.py:323-340`).
+
+*Strains:* three different name-resolution policies coexist in one layer
+(`common.py:133-139` vs siblings); full-graph in-memory hydration is used where a
+narrowed read would do (`analysis.py:60-63`); `list-entities` returns two different
+response shapes depending on whether `limit` is present (`entity.py:346-355`,
+`:406-412`); `previousVersionId` is written as a self-reference (`entity.py:271-272`);
+document commands accept a `graph` parameter and ignore it (`documents.py:85`);
+`analyze-category` clusters with all-pairs cosine over up to 10,000 chunks
+(`documents.py:356-361`).
+
+**Part 2 — relations, lifecycle, inference, extraction dispatch.** Relation CRUD and
+bridge-aware neighbor reads (`relations.py`), duplicate consolidation (`merge.py`), the
+17 epistemic queries plus credit propagation (`epistemic.py`), the forward-chaining
+inference engine whose rules and traces are themselves graph records (`inference.py`),
+Weisfeiler-Leman pattern reification and the trigger queue (`reification.py`),
+extraction dispatch with run status and rollback (`extraction.py`), zero-infrastructure
+export (`portability.py`), and `init`.
+
+*Invariants:* the causal/polarity partition is an invariant of the stored edge, not just
+of creation (`relations.py:308-338`); a failing strict relation batch still persists its
+valid prefix (`relations.py:267-269`); `merge-entities` never hard-deletes the secondary
+and a completed merge is a no-op (`merge.py:174-175`); inference-rule conclusions may
+only reference variables bound by conditions (`inference.py:188-194`); derived relation
+polarity comes only from the canonical defaults table (`inference.py:381`); every
+inference-derived relation carries provenance back to its rule and trace
+(`inference.py:391-398`); `reify-patterns` is idempotent through a fingerprint marker
+observation (`reification.py:217-233`); credit propagation clamps confidence to `[0,1]`
+and halts below `minDelta` (`epistemic.py:855-858`); re-extraction retires the legacy
+untyped twin of every typed call edge (`extraction.py:116-155`).
+
+*Strains:* hard-delete escape hatches exist inside an event-sourced store
+(`relations.py:364-376`, `inference.py:235-237`); some error codes are classified from
+message prose the handlers are written to satisfy (`inference.py:480-482`); `dryRun`
+defaults disagree across mutating commands in the same group (`reification.py:158` vs
+`epistemic.py:807`); the trigger queue is observable from the CLI but can never be
+filled from it (`reification.py:12-15`, `:329-333`); machinery decoded from observation
+strings disappears silently when malformed (`inference.py:130-134`).
+
+**Part 3 — reasoning and assurance.** Embedding lifecycle plus the five
+retrieval/discovery commands (`semantic.py`, 965 lines — the largest), symbolic adapters
+(`symbolic.py`), the natural-language solver (`solve.py`), the nine Plan-Traverse-Realize
+commands (`synthesis.py`), the guard/invariant/spec/AC-3/capability suite
+(`verification.py`), and the write half of work memory (`work_memory.py`).
+
+*Invariants:* one retrieval binding backs every semantic read in the group
+(`semantic.py:144-165`); embedding is opt-in and content-hash idempotent
+(`semantic.py:327-344`); an embedding failure is recorded on the entity, never raised
+(`semantic.py:341-344`); graph-mutating discovery and repair commands default to dry run
+(`semantic.py:492`); `resolve-gaps` never duplicates an existing edge in either
+direction (`semantic.py:940-944`); anchor search never pays for the embedding model on a
+vectorless graph (`synthesis.py:122-126`); cross-graph synthesis is read-only and
+refuses to ingest (`synthesis.py:333-340`); verification reads every entity status, not
+just active (`verification.py:117-123`); `validate-mutation-trace` never touches the
+target graph (`verification.py:660`); `record-outcome` writes nothing on a bad citation
+and cites each entity once (`work_memory.py:103-110`).
+
+*Strains:* soft-fail envelopes in `solve.py` and `symbolic.py` bypass the typed-error
+invariant (`solve.py:8-13`, `:363-364`); an unknown invariant name is a hard error in one
+command and a silent skip in another (`verification.py:199-205` vs `:291-294`); a hard
+delete sits inside `work_memory.py:166-169`; the engine layer reaches back up into the
+operations layer (`verification.py:492-524`); `embed-entities` carries two disagreeing
+entity-type vocabularies (`semantic.py:321-324`, `:371-381`).
+
+---
+
+### 2.5 Meaning — `theloom/semantic/`
+
+**Purpose.** The meaning layer's engine room. It turns text into vectors, owns the
+single definition of "nearest" and the single retrieval path, decides the order and
+grouping of results, owns what "needs embedding" means and how a status/vector
+divergence is repaired, and on top of that decides whether a proposed entity already
+exists and generates entities the graph is structurally missing.
+
+**Key files.** `search.py` (the one retrieval core), `embed.py` (the embedding
+contract), `ranking.py`, `embedding_state.py`, `deduplication_gate.py`,
+`entity_proposer.py`.
+
+**How it is built.** Collaborators are sliced by Protocol rather than named as concrete
+store types. The embedder override installed by config is the single injection seam,
+behind a process-wide lazy singleton with a pinned model cache. The content hash of the
+embedding text is the only cache key. Reconciliation is plan-then-apply. Ranking stages
+are pure functions over plain rows with an injected clock. A growing candidate window
+compensates for filters the vector index cannot answer.
+
+**What must stay true.**
+
+- Every vector is L2-normalized before it leaves the embedder — `embed.py:83-87`.
+- Documents and queries are embedded with different prefixes and no caller can bypass it
+  — `embed.py:28-29`, `:90-99`.
+- `cosine_similarity` scores incomparable vectors `0.0` rather than raising —
+  `embed.py:121-135`.
+- One cosine-to-score conversion exists and hits carry the raw cosine alongside it —
+  `search.py:58-65`, `:141-151`.
+- Vector search returns only active entities unless a caller explicitly opts out —
+  `search.py:136`, `:102-108`.
+- `needs_embedding` is the single skip predicate — `embedding_state.py:49-61`.
+- The proposer is read-only: it returns proposals and never writes —
+  `entity_proposer.py:96-152`.
+- LLM-proposed types are allowlist-validated before becoming proposals —
+  `entity_proposer.py:44-61`, `:454-476`.
+
+**Where it strains.** Step 4 of the proposal pipeline filters nothing
+(`entity_proposer.py:554-576`). The LLM reasoning strategy is on by default and
+unreachable in practice — the docstring admits it (`entity_proposer.py:10-13`, `:108`).
+Violation semantics travel as prose and are recovered by regex (`:63-66`, `:202-215`).
+The deduplication gate's two paths do not agree on what a duplicate is
+(`deduplication_gate.py:117-126` vs `:167-173`) and it fabricates `active=True` for
+every candidate it resolves (`:103-106`). A strict `min_score` escalates the retrieval
+core to a full index scan (`search.py:132-134`, `:154-156`). Three hard-coded type lists
+in the proposer shadow the domain model (`entity_proposer.py:42-61`, `:422`).
+
+---
+
+### 2.6 Extraction — `theloom/extraction/`
+
+**Purpose.** The package that turns artefacts outside the graph into graph content. Its
+dominant path is deterministic, LLM-free codebase extraction: tree-sitter parses each
+source file into file, class, function and variable records plus containment, call,
+type and dependency edges; a whole-project second pass joins the edges no single-file
+parse can resolve; a third pass links Markdown documents into the code they name; an
+incremental path replays a git diff by superseding rather than deleting; and a thin
+driver keeps The Loom's own self-model current. A second, unrelated path does LLM
+document extraction, with an append-only run record shared by both.
+
+**Key files.** `treesitter.py` (1,387 lines, 65 symbols — the parser and public API),
+`resolution.py`, `doclinks.py`, `encoding.py`, `codebasediff.py`, `selfmodel.py`,
+`runstore.py`.
+
+**How it is built.** Two-pass extraction: per-file parse, then whole-project join. One
+module builds *and* parses every string the codebase graph travels through, so writers
+and readers cannot drift. Updates plan the whole change, guard it, then write. A mention
+becomes a documentation link only after every disqualifier fails. Resolution certainty
+rides the Loom's own confidence vocabulary. Git, not the filesystem, decides what is in
+the codebase.
+
+**What must stay true.**
+
+- An incremental update supersedes; it never deletes — `codebasediff.py:462-472`.
+- A callee that does not resolve to exactly one reachable target produces no edge —
+  `resolution.py:431-451`.
+- A structural edge belongs to a changed file when either endpoint does —
+  `codebasediff.py:298-320`.
+- The structural diff never retracts an edge structural extraction did not emit —
+  `codebasediff.py:78-88`.
+- Extraction output is deterministic for a given tree — `treesitter.py:1203-1211`.
+- Only bare-identifier calls become call edges — `treesitter.py:384-398`.
+- Line numbers are 0-based in code and 1-based in the graph, and the round trip is the
+  identity — `encoding.py:17-23`, `:117-134`.
+- Self-model update refuses any repository that is not The Loom —
+  `selfmodel.py:30-52`, `:55-62`.
+- A single document contributes at most 50 references — `doclinks.py:74`, `:233-241`.
+
+**Where it strains.** One package holds two extraction philosophies that share no code
+(`pipeline.py:12-26`). Inferred edges enter a graph whose consumers treat every edge as
+fact (`resolution.py:437-448`). The incremental update is incremental only in its
+writes — it re-extracts the whole tree first (`codebasediff.py:517-520`). Extraction run
+records live outside the graph's bi-temporal history (`runstore.py:29`, `:84`). The file
+collection rule exists in two copies that must agree (`codebasediff.py:149-153`). A bare
+`assert` guards a runtime precondition in a typed-error codebase (`pipeline.py:125`).
+
+---
+
+### 2.7 Graph algebra — `theloom/graph/`
+
+**Purpose.** The in-memory graph layer. It hydrates wire documents into a small
+insertion-ordered directed multigraph and runs the pure structural analyses on top:
+centrality and components, cycle detection and feedback-loop classification, shortest
+and bounded all-simple paths, frequent-subgraph mining, subgraph extraction, and the
+parsers that read structured facts back out of observation strings.
+
+**Key files.** `hydrate.py`, `analytics.py`, `cycles.py`, `paths.py`, `motifs.py`,
+`subgraph.py`.
+
+**How it is built.** Its defining constraint is determinism: enumeration order,
+tie-breaking and member order are part of the observable command output, so most
+algorithms are written out longhand rather than delegated to a library. Enumeration is
+budgeted with truncation flags instead of failure. Observation strings act as a
+structured side-channel.
+
+**What must stay true.**
+
+- Hydration drops dangling relations, so no edge can reference an absent node —
+  `hydrate.py:118`.
+- Neighbor iteration is deduplicated and order-fixed at IN-then-OUT —
+  `hydrate.py:87-96`.
+- Loop polarity is the parity of negative edges, with missing polarity read as positive
+  — `cycles.py:258-267`.
+- `classify_loop` demands a closed path of length ≥ 3 — `cycles.py:244-257`.
+- PageRank converges to the stated tolerance or raises rather than returning provisional
+  scores — `analytics.py:55-68`.
+- Motif identity is the canonical signature; the pattern id is only a per-response
+  ordinal — `motifs.py:38-41`, `:164-167`.
+
+**Where it strains.** The library-preference invariant is in open tension with
+byte-stable output ordering (`analytics.py:3-14`, `cycles.py:3-12`). A known deviation
+from Johnson's algorithm is preserved deliberately for bug-compatibility
+(`cycles.py:115-117`). Half the group recurses and half uses explicit stacks, with no
+depth guard (`analytics.py:119-142`, `cycles.py:38-50`). The pure algorithm layer writes
+to the store for loop persistence (`cycles.py:20`, `:293-334`). An untyped
+`RuntimeError` escapes at `analytics.py:68`.
+
+---
+
+### 2.8 Weighted traversal — `theloom/algebra/`
+
+**Purpose.** The pure computational core for weighted graph traversal: five semirings
+as frozen operator records, weight extractors that turn a relation's strength label into
+a semiring element, one shared DFS engine, and on top of that a type registry sorting
+relation types into three algebraic categories with a table of six cross-category
+morphisms, a query router, a segmented executor and a metapath engine.
+
+**Key files.** `core.py`, `routing.py`.
+
+**How it is built.** Semiring as frozen operator record with a name-keyed strategy
+table; one DFS engine parameterized by an adjacency callable; direction handled by edge
+reversal rather than traversal branching; plan-then-execute routing with strategy
+dispatch; level-synchronous frontier expansion for metapaths.
+
+**Where it strains.** Two semiring resolvers with deliberately divergent semantics
+(`core.py:85-92` vs `:95-105`). Missing-morphism handling is inconsistent across the
+three consumers (`routing.py:218-220`, `:549-551`). Hand-rolled operator tables sit
+against the stated library-first invariant (`core.py:9-11`, `:14-20`).
+`execute_routing_plan` accepts a mode it cannot honour for segmented plans
+(`routing.py:446-451`). Metapath expansion has no cycle guard and no frontier cap
+(`routing.py:525-528`, `:586-596`).
+
+---
+
+### 2.9 Computational creativity — `theloom/analysis/`
+
+**Purpose.** A store-free, IO-free library of scoring and search algorithms that turn an
+already-hydrated graph into cross-domain mappings, analogy transfers with novel-entity
+proposals, concept slippages, approximate subgraph matches, component signatures,
+far-analogy candidate pairs, and interestingness scores. It is a direct implementation
+of a named literature stack.
+
+**Key files.** `cwsg.py`, `crossdomain.py`, `slippage.py`, `absence_surprise.py`,
+`adaptability.py`, `interestingness.py`, `isomorphism.py`, `component_signatures.py`.
+
+**How it is built.** Store-free pure scorers over hydrated wire dictionaries; options
+resolved to named defaults at the function boundary; weighted sub-scores divided by
+total weight and clamped; module docstrings pin deliberately approximate algorithms as
+behavioural contract; hard input caps bound combinatorial cost; prebuilt indexes are
+injected so graph construction amortizes across scored items.
+
+**Where it strains.** This is the most tension-dense group in the package (11 recorded).
+Adaptability skips the weight normalization every sibling scorer applies
+(`adaptability.py:124-135`). Timeout budgets are advertised in three modules and
+enforced in one (`crossdomain.py:18`, `:29`). A timed-out subgraph search is
+indistinguishable from a complete one (`isomorphism.py:189-194`, `:243-244`). Oversized
+input raises in one module and is silently truncated in another
+(`crossdomain.py:167-174` vs `isomorphism.py:37-38`). **The analysis package imports the
+operations layer while the operations layer imports analysis**
+(`component_signatures.py:32`). Two `farAnalogyScore` fields carry incomparable scales
+(`component_signatures.py:217`, `:221-226` vs `sliced_wasserstein.py`). Slippage
+failures are swallowed whole inside the transfer pipeline (`cwsg.py:152-166`).
+
+---
+
+### 2.10 One-call bundles — `theloom/composites/` (two groups)
+
+**Purpose.** High-level commands that bundle many internal operations into a single
+structured answer. Each module owns exactly one command: it declares an input model,
+resolves a store, runs a fixed ordered list of named sections through the shared runner,
+and returns an envelope carrying per-section data, wall-clock timing and error text.
+Composites are consumers — they orchestrate, and define no store access or domain
+algorithm of their own.
+
+**Part 1** spans read-only reconnaissance (`graph-reconnaissance`, `entity-deep-dive`,
+`provenance-audit`, `influence-map`, `multi-graph-landscape`), exploration ranking
+(`explore-frontier`), generative discovery (`far-analogy-retrieval`, `analogy-transfer`,
+`hypothesis-engine`, `propose-entities`), an autonomous loop (`creativity-loop`), and
+the two mutating workflows (`gap-fill-cycle`, `enrichment-crawl`), plus
+`framework.py` — the shared section runner every composite calls.
+
+**Part 2** holds `structural-survey`, `semantic-landscape`, `verified-extract`,
+`simulate-change`, `reflect` and the capstone `self-improve`, which chains
+reconnaissance → capability check → propose → simulate → rank → apply into one governed,
+human-in-the-loop-by-default cycle.
+
+**How it is built.** One section runner; prerequisite short-circuit via a failed-section
+marker; a closure pipeline over one shared mutable state dictionary; store resolution
+hoisted out of the timed sections; determinism by omitting the LLM and embedding
+pipelines; compact-by-default payloads with a full escape hatch; copy-on-write
+simulation against a disposable clone graph; best-effort side effects under suppression.
+
+**Where it strains.** Auto-apply's write cycle is non-atomic, against the
+one-atomic-mutation invariant (`self_improve.py:327-351`, `:361-394`, `:396-410`). A
+failed simulation makes a proposal rank *higher*, not lower (`self_improve.py:269-270`,
+`:291-2xx`). Full-graph cloning buys perfect isolation at O(graph) cost per simulation
+(`simulate_change.py:100-110`, `:246-249`), and best-effort cleanup can leave `sim-<uuid>`
+graphs behind (`:310-313`). `centralityDelta` reports raw degree, not a centrality
+measure (`simulate_change.py:65-68`, `:91`). `reflect` reads like a report but mutates
+entity observations by default (`reflect.py:97`, `:315`). PageRank scores are published
+under the key `eigenvector` (`graph_reconnaissance.py:132-138`). Three incompatible
+top-level result shapes coexist across one package (`analogy_transfer.py:8-13`,
+`propose_entities.py:2-6`). `explore-frontier` maps advice back to regions by Python
+object identity (`explore_frontier.py:214-223`).
+
+---
+
+### 2.11 Documents — `theloom/documents/`
+
+**Purpose.** Turns external artifacts — files, directories, raw strings and URLs — into
+embedded, searchable chunks that live inside the same FalkorDB instance as the graph. It
+owns format detection and parsing into one uniform block list, size-aware chunking with
+sentence overlap, SSRF-hardened fetching, a declared chunk-metadata shape, and
+event-sourced persistence into a dedicated chunk graph.
+
+**Key files.** `ingestion.py`, `chunker.py`, `parsers.py`, `chunkstore.py`, `ssrf.py`,
+`metadata.py`.
+
+**How it is built.** Chunk storage is a graph space, not a second store. Format dispatch
+converges on a single block normal form. A structural error taxonomy is translated at
+the operations boundary. Egress is deny-by-default and revalidated on every redirect
+hop. Chunking is three-phase with an atomic-block escape hatch.
+
+**Where it strains.** First ingest appends blindly while reingest diffs, so re-ingesting
+a file duplicates its chunks (`ingestion.py:141-146`). Directory ingest records per-file
+errors and then strips them before returning (`ingestion.py:209-226`). Chunk queries
+apply the row limit before the category filter (`chunkstore.py:110-125`). The SSRF guard
+resolves DNS separately from the connection it protects — a documented residual TOCTOU
+(`ssrf.py:7-9`, `:74-80`). The four ingest entry points disagree on format detection and
+size ceilings (`ingestion.py:164-186`). HTML and JSON extraction drop content by
+allowlist and by length threshold (`parsers.py:180`, `:187-227`).
+
+---
+
+### 2.12 Exploration signals — `theloom/exploration/`
+
+**Purpose.** The foraging-signals foundation for the `explore-frontier` composite. It
+turns a graph's connected components into ranked "where should I look next"
+recommendations from four independent normalized signals — age staleness, bridging
+potential, coverage gap and a UCB1 bonus — fused by a renormalizing weighted average,
+with a marginal-value-theorem patch-leaving policy on top and six anti-pattern guards
+over aggregated state.
+
+**Key files.** `__init__.py` (42-name facade), `composite_signals.py`, `guards.py` (486
+lines), `exploration_state.py`, `coverage_gap.py`.
+
+**Where it strains.** Three incompatible region-identity schemes coexist
+(`exploration_state.py:89-97` vs `guards.py:374`). The stateless-by-design state store
+leaves UCB and the patch-leaving policy informationless per run
+(`exploration_state.py:100-113`). Bridging potential collapses to a binary constant
+under its documented usage (`bridging_potential.py:12-16`). Fault isolation covers the
+signals but not the two orchestrating entry points (`mvt.py:51-61`).
+
+---
+
+### 2.13 Verification — `theloom/verification/`
+
+**Purpose.** The rule layer: a store-agnostic library of predicates that decide whether
+a graph, or a single proposed mutation, satisfies the model's structural promises.
+`checks.py` holds read-side guards and the five builtin invariants; `guards.py` holds the
+mutation gate that entity and relation creation call before writing;
+`capability_spec.py` layers a fluent DSL whose violations carry suggested-action strings
+that feed the proposal engine; `propagation.py` implements AC-3 arc consistency over the
+19 entity types.
+
+**Where it strains.** Verification depends *upward* on the operations layer's private
+helpers (`capability_spec.py:80`, `:95`). Duplicate rules are deduplicated by import in
+some places and copy-pasted in others (`capability_spec.py:60-69`). Every capability
+check re-lists the entire graph (`capability_spec.py:82-83`, `:96-97`, `:110-111`,
+`:151-152`). Cycle detection recurses in Python on graph depth (`checks.py:184-210`). The
+duplicate-name warning matches partially and case-insensitively (`guards.py:46-51`).
+
+---
+
+### 2.14 Prose generation — `theloom/synthesis/`
+
+**Purpose.** Turns a knowledge graph into prose, and prose back into checkable claims.
+Its spine is the Plan-Traverse-Realize pipeline: the planner selects an anchored ego
+subgraph and decomposes the query; the traverser walks those regions emitting per-entity
+evidence with Viterbi-decayed confidence and a provenance trail; the realizer linearizes
+each region causally and renders narrative, outline, causal chain, evidence map,
+proposal or raw text. A fidelity grader then scores the generated text against the
+source graph. A second, independent subsystem implements counterexample-guided inductive
+synthesis over a seeded PRNG.
+
+**Where it strains.** Source passages are structurally supported but permanently empty —
+`links.py:13-14` returns `[]`. `quick_verify` falls back to regex-matching violation
+prose (`cegis.py:278-303`). Two fidelity modes report the same score field with
+incomparable semantics (`fidelity.py:220-274`). LLM and parse failures are swallowed
+without a signal (`fidelity.py:152-153`, `decomposer.py:75`). `relationCount` counts
+relations whose far endpoint was dropped (`selector.py:124-129`). The whole pipeline
+works in untyped wire dictionaries while the project holds the domain model as its
+single source of truth.
+
+---
+
+### 2.15 Symbolic math — `theloom/symbolic/`
+
+**Purpose.** An in-process computer-algebra engine wrapping SymPy behind a single total
+function that maps a string operation name onto one of 21 handlers, executes it under a
+SIGALRM watchdog, and returns a JSON-serializable envelope instead of raising. It owns
+all expression parsing, all formatting, and a small chain interpreter.
+
+**Where it strains.** LaTeX is an output format but never a working input format — the
+docstring admits the branch is dead (`core.py:7-8`, `:36-4x`). The never-raises
+guarantee has a hole outside the main thread (`core.py:998-1000`, `:1014-1016`).
+`sympify` on caller-controlled strings assumes a trusted caller (`core.py:48`, `:772`).
+The dispatch table has grown to 21 operations while the module still describes seven
+(`core.py:3`, `:78-80`).
+
+---
+
+### 2.16 Structural fingerprints — `theloom/reification/`
+
+**Purpose.** A two-file leaf package providing reusable Weisfeiler-Leman structural
+fingerprinting over a hydrated graph: hash each node's rooted neighborhood to a bounded
+depth so isomorphic local structure collapses to the same 16-hex digest, then bucket
+nodes by digest into candidate pattern groups.
+
+**Where it strains.** Two copies of the WL hash exist — this shared module and the
+frozen inline copy inside `reify-patterns` (`fingerprint.py:5-8`). The hash is
+direction-sensitive at depth 1 and direction-blind at depth 2 and beyond
+(`fingerprint.py:63-72`). A group's description is one arbitrary member's neighborhood,
+not the group's (`fingerprint.py:139-146`). The 64-bit truncated digest trades compact
+keys for silent collision merging (`fingerprint.py:26-27`).
+
+---
+
+### 2.17 Visualization payload — `theloom/viz/`
+
+**Purpose.** Turns a live graph into a shippable visualization payload. It resolves
+which slice to show, enriches it with three optional analysis sections, validates the
+whole thing against a versioned wire contract, and emits it through one of three
+transports: raw JSON, a self-contained single-file HTML page carrying the committed
+React/sigma.js build, or a read-only REST service. It computes almost nothing itself —
+only the 2D PCA fallback and the degree truncation.
+
+**Key files.** `bundle.py` (the single assembler), `schema.py`, `scope.py`, `html.py`,
+`serve.py`, `analytics.py`, `temporal.py`, `semantic.py`.
+
+**What must stay true.**
+
+- Every bundle the assembler returns has passed schema validation —
+  `bundle.py:132-151`.
+- Injected bundle JSON can never terminate the template's script block —
+  `html.py:33`.
+- A missing or unbuilt frontend template fails as a typed configuration error —
+  `html.py:28-32`.
+- Live-mode HTTP status is a typed-code table lookup, never prose matching —
+  `serve.py:28-35`.
+- Degree truncation is deterministic and always disclosed in the payload metadata —
+  `bundle.py:66-76`.
+- The bundle ships entities of every status, not just active ones — `scope.py:43`.
+- Live mode is read-only: every registered route is a GET — `serve.py:108`, `:140`,
+  `:166`, `:181`.
+- A graph with fewer than three vectors omits the semantic section entirely —
+  `semantic.py:19-21`, `:64`.
+- Bi-temporal reconstruction is one store call, not a client-side approximation —
+  `scope.py:55-73`.
+
+**Where it strains.** An `asOf` bound applies to entities, relations and events but
+leaves analytics and semantics at the present (`bundle.py:115-121`) — a scoped or
+truncated entity set therefore coexists with whole-graph analytics. Two different
+`asOf` comparison strategies live inside one bundle (`temporal.py:15` vs
+`bundle.py:99-105`). Search scope silently drops the non-active entities the rest of the
+bundle ships (`scope.py:88-97`). The static path writes to a caller-controlled
+filesystem location (`html.py:55-58`).
+
+---
+
+### 2.18 The Tapestry front end — `tapestry/`
+
+**App shell.** `main.tsx` mounts the app inside a bundle provider; `App.tsx` is the
+chrome and the router of last resort — brand mark, entity and relation counts, an
+optional bi-temporal note, an ARIA tablist switching among the five views, a theme
+radiogroup with an OS-preference listener, live-mode-only controls, a polite live region
+and two URL-hash effects that make the static page deep-linkable. The help overlay is a
+real focus-trapping dialog.
+
+*Invariants:* hash restore must run before the hash writer subscribes
+(`App.tsx:233-245`); the URL hash is replaced, never pushed (`App.tsx:250-254`); exactly
+one view component is mounted at a time (`App.tsx:395-407`); the live region is silent on
+first load and distinguishes a switch from a refresh (`App.tsx:187-195`); help focus
+makes a round trip (`HelpOverlay.tsx:70-72`, `:82-98`); the OS colour-scheme listener
+exists only while the theme is auto (`App.tsx:261-268`).
+
+*Strains:* the shortcut sheet is a hand-maintained copy of bindings defined elsewhere
+(`HelpOverlay.tsx:27-60`); opening the modal does not suspend the app's global shortcuts
+(`HelpOverlay.tsx:76-99`); four of the five tabs point `aria-controls` at panels that are
+not in the DOM (`App.tsx:307` vs `:395-407`); narrow viewports hide the live indicator
+but keep its controls (`App.css:382-398`).
+
+**Shared kernel — `tapestry/src/lib/`.** Everything the four Sigma views need but none
+owns: getting the bundle into the browser and agreeing on its shape (three-way source
+resolution — live REST, inline injected JSON, dev fixture — behind a load-gated context
+that memoizes the graph model); canvas interaction primitives (click-hold-drag, pure
+threshold/resume decisions, wrapping label and hover renderers); export (visible
+subgraph to standalone SVG, Sigma canvas layers flattened to PNG); and app-shell
+affordances (global keydown dispatcher, roving-tabindex math, per-graph saved views in
+localStorage).
+
+*Invariants:* every renderer that wraps labels must also override the hover renderer
+(`nodeLabels.ts:193-254`); the hover background is a rounded rect because sigma's
+circle-joined shape goes NaN once a label wraps (`nodeLabels.ts:203-207`, `:241-247`); the
+drag `moved` flag latches and stays latched for the rest of the hold
+(`dragState.ts:46-57`) and a view's click handlers must consume that latch before acting
+(`dragNodes.ts:26-30`, `:102-114`); PNG export must call `sigma.refresh()` synchronously
+immediately before reading the canvases (`exportSvg.ts:272-326`); `graphToSvg` serializes
+only the supplied visibility set and re-checks edge endpoints (`exportSvg.ts:139-173`);
+the TypeScript bundle type is pinned to the committed JSON schema in both directions
+(`schema.test.ts:166-259`); keyboard shortcuts never fire while the user is typing
+(`keyboard.ts:20-24`, `:30-39`).
+
+*Strains:* `loadBundle` has no failure path — a fetch error leaves the app on the loading
+gate forever (`data.ts:57-71`). Exports are called WYSIWYG but omit every DOM-overlay
+decoration (`exportSvg.ts:24-30`). Label reveal is interaction-gated because sigma's
+level-of-detail engages too late (`nodeLabels.ts:5-16`).
+
+**Views.** The Explorer is the primary weave (a WebGL force-directed canvas with search,
+non-destructive facet filters, a shortest-path tool, legend, minimap, saved views and
+export). The Overview rolls the same bundle into headline tiles and a centrality table.
+The Semantic Map plots the embedding projection with cluster hulls and a lasso brush the
+Explorer echoes. The Chronicle re-implements the store's as-of read semantics
+client-side over the exported event log, feeding the projection into Sigma reducers so
+dragging the scrubber replays the weave assembling itself without mutating the graph.
+The Systems view reads the bundle as a systems-dynamics model: causal-only edges,
+polarity-coloured with glyph overlays, feedback-loop isolation, and a raised-cosine pulse
+travelling the isolated loop in its influence direction.
+
+Every view follows the same split: a pure, unit-tested derivation module paired with a
+React/Sigma shell that only renders it; layered reducers as non-destructive interaction
+state; refs mirroring store state so reducers read current values without
+re-instantiating Sigma; colour resolved only through CSS custom-property tokens;
+redundant non-colour encoding of polarity and loop classification.
+
+**Build and contract toolchain.** Vite with the single-file plugin inlines the whole app
+into one HTML file; a post-build script checks that the data sentinel survived bundling
+and copies the result into the Python package, where the HTML renderer substitutes the
+bundle payload for that sentinel. The committed JSON Schema — generated from the Python
+model — lets the front end assert it still understands what Python emits. Two Playwright
+configurations partition end-to-end verification into a static `file://` smoke suite and
+a live suite pointed at a running server.
+
+---
+
+### 2.19 The test suite — `tests/` (six groups)
+
+The suite is not a lint on the code; it is where the architecture invariants stop being
+prose and become executable assertions. Its shared infrastructure lives in
+`tests/conftest.py` (a namespaced live-store fixture chain) and `tests/fakes.py` (shared
+doubles). Two populations coexist without mixing inside a module: pure in-memory tests
+that compute expected numbers by hand, and live-store tests that drive real commands
+against a UUID-namespaced graph.
+
+Representative pinned contracts, one per area:
+
+- Every live-store test is namespaced and leaves the store as it found it —
+  `tests/conftest.py:35-45`.
+- Documented `loom` invocations must validate against the live CLI input models —
+  `tests/test_claude_examples_contract.py:146-160`.
+- A truncated consumption answer must balance: shown plus cut equals total —
+  `tests/test_consumption.py:267-271`; and a suppressed hub means the answer is
+  incomplete and must say so — `:522-530`.
+- Structural extraction never emits an untyped association edge —
+  `tests/test_extraction_resolution.py:451-463`; and no extracted edge points at an
+  entity the extraction does not create — `:481-499`.
+- An ambiguous symbol produces no edge at all —
+  `tests/test_extraction_resolution.py:205-241`.
+- Git visibility, not directory contents, decides what becomes an entity —
+  `tests/test_extraction_units.py:413-469`.
+- Polarity belongs to causal relation types only, at every write seam —
+  `tests/test_ops_relations.py:118-143`.
+- A read-port behaviour binds every adapter equally —
+  `tests/test_read_port.py:62-80`.
+- A mutation and its event append are one unit or neither happens —
+  `tests/test_store_atomicity.py:92-99`.
+- Server-side pushdown must be observationally identical to the Python filter oracle —
+  `tests/test_store_pushdown.py:219-227`.
+- Every search surface reports the same `1/(1+L2)` score scale —
+  `tests/test_semantic_search_core.py:36-49`.
+- The ANN candidate window is approximate and must be grown, not trusted —
+  `tests/test_semantic_perf.py:440-497`.
+- Typed error codes surface as fixed HTTP statuses with the code in the body —
+  `tests/test_viz_serve.py:32-37`.
+- Citation weight decays by an exact half-life against the supplied `asOf` —
+  `tests/test_work_memory.py:262-293`.
+
+Several module docstrings are defect narratives naming the bug the file exists to
+prevent — `tests/test_ops_bulk.py:205-224` records that 1,270 call edges once vanished.
+
+*Strains across the suite:* pure-unit and live-FalkorDB tests share one unmarked suite,
+so the whole thing needs Docker and git (`tests/conftest.py:24-26`). Two conventions for
+driving a command under test coexist. Tests reach into private surfaces to pin behaviour
+the public API does not expose (`tests/test_cli_registry.py:12`, `:30-46`). A shared
+doubles module exists, yet several modules still write their own
+(`tests/test_entity_proposer_foundation.py`). Error prose and registry wording are
+asserted as contract (`tests/test_enrichment_crawl.py:157`, `:170`). Two wall-clock
+assertions live in a suite whose CI forbids performance gates
+(`tests/test_enrichment_crawl.py:345-370`, `tests/test_gap_fill_cycle.py:111-123`). Seven
+copies of the same entity and relation builders exist across modules
+(`tests/test_name_addressing.py:40-70`, `tests/test_ops_analysis.py:19-42`). Hard delete
+is supported and tested while the architecture forbids overwriting
+(`tests/test_ops_entity.py:152-161`).
+
+**Fixtures.** `tests/fixtures/repo/` is a seven-file miniature polyglot project that is
+the single golden input for codebase extraction — a three-file Python banking service
+(`src/`), a TypeScript entry point over a JavaScript helper (`lib/`), two Markdown
+documents engineered as doc-link positive and negative cases (`docs/`), and a README plus
+a token stylesheet proving non-code files still become graph roots. Every character is
+load-bearing test data: `roundCents` is defined twice on purpose so no document mention
+of it may resolve (`lib/index.ts:22`, `lib/helper.js:5`); `docs/glossary.md` must
+contribute zero relations (`:3-14`); `docs/architecture.md` yields exactly four
+references and two refusals (`:3-10`); rationale comments bind to the innermost enclosing
+symbol, else to the file (`src/policy.py:8`). The strain is inherent: the fixture is
+simultaneously a growable negative-case corpus and a frozen count baseline, so adding a
+case rewrites unrelated assertions.
+
+---
+
+### 2.20 Repository control plane and design records
+
+**Repo root.** `pyproject.toml` is the single manifest — dependency floors, the two
+console entry points, and the configuration for all three green-main gates.
+`docker-compose.yml` stands up the one substrate the architecture allows. `CLAUDE.md`,
+`README.md`, `STACK.md`, `CONTRIBUTING.md` and `COMMANDS.md` are the documentation tier.
+Two `scripts/` files are operator tooling — a demo seeder and a synthetic 50k/100k
+benchmark generator — that drive the store directly, bypassing the CLI.
+
+*Invariants:* `COMMANDS.md` is generated from the registry and never hand-edited
+(`COMMANDS.md:3`); the green-main gate is lint plus format-check plus `mypy --strict`
+plus pytest, with a template drift check (`CONTRIBUTING.md:29-38`); `mypy --strict`
+covers only `theloom` — scripts and tests sit outside the type gate
+(`pyproject.toml:67-70`); dev seed scripts never write to the caller's default graph
+(`scripts/gen_bench_graph.py:65-68`, `scripts/seed_live_dev.py:24-27`).
+
+*Strains:* the command count is hand-copied into two documents and generated into a
+third (`COMMANDS.md:5`, `README.md:12`). The repository layout is described three times
+and the copies already differ (`CLAUDE.md:56-73`, `README.md:356-370`,
+`CONTRIBUTING.md:110-118`). Shipped features still carry pre-implementation spec status
+(`docs/superpowers/specs/2026-07-11-loom-visualization-design.md:4`). An ISC project's
+only supported store is SSPL-licensed (`pyproject.toml:7`, `STACK.md:22`).
+
+**Lockfile.** `uv.lock` is the resolved, hash-pinned closure — 187 package entries across
+4,909 lines, every one digest-pinned to a single index. It records support for five
+Python bands from 3.11 to 3.15, and the document-AI stack is non-optional: a default sync
+installs torch, transformers and onnxruntime. Its recorded strains: `z3-solver` is
+declared twice with divergent version floors; the tree-sitter grammar set has two
+independent owners; and on Python 3.14+ the UMAP path resolves onto 2021-era sdist-only
+numba and llvmlite.
+
+**Design records.** `docs/superpowers/` holds the matched spec-and-plan pairs behind the
+visualization surface and the map-codebase skill. Each plan is an agent-executable
+contract: numbered tasks, literal file contents, exact shell commands, gate lists and
+commit pathspecs, executed as a fixed red-green-gates-commit cycle. They are the
+authoritative rationale for `theloom/viz`, `tapestry/` and the `.claude/` pipeline — none
+of which explain their own tradeoffs in code. Their recorded strain: the plans are frozen
+and drift from the code they specified, with nothing marking them superseded, and a
+checkbox plan that no one ever checks.
 
 ---
 
 ## 3. Load-bearing modules
 
-Ranked by degree (how much of the codebase touches them) and by betweenness (how
-much of the codebase must route *through* them).
+Ranked by how many other things touch them (degree) and by how much traffic passes
+*through* them (betweenness).
 
-| # | Module | Why it is load-bearing |
+### Most connected
+
+| # | Module | Why it is a hub |
 |---|---|---|
-| 1 | `theloom/operations/common.py` → `CommandInput` | 149 command input classes extend it; it is the single base every CLI command's parameters inherit, plus the shared name-first entity resolver. |
-| 2 | `theloom/store/falkor.py` | Highest by both degree and betweenness. 30 modules import it, it holds 76 symbols, and it is the only path from any operation to the database. |
-| 3 | `theloom/store/multigraph.py` | Imported by 83 modules — the widest fan-in in the repository. Every command that needs a named graph gets it here. |
-| 4 | `theloom/model.py` | Imported by 60 modules. The Pydantic domain model is the wire contract; nothing crosses the CLI boundary without it. |
-| 5 | `theloom/cli/registry.py` | Third-highest betweenness. 163 command descriptors and `run_handler` — the junction between the Typer surface and every operation. |
-| 6 | `tapestry/src/views/explorer/Explorer.tsx` | The largest frontend file (95 contained symbols, 21 imports). It is the Explorer weave plus all of its interaction layers. |
-| 7 | `pkg:typing` | The most-required external package; a marker of how thoroughly the Python side is annotated rather than an architectural fact. |
-| 8 | `theloom/viz/bundle.py` | Fourth-highest betweenness on only 4 contained symbols — it is a pure junction, the single assembler feeding all three visualization transports. |
-| 9 | `theloom/operations/semantic.py` | 1,121 lines, 46 symbols: embedding, vector search, clustering and auto-relations all live behind this one module. |
-| 10 | `theloom/operations/analysis.py` | 16 traversal and analytics commands (41 symbols) hydrating the graph for the pure algorithm libraries. |
-| 11 | `theloom/operations/consumption.py` | 55 symbols and the whole agent-facing read surface (`explore`, `find-callers`, `find-callees`, `blast-radius`) plus the truncation contract. |
-| 12 | `theloom/config.py` | High betweenness on 14 symbols — the single configuration resolution path every entry point crosses. |
-| 13 | `tapestry/src/views/chronicle/Chronicle.tsx`, `systems/SystemsView.tsx`, `semantic/SemanticView.tsx` | The three other view shells; each concentrates its view's sigma lifecycle, overlays and reducers. |
-| 14 | `theloom/store/base.py` | High betweenness for an abstract class: it is the documented contract the store is measured against (16 abstract methods). |
-| 15 | `theloom/semantic/embed.py` | Every embedding in the system — entities, chunks, queries — passes through this singleton. |
-| 16 | `tests/test_entity_proposer_foundation.py`, `tests/test_ops_relations.py` | The two highest-degree test files; they touch the widest slice of the operations surface. |
+| 1 | `CommandInput` (`theloom/operations/common.py`) | The base class of ~158 command input models — it has 159 direct neighbors. Every CLI command's wire schema derives from it, so its `provided()` "explicitly set vs absent" semantics are load-bearing for the entire surface. |
+| 2 | `typing` (stdlib) | Imported nearly everywhere; an artifact of a fully annotated codebase under `mypy --strict`, not an architectural fact. |
+| 3 | `theloom/store/falkor.py` | 70 symbols in one file, imported by 35 modules. Every entity and relation row, and what it means, is defined here. |
+| 4 | `theloom/model.py` | Imported by 77 modules while importing only 4 — the purest sink in the package, exactly as the "single source of truth" invariant intends. |
+| 5 | `theloom/store/multigraph.py` | Imported by 100 modules — the facade every command receives as its second argument. |
+| 6 | `tapestry/src/views/explorer/Explorer.tsx` | 95 symbols in one file; the largest single component in the repository and the front end's primary surface. |
+| 7 | `tapestry/src/views/chronicle/Chronicle.tsx` | The bi-temporal replay view; wide because it wires the pure replay engine into Sigma reducers, a scrubber, an event rail and a diff mode. |
+| 8 | `tapestry/src/views/systems/SystemsView.tsx` | The causal-loop view with polarity glyph overlays, loop isolation and flow animation. |
+| 9 | `tapestry/src/views/semantic/SemanticView.tsx` | The embedding scatter with hulls and lasso brushing. |
+| 10 | `tests/test_entity_proposer_foundation.py` | The widest single test module — it stands up a complete in-memory store double and hand-computes proposal scores. |
+| 11 | `theloom/operations/semantic.py` | 965 lines, 43 symbols, 16 imports: the single funnel through which every retrieval and embedding command passes. |
+| 12 | `theloom/extraction/treesitter.py` | 1,387 lines, 65 symbols: the whole parser and its public API in one module. |
+| 13 | `theloom/cli/registry.py` | 164 command descriptors in one file — the declarative source of the entire CLI. |
+| 14 | `theloom/operations/analysis.py` | 41 symbols covering the 16 traversal and analytics commands. |
+| 15 | `tests/test_falkor_store.py` | 702 lines pinning store CRUD, the event log, bi-temporal reads and vector-index readiness. |
+
+### Most traffic passes through
+
+`theloom/store/multigraph.py` and `theloom/store/falkor.py` top betweenness by a wide
+margin — every path from a command to data runs through the pair, which is precisely
+what the "one transactional store" invariant asks for. `theloom/cli/registry.py` is
+third: everything above the store enters through it. Then `theloom/viz/bundle.py` — the
+single assembler behind all three visualization transports, so every visualization path
+narrows to it. `theloom/operations/semantic.py` and `theloom/operations/analysis.py`
+follow as the two widest command modules. `theloom/config.py` (imported by 11) and
+`theloom/semantic/embed.py` (imported by 11) are chokepoints by design: one config path,
+one embedding contract.
+
+Four of the top fifteen betweenness entries are documents — `README.md`, this map,
+`CLAUDE.md`, and two Tapestry phase plans. They score high because documentation-to-code
+links make prose a genuine bridge between otherwise separate parts of the repository.
+That is a property of the map, not of the runtime.
 
 ---
 
 ## 4. Dependency cycles
 
-Eleven cycles were found. **All eleven are single-node self-loops — recursive
-functions — and every one is intentional.** There are no multi-module import
-cycles in this codebase.
+Fifteen cycles exist. Twelve are single-function self-references — recursion, which is
+normal — and three are multi-node.
 
-| Cycle | Location | Verdict |
+| Members | Verdict | Reason |
 |---|---|---|
-| `_hash_at_depth` → itself | `theloom/operations/reification.py` | intentional — Weisfeiler-Leman colour refinement recurses on depth. |
-| `_hash_at_depth` → itself | `theloom/reification/fingerprint.py` | intentional — the extracted copy of the same recursion (see §6 on the duplication). |
-| `_resolve_references` → itself | `theloom/symbolic/core.py` | intentional — `$reference` substitution recurses through nested structures. |
-| `_jsonify` → itself | `theloom/cli/io.py` | intentional — recursive descent over dicts and lists to null out non-finite floats. |
-| `_extract_calls` → itself | `theloom/extraction/treesitter.py` | intentional — unconditional descent through the syntax tree. |
-| `_find_identifier` → itself | `theloom/extraction/treesitter.py` | intentional — same tree walk. |
-| `_comment_notes` → itself | `theloom/extraction/treesitter.py` | intentional — same tree walk. |
-| `_extract_require_calls` → itself | `theloom/extraction/treesitter.py` | intentional — same tree walk. |
-| `_generic_json_to_blocks` → itself | `theloom/documents/parsers.py` | intentional — recursive descent over nested JSON. |
-| `_js_string` → itself | `theloom/synthesis/prompts.py` | intentional — recursive string escaping. |
-| `_substitute` → itself | `tests/test_claude_examples_contract.py` | intentional — recursive placeholder substitution in a test helper. |
+| `theloom/store/falkor.py` ↔ `theloom/store/read_port.py` | **intentional** | The read port declares the narrow typed read surface and names both concrete adapters; the adapters name the port back for typing. Its docstring states exactly why it exists: so read-only consumers stop naming `FalkorGraphStore` or, worse, `Any`. |
+| `theloom/store/read_port.py` ↔ `theloom/store/memory.py` | **intentional** | The same protocol/adapter pairing on the in-memory side. Worth noting that the port imports *both* adapters, so the module cannot be loaded without both. |
+| `CLAUDE.md` → `README.md` → `docs/superpowers/plans/2026-07-11-tapestry-phase-5.md` → `CLAUDE.md` | **intentional** | Prose cross-references harvested by documentation-link extraction, not a build dependency. Nothing loads at runtime. |
+| `hash_at_depth` (`theloom/operations/reification.py`) | **intentional** | Recursive Weisfeiler-Leman neighborhood hashing. |
+| `_hash_at_depth` (`theloom/reification/fingerprint.py`) | **suspect** | Same recursion — but this is the *second copy* of the same algorithm. `fingerprint.py:5-8` records that the logic is identical to the inline copy in `reify-patterns`, kept frozen deliberately. Two copies of one hash is a drift hazard, and the pair also surfaces as a top open seam in §7. |
+| `_extract_calls`, `_find_identifier`, `_comment_notes`, `_extract_require_calls`, `_string_literal_vocabulary` (`theloom/extraction/treesitter.py`) | **intentional** | Five recursive tree-walkers over tree-sitter parse trees; recursion is the natural shape. |
+| `_jsonify` (`theloom/cli/io.py`) | **intentional** | Recursive JSON coercion that also enforces the non-finite-float invariant. |
+| `_generic_json_to_blocks` (`theloom/documents/parsers.py`) | **intentional** | Recursive descent over nested JSON. |
+| `_js_string` (`theloom/synthesis/prompts.py`) | **intentional** | Recursive serialization for prompt construction. |
+| `_resolve_references` (`theloom/symbolic/core.py`) | **intentional** | Recursive `$reference` substitution in the chain interpreter. |
+| `_substitute` (`tests/test_claude_examples_contract.py`) | **intentional** | Recursive placeholder substitution in the documentation-example harvester. |
 
-Related risk worth noting even though it is not a cycle: several algorithms in
-`theloom/graph` and `theloom/verification` recurse in Python on graph depth with
-no depth guard (`theloom/graph/cycles.py:38-119`,
-`theloom/verification/checks.py:184-210`). Half of `theloom/graph` uses explicit
-stacks and half uses recursion, with no stated rule for which.
+The recursion cluster is individually benign but collectively worth one note: two
+recorded strains flag unguarded Python recursion on input-controlled depth —
+`theloom/graph` uses recursive DFS in half its modules with no depth guard
+(`analytics.py:119-142`, `cycles.py:38-50`), and `theloom/verification/checks.py:184-210`
+recurses on graph depth. Neither is in the tree-walker set above, but they are the same
+hazard class.
+
+There is **no import cycle among the Python packages themselves at the file level** —
+with one exception recorded as a tension rather than a cycle: `theloom/analysis` imports
+`theloom/operations` while `theloom/operations` imports `theloom/analysis`
+(`component_signatures.py:32`). That is a layering inversion the cycle detector does not
+surface because the two edges land on different files.
 
 ---
 
 ## 5. Communities vs. directories
 
-The strongest structural finding is not a community — it is a *wall*.
+The clustering pass sampled 500 of 6,028 records, so it reads the neighbourhood
+structure rather than the whole map. What it found is worth reporting precisely because
+of how *little* it disagrees with the folder structure: twelve clusters, none larger
+than five members, and every code cluster confined to a single file or a single view
+directory.
 
-**The codebase is two disconnected islands.** The dependency graph splits into 11
-connected pieces; the largest (3,730 records) is the entire Python side, and the
-second (1,366 records) is the entire TypeScript side. There is not a single edge
-between them. That is correct and deliberate: the two halves communicate through
-a *file*, not a symbol — `tapestry/scripts/emit-template.mjs` writes
-`theloom/viz/static/tapestry.html`, and `theloom/viz/html.py` substitutes a
-sentinel into it. Both sides state the sentinel-uniqueness rule independently, and
-neither can typecheck the other. This also confirms that the resolver's
-cross-language guard is doing its job: no invented Python↔TypeScript call edges
-appear anywhere in the graph.
+- **Four clusters are same-file local variables** — `Explorer`, `Chronicle`,
+  `SystemsView`, `EventList`, `exportSvg`, `buildGraph`, `schema.test`. Cohesion inside
+  a module is high enough that similarity finds nothing to say across module boundaries.
+- **Two clusters cross a file boundary but not a directory boundary** —
+  `EventList.tsx` with `eventWindow.test.ts` (the component and the pure helper it
+  renders), and `Legend.tsx` with `SearchBox.tsx` (two Explorer side panels). Both pairs
+  are already siblings on disk.
+- **Three clusters cross directory boundaries, and all three are in the written layer,
+  not the code.** The red-green-gates task cycle recorded against the Phase 2-3 plans
+  clusters with the failing-test-first cycle recorded against the Phase 5 and
+  map-codebase plans — the same practice, described twice under two names, in two
+  document groups. The type-coverage fixture pattern clusters with its own drift
+  tension. And the retrieval-window claim in `theloom/semantic` clusters with the
+  `min_score` full-scan tension in the same package.
 
-**The documentation forms six more islands, one per plan or spec cluster.** Each
-`docs/` group (sizes 23, 21, 20, 20) and the lockfile group (15) is connected only
-through its own written notes — no code edge reaches them. This means the plans
-and specs are *not* linked to the code they specify; the only thing tying
-`docs/superpowers/plans/2026-07-11-tapestry-phase-2.md` to
-`tapestry/src/views/chronicle/replay.ts` is prose. That is a real seam: a plan can
-drift from its implementation with nothing structural to notice.
+**What this suggests about the real seams.** The directory tree is an honest
+representation of this codebase's modularity; the clustering finds no hidden cross-cutting
+concern that the folders conceal. The one place the folders *do* mislead is layering
+rather than grouping: `theloom/analysis` and `theloom/operations` import each other, and
+`theloom/verification/capability_spec.py` reaches up into
+`theloom/operations/verification.py` for private helpers. Both are directories that look
+like clean leaves and are not.
 
-**Three CSS files are fully isolated singletons** — `views/HelpOverlay.css`,
-`views/chronicle/Chronicle.css`, `views/explorer/Explorer.css`. They are imported
-at runtime but not through a parsed import, so nothing connects them to the
-components they style. Two written risks confirm this is not merely a parsing
-artifact: row geometry is duplicated across JS and CSS with circular ownership
-(`views/chronicle/EventList.tsx:30-31` vs `Chronicle.css:510-523`), and theme
-tokens are duplicated as hard-coded hex fallbacks in four modules
-(`views/explorer/buildGraph.ts:63-69`).
-
-**Similarity clustering found almost nothing, and that is informative.** Over a
-500-record sample of 5,199, only two clusters formed above threshold: three
-identically-named `multi` test fixtures in `test_cli_commands`, `test_viz_analytics`
-and `test_viz_temporal` (similarity 0.73), and the two empty `__init__.py` files
-in `theloom/` and `theloom/operations/` (0.70). Both are duplication findings, not
-communities. The absence of larger semantic clusters means the directory structure
-and the actual coupling structure agree — modules named for a concern really do
-contain that concern. The one exception the written notes flag is
-`tapestry/src/views/explorer/Explorer.tsx:451-486`, which concentrates pure
-geometry and graph logic of exactly the kind its sibling modules exist to extract.
+The second real seam is the two-layer split the map itself is built on: the structural
+layer (5,031 records extracted from source) and the written layer (997 purposes,
+patterns, invariants and tensions). The written layer is where the only genuinely
+cross-directory similarity lives — which is a fair description of where the shared ideas
+in this project actually reside.
 
 ---
 
-## 6. Risks and tensions
+## 6. Risks & tensions
 
-218 risks were recorded across the codebase. These are the ones a reviewer should
-see first.
+241 strains are recorded. The ones below are the ones a reviewer should see first,
+ordered by how much they threaten a stated architecture invariant.
 
-### Correctness and safety
+1. **Entity updates snapshot; relation updates overwrite in place.** The event-sourced,
+   bi-temporal invariant holds for entities and does not hold for relation documents.
+   `theloom/store/falkor.py:913-919` (`SET r._doc = $doc`, no version node) against
+   `:410-427`.
 
-1. **Two commands can never succeed.** `creativity-loop` builds its config, discards
-   it and raises; `enrichment-crawl` does the same. Both are registered CLI
-   commands. `theloom/composites/creativity_loop.py:114-115`,
-   `theloom/composites/enrichment_crawl.py:59-72`.
-2. **Auto-apply writes are non-atomic, against the one-atomic-mutation invariant.**
-   `self-improve` with `autoApply` performs per-relation `try/except pass` and
-   `contextlib.suppress` around credit propagation, so a partial apply is
-   indistinguishable from a complete one.
-   `theloom/composites/self_improve.py:343-433`.
-3. **A committed mutation whose event append fails leaves the log short by design.**
-   The query-failure branch compensates; the event-failure branch does not.
-   `theloom/store/falkor.py:302-311`.
-4. **Chunk writes bypass the event log the rest of the store is built on** —
-   `MERGE+SET` and raw `DELETE`, no event append.
-   `theloom/documents/chunkstore.py:43-60`, `:101-113`. Related: first ingest
-   appends blindly while reingest diffs, so re-ingesting a file duplicates its
-   chunks (`theloom/documents/ingestion.py:74-125`).
-5. **Bridges are event-sourced graph data stored outside the event-sourced store**
-   — a raw Redis list with no event log. `theloom/store/multigraph.py:39-128`.
-   Extraction run records have the same problem
-   (`theloom/extraction/runstore.py:20-39`).
-6. **The SSRF guard resolves DNS separately from the connection it protects** — a
-   documented, residual time-of-check/time-of-use window.
-   `theloom/documents/ssrf.py:7-9`, `:74-95`.
-7. **Two files disagree on whether retraction removes an entity's vector.**
-   `tests/test_store_atomicity.py:247-261` vs `tests/test_semantic_perf.py:177-191`.
-8. **Inferred edges enter a graph whose consumers treat every edge as fact.** The
-   unique-name call resolver's hazard is stated in its own docstring, and its
-   guard is a hand-maintained blocklist of ~60 built-in names added after a
-   concrete false positive. `theloom/extraction/resolution.py:19-22`, `:62-126`.
-9. **`sympify` on caller-controlled strings assumes a trusted caller.**
-   `theloom/symbolic/core.py:48`, `:772-776`, `:916-918`.
-10. **The never-raises guarantee has a hole outside the main thread** — the signal
-    installation sits above the exception-catching try.
-    `theloom/symbolic/core.py:998-1016`.
+2. **Auto-apply's write cycle is non-atomic.** `self-improve` writes entity, relations
+   and credit in separate store calls, against the one-atomic-mutation invariant.
+   `theloom/composites/self_improve.py:327-351`, `:361-394`, `:396-410`, `:412-4xx`.
 
-### Invariant erosion
+3. **`theloom/analysis` imports `theloom/operations` while `theloom/operations` imports
+   `theloom/analysis`.** A layering inversion between a package documented as pure and
+   store-free and the command layer above it.
+   `theloom/analysis/component_signatures.py:32`.
 
-11. **Hard-delete escape hatches sit inside an event-sourced, bi-temporal store** —
-    at the entity, relation, inference-rule and work-memory layers, each with its
-    own justification. `theloom/operations/entity.py:318-335`,
-    `theloom/operations/relations.py:364-383`,
-    `theloom/operations/work_memory.py:166-169`.
-12. **Soft-fail envelopes bypass the typed-error-code invariant.** `solve-problem`
-    swallows into an envelope; `verification` raises typed.
-    `theloom/operations/solve.py:363-364` vs
-    `theloom/operations/verification.py:200-205`.
-13. **An untyped `RuntimeError` escapes a codebase built on typed error codes.**
-    `theloom/graph/analytics.py:68`. Similarly, a bare `assert` guards a runtime
-    precondition at `theloom/extraction/pipeline.py:124-125` eleven lines above the
-    correctly-typed idiom.
-14. **Tests substring-match error prose while the codebase forbids classifying
-    errors that way.** `tests/test_incremental_update.py:494-547`,
-    `tests/test_extraction_units.py:518`.
-15. **Two error-classification policies inside one operations layer** — `isinstance`
-    dispatch in `documents.py:154-162`, prose reasoning documented in
-    `analysis.py:1-7`.
-16. **Two confidence write paths; only one records a revision.**
-    `theloom/operations/epistemic.py:893-912` vs
-    `theloom/operations/entity.py:266-267`.
-17. **Bulk import guesses ambiguous names; the shared resolver refuses to.**
-    `theloom/operations/bulk.py:318-327` vs `theloom/operations/common.py:136-142`.
-    A second copy of the problem lives at `theloom/operations/entity.py:410-425`
-    ("last one wins on duplicate names").
-18. **The model enforces two invariants but only advises on the lifecycle table** —
-    `VALID_TRANSITIONS` has no validator hook, unlike the volatile-expiry rule.
-    `theloom/model.py:285-324` vs `:404-409`.
+4. **Verification depends upward on the operations layer's private helpers.** The rule
+   layer imports `_coverage` and `_coupling` from `theloom/operations/verification.py`,
+   inverting the same seam from the other side. `theloom/verification/capability_spec.py:80`,
+   `:95`; the operations-side view is `theloom/operations/verification.py:492-524`.
 
-### Silent degradation
+5. **Hard-delete escape hatches inside an event-sourced store.** Present in relations,
+   inference and work memory, and covered by tests, so the invariant "history is real" has
+   documented exceptions. `theloom/operations/relations.py:364-376`,
+   `theloom/operations/inference.py:235-237`, `theloom/operations/work_memory.py:166-169`;
+   the tests that pin them are `tests/test_ops_entity.py:152-161`,
+   `tests/test_ops_relations.py:400-406`.
 
-19. **Blanket exception capture buys resilience and costs diagnosability**, in at
-    least four packages: `theloom/composites/far_analogy_retrieval.py:282-336`,
-    `theloom/composites/influence_map.py:133-191` (three silent `continue` paths,
-    none recording a skipped count), `theloom/analysis/cwsg.py:164-166`,
-    `theloom/synthesis/fidelity.py:152-153`.
-20. **Machinery decoded from observations disappears silently when malformed** —
-    inference rules and traces that fail to parse are dropped from the list.
-    `theloom/operations/inference.py:132-181`.
-21. **A timed-out subgraph search looks identical to a complete one.**
-    `theloom/analysis/isomorphism.py:243-264`.
-22. **Directory ingest records per-file errors and then strips them before
-    returning.** `theloom/documents/ingestion.py:176-193`.
-23. **`extraction-rollback` reports counts it cannot guarantee** — two swallowed
-    excepts and a hardcoded `deletedLinks: 0`.
-    `theloom/operations/extraction.py:260-290`.
+6. **A failed simulation makes a proposal rank higher, not lower.** An exception during
+   simulation yields a neutral score and `simulatedImpact` is never set, so the safest
+   ranking signal is silently the most permissive.
+   `theloom/composites/self_improve.py:269-270`, `:291-2xx`.
 
-### Dead or inert surface
+7. **Error codes classified from message prose.** Several handlers are written to satisfy
+   substring matches, directly against invariant 4 ("never classify errors by
+   substring-matching prose"). `theloom/operations/inference.py:480-482`,
+   `theloom/operations/extraction.py:173-175`; also
+   `theloom/synthesis/cegis.py:278-303`.
 
-24. **Elaborate scoring machinery that computes to a constant zero in template
-    mode.** `theloom/composites/gap_fill_cycle.py:89-104`,
-    `theloom/composites/hypothesis_engine.py:234-236`.
-25. **Stateless-by-design exploration state leaves UCB and MVT informationless per
-    run** — the bonus is a constant because visits are always zero.
-    `theloom/exploration/exploration_state.py:100-113`,
-    `composite_signals.py:50-51`.
-26. **Step 4 of the proposal pipeline filters nothing**, though the surrounding
-    comment promises filtering and a `filteredCount` is reported.
-    `theloom/semantic/entity_proposer.py:554-576`, `:128-131`.
-27. **`maxCandidates` is accepted, documented, and inert** — the slice is a no-op.
-    `theloom/semantic/deduplication_gate.py:136-137`.
-28. **The LLM reasoning strategy is on by default and unreachable in practice**, as
-    its own docstring admits. `theloom/semantic/entity_proposer.py:10-13`, `:108`.
-29. **LaTeX is an output format but never a working input format** — the parse
-    branch is dead. `theloom/symbolic/core.py:7-8`, `:36-43`.
-30. **Source passages are structurally supported but permanently empty** —
-    `links.py` returns `[]` and the store it reads is process memory.
-    `theloom/synthesis/links.py:13-14`.
-31. **Cross-graph bridge creation is code the CLI can never reach** — the gate runs
-    first and always refuses. `theloom/operations/relations.py:201-208`.
-32. **Document commands accept a `graph` parameter and ignore it**, in eight places.
-    `theloom/operations/documents.py:84-146`.
+8. **Soft-fail envelopes bypass the typed-error boundary.** `solve-problem` and the
+   symbolic commands always return an envelope and never raise, so their failures never
+   become a typed code. `theloom/operations/solve.py:8-13`, `:363-364`;
+   `theloom/operations/symbolic.py:3-5`.
 
-### Performance and scale
+9. **Two copies of the Weisfeiler-Leman hash.** A shared module and a frozen inline copy
+   that must stay identical, with only a docstring holding them together.
+   `theloom/reification/fingerprint.py:5-8` against
+   `theloom/operations/reification.py`.
 
-33. **Full-graph in-memory hydration versus server-side filtered reads** — the
-    analytics and algebra helpers list everything, unfiltered.
-    `theloom/operations/analysis.py:60-63`, `theloom/operations/algebra.py:51-54`.
-34. **`analyze-category` clusters with all-pairs cosine on up to 10,000 chunks** in
-    pure Python. `theloom/operations/documents.py:354-359`, `:265-266`.
-35. **The dedup gate brute-forces every vector in Python while the store owns a
-    vector index.** `theloom/semantic/deduplication_gate.py:108-130`.
-36. **Every capability check re-lists the entire graph** — four independent full
-    listings per validate. `theloom/verification/capability_spec.py:82-152`.
-37. **Cross-graph lookup costs a scan over every graph, once per store
-    construction.** `theloom/store/multigraph.py:186-225`.
-38. **Full-graph cloning buys perfect isolation at O(graph) cost per simulation.**
-    `theloom/composites/simulate_change.py:100-110`. Best-effort cleanup can leave
-    `sim-<uuid>` graphs visible in the ecosystem view (`:309-312`).
-39. **Metapath expansion has no cycle guard and no frontier cap.**
-    `theloom/algebra/routing.py:525-596`.
-40. **The incremental update is incremental only in its writes** — it re-extracts
-    and re-lists the whole project first.
-    `theloom/extraction/codebasediff.py:407`, `:170`, `:229`.
-41. **Chunk queries apply the row limit before the category filter**, so a filtered
-    query can under-return. `theloom/documents/chunkstore.py:68-96`.
+10. **The bundle's `asOf` bound is partial.** Entities, relations and events honour it;
+    analytics and the semantic projection stay at the present, so a historical
+    visualization shows historical nodes with present-day centrality.
+    `theloom/viz/bundle.py:115-121`.
 
-### Duplication and drift
+11. **`loadBundle` has no failure path.** A fetch error leaves the front end on the
+    loading gate forever, with no error state. `tapestry/src/lib/data.ts:57-71`.
 
-42. **Two copies of the Weisfeiler-Leman hash** — the extracted shared module and
-    the frozen inline copy in `reify-patterns`, kept in sync by hand.
-    `theloom/reification/fingerprint.py:5-8`.
-43. **The `multi` test fixture is copy-pasted into eleven modules** (twice over —
-    once in group 3, once in group 4), while `conftest.py` stops at `namespace`.
-    `tests/conftest.py:17-55` vs `tests/test_viz_bundle.py:16-18` and ten siblings.
-44. **Seven copies of the artifact-building `beforeAll` re-implement the Python
-    renderer** in the e2e suite. `tapestry/e2e/smoke.spec.ts:17-22` and six
-    siblings.
-45. **Two cosine implementations in one package, one silently zero on dimension
-    mismatch.** `theloom/semantic/embed.py:109-115` vs
-    `theloom/semantic/deduplication_gate.py:43-55`.
-46. **Two semiring resolvers with deliberately divergent semantics**, one of which
-    its own docstring calls "an intentional quirk, kept".
-    `theloom/algebra/core.py:85-105`.
-47. **Structural helpers duplicated rather than shared across the analysis layer.**
-    `theloom/analysis/absence_surprise.py:54-91` vs `slippage.py:59-70`.
-48. **The generated catalog and the prose docs disagree on the size of the CLI.**
-    `COMMANDS.md:5` versus `README.md:12` and `CLAUDE.md:8-12`.
-49. **`z3-solver` is declared optional and depended on unconditionally**, and
-    declared twice with divergent version floors. `pyproject.toml:31`, `:54`,
-    `uv.lock:4284`, `:4294`.
-50. **The document-AI stack is non-optional**: a default `uv sync` installs torch,
-    transformers and onnxruntime through `docling`. `uv.lock:692-697`, `:739-755`.
-51. **Python 3.14+ resolves the UMAP path onto 2021-era sdist-only numba and
-    llvmlite.** `uv.lock:2100-2119`, `:1455-1466`.
+12. **The SSRF guard resolves DNS separately from the connection it protects.** A
+    documented residual TOCTOU window on every outbound fetch.
+    `theloom/documents/ssrf.py:7-9`, `:74-80`.
 
-### Layering
+13. **First ingest appends blindly while reingest diffs.** Re-ingesting the same file
+    through the ingest path duplicates its chunks. `theloom/documents/ingestion.py:141-146`.
 
-52. **Verification depends upward on the operations layer's private helpers** —
-    `from theloom.operations.verification import _coverage / _coupling` inside
-    check closures. `theloom/verification/capability_spec.py:80`, `:95`.
-53. **The pure algorithm layer writes to the store for loop persistence.**
-    `theloom/graph/cycles.py:20`, `:293-334`.
-54. **Search scope depends on a private cross-module internal** —
-    `from theloom.operations.semantic import _search_similar`, while the sibling
-    server route uses the public function. `theloom/viz/scope.py:18` vs
-    `theloom/viz/serve.py:17`.
-55. **A registry handler writes the protocol stream itself** — the `serve` handler
-    calls `output_success` and flushes before blocking, bypassing the one place
-    that owns the protocol boundary. `theloom/cli/registry.py:1551-1557`.
-56. **Component signatures depend on another module's private symbol.**
-    `theloom/analysis/component_signatures.py:32`, `:80`.
-57. **One clean abstract interface that no consumer actually programs against** —
-    16 abstract methods in `store/base.py`, and `get_store` returns the concrete
-    class. `theloom/store/base.py:41-158`, `theloom/store/multigraph.py:186-187`.
-58. **The pipeline works in untyped wire dicts while the project holds the domain
-    model as its single source of truth** — `Doc = dict[str, Any]` repeated across
-    six synthesis modules and the whole algebra layer.
-    `theloom/synthesis/selector.py:19` and siblings, `theloom/algebra/core.py:22`.
+14. **Cross-graph lookup scans every graph and builds a store per graph to do it.** The
+    cost is linear in the number of named graphs on a read that looks like a point
+    lookup. `theloom/store/multigraph.py:96-97`, `:132-137`.
 
-### Visualization-specific
+15. **As-of reads reconstruct the past by scanning the whole present.** Every bi-temporal
+    read is a full scan. `theloom/store/falkor.py:312-383`.
 
-59. **`asOf` bounds entities, relations and events but not analytics or
-    semantics** — a time-travelled bundle carries present-tense centrality.
-    `theloom/viz/bundle.py:86-125`. Scoped or truncated entity sets have the same
-    problem (`:111-125`, `viz/analytics.py:62-73`).
-60. **Two different `asOf` comparison strategies inside one bundle** — parsed in
-    `scope.py:56-82`, raw string comparison in `temporal.py:21-23`.
-61. **The sentinel guard checks presence, not uniqueness, while the consumer
-    replaces every occurrence.** `tapestry/scripts/emit-template.mjs:4`.
-62. **The build step writes outside its own workspace using cwd-relative paths.**
-    `tapestry/scripts/emit-template.mjs:3`, `:8`.
-63. **The frontend owns a contract file it cannot regenerate** — no schema script
-    among its npm scripts. `tapestry/schema/bundle.schema.json`,
-    `tapestry/package.json:6-12`.
-64. **The build gate typechecks `src` and the Vite config but not the Playwright
-    configs or the emit script.** `tapestry/tsconfig.app.json:24`.
-65. **The URL fragment is untrusted input asserted into a typed shape.**
-    `tapestry/src/state/urlHash.ts:18`, `:34-37`.
-66. **Export is documented as WYSIWYG but cannot capture the DOM overlays**, and
-    PNG and SVG capture two different pictures.
-    `tapestry/src/lib/exportSvg.ts:2`, `:24-30`,
-    `tapestry/src/views/systems/SystemsView.tsx:431-443`.
-67. **The label level-of-detail threshold is tuned to leave a test fixture
-    untouched.** `tapestry/src/views/systems/SystemsView.tsx:53-59`.
-68. **Optional extras skip silently, so local green and CI green mean different
-    things.** `tests/test_viz_serve.py:1-14`.
-69. **Optional-extra typing erases the server from `mypy --strict`** — FastAPI is
-    `Any`, in the one part of the codebase that faces the network.
-    `docs/superpowers/plans/2026-07-11-tapestry-phase-4.md:1726-1731`.
+16. **Metapath expansion has no cycle guard and no frontier cap.** A cyclic metapath over
+    a dense graph has no declared bound. `theloom/algebra/routing.py:525-528`, `:586-596`.
 
-### Documentation drift
+17. **A timed-out subgraph search is indistinguishable from a complete one.** The
+    `timed_out` flag exists but the early return does not surface it to every caller.
+    `theloom/analysis/isomorphism.py:189-194`, `:243-244`.
 
-70. **Frozen plans drift from the code they specified, with nothing marking them
-    superseded.** `docs/superpowers/plans/2026-07-11-tapestry-phase-1.md:184-231`
-    against the live `theloom/viz/schema.py`. Phase 3 corrects Phase 2's errors by
-    listing them, leaving Phase 2 wrong on disk
-    (`.../tapestry-phase-2.md:435-437`).
-71. **Spec and plan disagree on full re-run semantics** — the spec says always
-    supersede, the plan's agent says incremental only.
-    `docs/superpowers/specs/2026-08-03-map-codebase-design.md:100-105` vs
-    `docs/superpowers/plans/2026-08-03-map-codebase.md:189-190`.
-72. **The `--include` flag the spec removed is still threaded through the plan's
-    workflow**, in five places. `.../map-codebase-design.md:37-39` vs
-    `.../map-codebase.md:509`, `:531`, `:566`, `:663`, `:667`.
-73. **A checkbox plan that no one ever checks** — 78 unchecked markers, zero
-    checked. `docs/superpowers/plans/2026-07-11-tapestry-phase-1.md:3`.
+18. **`reflect` reads like a report but mutates by default.** `dry_run` is optional with
+    no default true, and `bool(None)` is `False`.
+    `theloom/composites/reflect.py:97`, `:315`.
+
+19. **Two wall-clock assertions in a suite whose CI forbids performance gates.**
+    `tests/test_enrichment_crawl.py:345-370`, `tests/test_gap_fill_cycle.py:111-123`.
+
+20. **The repository layout is described three times and the copies already differ.**
+    `CLAUDE.md:56-73`, `README.md:356-370`, `CONTRIBUTING.md:110-118` — the cheapest fix
+    on this list.
 
 ---
 
 ## 7. Open seams
 
-Similarity analysis over a 500-record sample surfaced 20 near-duplicate pairs that
-have no relationship connecting them. Most are lexical noise (local variables
-inside one function, parallel test names), but four are worth acting on:
+Areas the map found highly similar but *not* connected — candidates for consolidation,
+or for a link that should exist and does not.
 
-1. **`DEFAULT_TRANSFER_PRIORS` and `DEFAULT_TRANSFER_PRIOR` in the same module**
-   (`theloom/analysis/absence_surprise.py`, similarity 0.77). Two constants whose
-   names differ by one character, in one file — a near-certain source of a future
-   wrong-constant bug.
-2. **Three `multi` fixtures across `test_viz_temporal`, `test_viz_analytics` and
-   `test_viz_asof`** (0.75–0.76), and again in `test_cli_commands` /
-   `test_simulate_change` (0.71). This is the copy-pasted-fixture risk seen from
-   the other side: the similarity signal found the duplication before a human did.
-   The same holds for the four `..._writes_nothing_when_the_event_append_fails`
-   tests in `test_store_atomicity` (0.74–0.75).
-3. **`theloom/operations/__init__.py`, `theloom/analysis/__init__.py` and
-   `theloom/algebra/__init__.py`** (0.71–0.72). All empty. The packages export
-   nothing, so every consumer imports the concrete module — worth deciding
-   deliberately rather than by accident.
-4. **The pattern "Optional LLM with a deterministic template fallback at every call
-   site" and the invariant "Synthesis output is fully deterministic when no LLM is
-   configured"** (0.71) describe the same design decision from two directions and
-   are not linked. The same relationship exists between
-   `OPERATION_SEMIRINGS` and the `Semiring` type, and between `TROPICAL` and
-   `TROPICAL_STRENGTH_MAP`, in `theloom/algebra/core.py`.
+**Genuine duplication.**
 
-Two larger seams come from the component analysis in §5 rather than from
-similarity: **the documentation clusters have no structural link to the code they
-specify**, and **the three isolated CSS files have no link to the components that
-import them**.
+- `_hash_at_depth` (`theloom/reification/fingerprint.py`) and `hash_at_depth`
+  (`theloom/operations/reification.py`), similarity 0.76 — the two Weisfeiler-Leman
+  copies from §6.9, confirmed independently by similarity.
+- `DocumentIngestion._ingest` and `DocumentIngestion.ingest_content`
+  (`theloom/documents/ingestion.py`), 0.79 — the highest-similarity pair in the Python
+  package, and the same file whose four entry points are recorded as disagreeing on
+  format detection and size ceilings.
+- `list_relations` and `get_relations` (`theloom/operations/relations.py`), 0.76 — two
+  read commands with near-identical descriptions and separate implementations.
+- `TypeCompatibilityGraph.get_valid_sources` / `get_valid_targets` /
+  `get_valid_relations` (`theloom/synthesis/generator.py`), 0.77 and 0.76 — three
+  near-identical lookups over the same table.
+
+**Documentation drift, front end.**
+
+- Two claims about PNG export say the same thing with different wording (0.84), and two
+  claims about SVG export do the same (0.81). These are the two highest-similarity pairs
+  in the whole map, and they are both descriptions of `tapestry/src/lib/exportSvg.ts`
+  written twice — once against the shared kernel and once against the app shell. The
+  export contract is described in two places; only one can be canonical.
+- `Live/static/dev mode is decided by parsed shape, never by the sentinel literal` (a
+  stated invariant) and `Mode detection by parsed shape, never by sentinel literal` (a
+  named pattern), 0.75 — the same rule recorded at two levels of abstraction.
+
+**Naming collisions worth a rename.**
+
+- `FOCUSABLE` and `focusables` in `HelpOverlay` (0.77); `facets` and `Facets` in
+  `FilterPanel` (0.76); `Confidence` and `confidence` in `DetailPanel` (0.76). In each
+  case a type and a value differ only by case, which is legal TypeScript and a reading
+  hazard.
+- `createWrappedLabelRenderer` and `createWrappedHoverRenderer`
+  (`tapestry/src/lib/nodeLabels.ts`), 0.76 — deliberately paired, and the invariant at
+  `nodeLabels.ts:193-254` says you must never install one without the other. The
+  similarity is a feature; the seam is that nothing enforces the pairing at the type
+  level.
+- `TestIdentifiesAsLoom.test_true_for_the_loom_package_name` and
+  `..._for_theloom_package_name` (0.77) — two test names distinguished only by a space
+  that the names themselves cannot show.
+
+**Test-name near-collisions** account for the remaining pairs
+(`test_store_pushdown`, `test_read_port`, `test_ops_entity`, `test_store_atomicity`,
+`test_consumption_budget`). They are not defects, but they are the places where a
+reader scanning failures will misread which case broke.
+
+**Structural islands.** Four things in the repository connect to nothing else:
+`tapestry/src/views/chronicle/Chronicle.css`,
+`tapestry/src/views/explorer/Explorer.css`, `tests/__init__.py`, and `uv.lock` together
+with everything written about it. The two stylesheets are imported by their components at
+build time in a way source parsing does not see; `tests/__init__.py` exists only to make
+`tests` importable; and `uv.lock` determines what every import in the package actually
+resolves to at runtime while being connected to none of them. That last one is the
+meaningful island: the lockfile is load-bearing for the whole build and structurally
+invisible.
 
 ---
 
-## 8. Coverage and methodology
+## 8. Coverage & methodology
 
-**Coverage.** All 38 module groups were enriched with written architectural notes;
-none were skipped. The groups are: `docs` (4 parts), `repo root` (2 parts),
-`tapestry` (2 parts), `tapestry/e2e`, `tapestry/src` (4 parts), `tests` (4 parts),
-`tests/fixtures`, `theloom`, `theloom/algebra`, `theloom/analysis`, `theloom/cli`,
-`theloom/composites` (2 parts), `theloom/documents`, `theloom/exploration`,
-`theloom/extraction`, `theloom/graph`, `theloom/operations` (3 parts),
-`theloom/reification`, `theloom/semantic`, `theloom/store`, `theloom/symbolic`,
-`theloom/synthesis`, `theloom/verification`, `theloom/viz`.
+**Coverage.** 45 module groups carry a full written layer — purpose, patterns,
+invariants and strains. **No group was left unenriched.** This incremental run enriched
+25 groups against commit `e4a12a1`:
 
-**Known defects in this map's own inputs.** Two data-quality problems were found
-and are reported rather than silently cleaned:
+`repo root (part 1/2)`, `tapestry/src`, `tapestry/src/lib`, `tests (part 1/6)` through
+`tests (part 6/6)`, `tests/fixtures/repo`, `tests/fixtures/repo/src`, `theloom`,
+`theloom/analysis`, `theloom/cli`, `theloom/composites (part 1/2)`,
+`theloom/composites (part 2/2)`, `theloom/documents`, `theloom/exploration`,
+`theloom/extraction`, `theloom/operations (part 1/3)` through
+`theloom/operations (part 3/3)`, `theloom/semantic`, `theloom/store`, `theloom/viz`.
 
-- 25 written notes in the `theloom/composites (part 1/2)` group are exact
-  duplicates — the group's purpose, 8 patterns, 9 invariants and 7 risks each
-  appear twice. This is a double-write during enrichment, not a real duplication in
-  the code.
-- The concept `theloom root package purpose` is stamped into two groups,
-  `theloom` and `theloom/composites (part 2/2)`. The second stamping is wrong;
-  `theloom/composites (part 2/2)` has its own correct purpose note alongside it.
+The remaining 23 groups carry findings from the prior full run at commit `067a5b8`:
+the four `docs` groups, `repo root (part 2/2)`, both `tapestry` groups, `tapestry/e2e`,
+the four `tapestry/src` parts, the four earlier `tests` parts, `tests/fixtures`,
+`theloom/algebra`, `theloom/graph`, `theloom/reification`, `theloom/symbolic`,
+`theloom/synthesis` and `theloom/verification`. Anchors from that run point at
+`067a5b8`; line numbers in those sections may have shifted.
 
-**Files not parsed:** 40. These are formats with no grammar available to the
-structural parser. CSS, most JSON and Markdown files appear as file records with
-written notes but no symbol-level detail; the three CSS files listed in §5 are
-isolated for this reason.
+**Files not parsed: 42.** Markdown, JSON, CSS, YAML, TOML and the lockfile have no
+grammar in this configuration. They are present as files, and their documentation links
+into code are intact, but their internal contents are not broken into symbols.
 
-**Sampling.** Similarity clustering (§5) and the open-seam analysis (§7) ran over a
-500-record sample of 5,199. Centrality (§3), cycle detection (§4) and component
-detection (§5) ran over the whole graph.
+**Working tree was dirty.** `CLAUDE.md` had uncommitted changes and `CONTEXT.md` was
+untracked when extraction ran. Findings about those two files may not match `e4a12a1`.
 
-**Provenance.** Every architectural assertion above traces to a record in the
-`codebase-the-loom` graph at commit `067a5b83`: the structural layer was extracted
-deterministically by tree-sitter, and the purposes, patterns, invariants and risks
-were written per module group, each carrying a file-and-line anchor. Nothing in
-this document was invented at write time; where a claim is a measurement (counts,
-rankings, component sizes) it is reported as measured.
+**Sampling.** The community analysis in §5 sampled 500 of 6,028 records; the open-seam
+analysis in §7 likewise. Both report their own sample, and neither claims exhaustiveness.
 
-**Re-running.** `/map-codebase /Users/jameswinans/Dropbox/Development/the-loom`
-re-runs the pipeline. The next run reads `commit` from
-`docs/architecture/map-manifest.json` as its diff baseline, so an incremental run
-touches only the files changed since `067a5b83`.
+**Graph.** `codebase-the-loom`, at commit `e4a12a1b188e5391ec431a8c5754d2fa4733b1f9`.
 
-**Interrogating the graph directly.** See `QUERYING.md` in this directory for the
-full cheat sheet. The fast paths are
-`loom explore '{"name": "<symbol>", "graph": "codebase-the-loom"}'` for a
-definition plus its callers, callees and imports in one call;
-`loom entity-deep-dive` for a full profile; `loom blast-radius` for what breaks if
-you change something; and `loom hybrid-search` for finding your way in by
-description. The interactive view of the same graph is `codebase-map.html` in this
-directory.
+**To rebuild this map:** `/map-codebase /Users/jameswinans/Dropbox/Development/the-loom`.
+An incremental run reads `map-manifest.json`'s `commit` field as its starting point and
+re-derives only what changed since.
+
+**To interrogate the map directly**, rather than re-reading this document — see
+[QUERYING.md](QUERYING.md) for the full cheat sheet. The two commands worth knowing
+first:
+
+```bash
+loom entity-deep-dive '{"name": "file:theloom/store/falkor.py", "graph": "codebase-the-loom"}'
+loom hybrid-search '{"query": "bi-temporal invalidation", "graph": "codebase-the-loom"}'
+```
+
+Every claim in this document traces to a record in that graph, and every record carries
+the file and line it came from.

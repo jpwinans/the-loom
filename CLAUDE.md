@@ -62,8 +62,9 @@ theloom/                     the package
   cli/                         Typer CLI (io, app, command registry, docs)
   store/                       FalkorDB store, read port + in-memory adapter, event log,
                                lifecycle, filters, migration
-  graph/  semantic/  algebra/  synthesis/
+  graph/  semantic/  algebra/  synthesis/  analysis/  exploration/
   documents/  extraction/  verification/  operations/  composites/
+  reification/  symbolic/  prompts/
   viz/                          TapestryBundle assembly + HTML template injection
 tests/                       test suite
   fixtures/                    shared test fixtures
@@ -71,6 +72,30 @@ tapestry/                    frontend workspace (Vite/React/sigma.js SPA, contri
 docker-compose.yml           FalkorDB service
 pyproject.toml               project + tooling config (ruff, mypy, pytest)
 ```
+
+## Codebase graph
+
+This repo is mapped into the FalkorDB graph **`codebase-the-loom`** (built by
+`/map-codebase`, requires `docker compose up -d falkordb`). Query it before
+grepping — every symbol, call edge, import, invariant, risk and pattern is in
+there, anchored to file and line.
+
+- **[docs/architecture/QUERYING.md](docs/architecture/QUERYING.md)** — the recipe
+  sheet: `loom explore` (symbol → definition + callers/callees/imports),
+  `find-callers` / `find-callees`, `blast-radius` (what breaks if I change this),
+  `hybrid-search` (semantic), and the written layer — invariants (`claim`),
+  risks (`tension`), conventions (`pattern`).
+- **[docs/architecture/ARCHITECTURE-MAP.md](docs/architecture/ARCHITECTURE-MAP.md)**
+  — the written walkthrough: subsystem narratives, load-bearing modules,
+  dependency cycles, risks.
+- **[docs/architecture/map-manifest.json](docs/architecture/map-manifest.json)**
+  — the commit the graph describes. If it trails `HEAD` materially, re-run
+  `/map-codebase` (incremental — only changed groups re-enrich).
+
+Before touching a load-bearing symbol, check its `blast-radius` and the
+`claim` / `tension` notes for its module. The visualization
+(`codebase-map.html`) is generated and gitignored; never hand-edit any file in
+`docs/architecture/` except by re-running the map.
 
 ## Conventions
 
