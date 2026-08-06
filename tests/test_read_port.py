@@ -55,6 +55,15 @@ class Harness:
     def invalidate(self, from_id: str, to_id: str, relation_type: str | None = None) -> Relation:
         return self._store.invalidate_relation(from_id, to_id, relation_type)  # type: ignore[attr-defined]
 
+    def update_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        updates: dict[str, object],
+        relation_type: str | None = None,
+    ) -> Relation:
+        return self._store.update_relation(from_id, to_id, updates, relation_type)  # type: ignore[attr-defined]
+
     def vector(self, entity_id: str, values: Sequence[float]) -> None:
         self._store.set_entity_vector(entity_id, list(values))  # type: ignore[attr-defined]
 
@@ -516,6 +525,44 @@ def test_as_of_resurrects_a_relation_retired_after_the_bound(harness: Harness) -
 
     assert [r.id for r in snapshot.relations] == [edge.id]
     assert harness.reader.list_relations() == []  # and it is gone from today
+
+
+def test_as_of_shows_the_relation_version_current_at_the_bound(harness: Harness) -> None:
+    """An update invalidates, never overwrites: the doc that was live at the
+    bound must come back, not the doc that replaced it."""
+    a = harness.entity("Delay")
+    b = harness.entity("Feedback Loop")
+    edge = harness.relation(a.id, b.id, relationType="supports", strength="moderate")
+    time.sleep(0.01)
+    pivot = iso_now()  # strictly after the create, strictly before the update
+    time.sleep(0.01)
+    harness.update_relation(a.id, b.id, {"strength": "strong"}, "supports")
+
+    snapshot = harness.reader.read_graph_as_of(pivot)
+
+    assert [r.id for r in snapshot.relations] == [edge.id]
+    assert snapshot.relations[0].strength == "moderate"
+    current = harness.reader.read_relation(a.id, b.id, "supports")
+    assert current is not None and current.strength == "strong"
+
+
+def test_as_of_shows_the_pre_retype_relation_at_the_bound(harness: Harness) -> None:
+    """Retyping is structurally delete + recreate, but bi-temporally it is an
+    update like any other: the pre-retype incarnation stays readable."""
+    a = harness.entity("Delay")
+    b = harness.entity("Feedback Loop")
+    edge = harness.relation(a.id, b.id, relationType="related_to")
+    time.sleep(0.01)
+    pivot = iso_now()  # strictly after the create, strictly before the retype
+    time.sleep(0.01)
+    harness.update_relation(a.id, b.id, {"relationType": "supports"}, "related_to")
+
+    snapshot = harness.reader.read_graph_as_of(pivot)
+
+    assert [r.id for r in snapshot.relations] == [edge.id]
+    assert snapshot.relations[0].relation_type == "related_to"
+    current = harness.reader.read_relation(a.id, b.id, "supports")
+    assert current is not None and current.id == edge.id
 
 
 # =============================================================================

@@ -599,6 +599,98 @@ def test_read_graph_as_of_restores_a_retraction_and_the_edges_it_closed_out(
     assert retracted.status.value == "retracted"
 
 
+def test_update_relation_snapshots_each_prior_incarnation(store: FalkorGraphStore) -> None:
+    """Updates invalidate, never overwrite: every update closes out the
+    incarnation it replaces as a ``:_RelationVersion`` whose interval starts
+    where the previous one ended, so an as-of read at any instant returns the
+    doc that was live then."""
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    edge = store.create_relation(rel_spec(a.id, b.id, relationType="supports"))
+    time.sleep(0.01)
+    pivot_v1 = iso_now()
+    time.sleep(0.01)
+    store.update_relation(a.id, b.id, {"strength": "strong"}, "supports")
+    time.sleep(0.01)
+    pivot_v2 = iso_now()
+    time.sleep(0.01)
+    store.update_relation(a.id, b.id, {"strength": "weak"}, "supports")
+
+    as_of_v1 = store.read_graph_as_of(pivot_v1).relations
+    assert [r.id for r in as_of_v1] == [edge.id]
+    assert as_of_v1[0].strength == "moderate"
+    as_of_v2 = store.read_graph_as_of(pivot_v2).relations
+    assert [r.id for r in as_of_v2] == [edge.id]
+    assert as_of_v2[0].strength == "strong"
+    current = store.read_relation(a.id, b.id, "supports")
+    assert current is not None and current.strength == "weak"
+
+    versions = store._rows(
+        "MATCH (v:_RelationVersion {relation_id: $id}) "
+        "RETURN v.tx_from, v.tx_to ORDER BY v.tx_from",
+        {"id": edge.id},
+    )
+    assert len(versions) == 2
+    assert versions[0][0] == edge.created_at  # first interval opens at creation
+    assert versions[0][1] == versions[1][0]  # contiguous: no gap, no overlap
+    assert versions[1][0] < versions[1][1]
+
+
+def test_update_relation_snapshots_before_retyping(store: FalkorGraphStore) -> None:
+    """The retype branch (delete + recreate) is bi-temporally an update like
+    any other: the pre-retype incarnation stays readable as of the past."""
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    edge = store.create_relation(rel_spec(a.id, b.id, relationType="related_to"))
+    time.sleep(0.01)
+    pivot = iso_now()
+    time.sleep(0.01)
+    store.update_relation(a.id, b.id, {"relationType": "supports"})
+
+    as_of = store.read_graph_as_of(pivot).relations
+    assert [r.id for r in as_of] == [edge.id]
+    assert as_of[0].relation_type == "related_to"
+    current = store.read_relation(a.id, b.id, "supports")
+    assert current is not None and current.id == edge.id
+
+    versions = store._rows(
+        "MATCH (v:_RelationVersion {relation_id: $id}) RETURN v.tx_from, v.tx_to",
+        {"id": edge.id},
+    )
+    assert len(versions) == 1
+    assert versions[0][0] == edge.created_at
+    assert versions[0][0] <= pivot < versions[0][1]
+
+
+def test_invalidate_after_update_closes_the_live_interval_only(
+    store: FalkorGraphStore,
+) -> None:
+    """Invalidation after an update must close the interval opened by the
+    update, not restate the whole [created_at, now) span — the snapshots
+    partition system time instead of overlapping."""
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    edge = store.create_relation(rel_spec(a.id, b.id, relationType="supports"))
+    time.sleep(0.01)
+    store.update_relation(a.id, b.id, {"strength": "strong"}, "supports")
+    time.sleep(0.01)
+    pivot = iso_now()
+    time.sleep(0.01)
+    store.invalidate_relation(a.id, b.id, "supports")
+
+    versions = store._rows(
+        "MATCH (v:_RelationVersion {relation_id: $id}) "
+        "RETURN v.tx_from, v.tx_to ORDER BY v.tx_from",
+        {"id": edge.id},
+    )
+    assert len(versions) == 2
+    assert versions[0][0] == edge.created_at
+    assert versions[0][1] == versions[1][0]  # contiguous: no gap, no overlap
+    as_of = store.read_graph_as_of(pivot).relations
+    assert [r.id for r in as_of] == [edge.id]
+    assert as_of[0].strength == "strong"
+
+
 # =============================================================================
 # Vector index readiness
 # =============================================================================
