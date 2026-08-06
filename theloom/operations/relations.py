@@ -198,14 +198,27 @@ def _spec(item: RelationItem, polarity: str | None) -> RelationCreate:
     return RelationCreate.model_validate(doc)
 
 
-def create_relation(params: CreateRelationInput, multi: MultiGraph) -> dict[str, Any]:
+def gated_relation_spec(params: RelationItem, multi: MultiGraph) -> RelationCreate:
+    """Run the create-relation verification gate — including the causal
+    polarity defaults — and return the spec it would write, without writing.
+
+    The seam for callers that need several gated relations committed as ONE
+    all-or-none store batch (``GraphStore.create_relations``) instead of N
+    independent single-edge commits: gate each item through here, then hand
+    the surviving specs to the store together.
+    """
     polarity = _effective_polarity(params)
     _gate_or_raise(params, multi, polarity)
+    return _spec(params, polarity)
+
+
+def create_relation(params: CreateRelationInput, multi: MultiGraph) -> dict[str, Any]:
+    spec = gated_relation_spec(params, multi)
 
     # Gate passed → both endpoints exist in the resolved store, so this is a
     # same-graph relation; the bridge branch is unreachable with the gate on
     # (see module docstring).
-    relation = multi.get_store(params.graph).create_relation(_spec(params, polarity))
+    relation = multi.get_store(params.graph).create_relation(spec)
     return relation.model_dump(by_alias=True, exclude_unset=True)
 
 

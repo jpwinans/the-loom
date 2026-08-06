@@ -14,7 +14,9 @@ from typing import Any
 import pytest
 
 from theloom.composites.self_improve import SelfImproveInput, self_improve
+from theloom.errors import OperationError
 from theloom.model import EntityCreate
+from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
 
@@ -26,6 +28,30 @@ def _fake_simulate_change(_input: Any, _multi: Any) -> dict[str, Any]:
             "blastRadius": {"data": {"affected": 1}},
         }
     }
+
+
+def _proposal(name: str, target_id: str) -> dict[str, Any]:
+    """A minimal proposal with one gate-passing relation to ``target_id``."""
+    return {
+        "entity": {"name": name, "entityType": "concept", "observations": ["proposed obs"]},
+        "relations": [
+            {"targetId": target_id, "relationType": "related_to", "direction": "outgoing"},
+        ],
+        "rationale": f"test proposal {name}",
+        "capabilityViolation": None,
+        "confidence": 0.9,
+        "strategy": "pattern_completion",
+    }
+
+
+def _patch_proposals(monkeypatch: pytest.MonkeyPatch, proposals: list[dict[str, Any]]) -> None:
+    monkeypatch.setattr(
+        "theloom.composites.self_improve.propose_entities_op",
+        lambda store, opts: {
+            "proposals": proposals,
+            "strategyCounts": {"pattern_completion": len(proposals), "llm_reasoning": 0},
+        },
+    )
 
 
 def test_autoapply_reports_failed_relation_write_instead_of_swallowing(
@@ -200,3 +226,130 @@ def test_autoapply_rejects_relation_that_violates_gate(
     # not a warning appended after the fact.
     relations = store.list_relations()
     assert not any(r.to == target.id for r in relations)
+
+
+def test_simulation_failure_ranks_as_degrades_and_is_never_auto_applied(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proposal whose simulation raises must rank with the degraders, not
+    the neutrals: 'could not evaluate' must never outrank 'evaluated badly',
+    and an un-simulatable proposal must never be auto-applied."""
+    store = multi.get_store()
+    target = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "Sim Target", "entityType": "concept", "observations": ["obs"]}
+        )
+    )
+    good = _proposal("Good Proposal", target.id)
+    bad = _proposal("Bad Proposal", target.id)
+    _patch_proposals(monkeypatch, [good, bad])
+
+    def fake_sim(sim_input: Any, _multi: Any) -> dict[str, Any]:
+        if sim_input.mutations[0].payload["name"] == "Bad Proposal":
+            raise RuntimeError("simulation blew up")
+        return _fake_simulate_change(sim_input, _multi)
+
+    monkeypatch.setattr("theloom.composites.self_improve.simulate_change", fake_sim)
+
+    result = self_improve(
+        SelfImproveInput.model_validate({"autoApply": True, "applyTopN": 5}),
+        multi,
+    )
+
+    sim_data = result["composite"]["result"]["simulate"]["data"]
+    assert sim_data["improves"] == 1
+    assert sim_data["degrades"] == 1
+    assert sim_data["neutral"] == 0
+
+    # The un-simulatable proposal is filtered out of the ranking entirely.
+    ranked_names = [r["proposal"]["entity"]["name"] for r in result["proposals"]]
+    assert ranked_names == ["Good Proposal"]
+    assert result["composite"]["result"]["rank"]["data"]["filteredCount"] == 1
+
+    applied_names = [a["ranked"]["proposal"]["entity"]["name"] for a in result["applied"]]
+    assert applied_names == ["Good Proposal"]
+
+    entity_names = [e.name for e in store.list_entities()]
+    assert "Good Proposal" in entity_names
+    assert "Bad Proposal" not in entity_names
+
+
+def test_autoapply_rolls_back_entity_when_relation_batch_write_fails(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relation WRITE failure (post-gate, e.g. a race lost at commit) must
+    not leave the just-created entity behind: the saga removes it and the
+    failure is reported, so an entity without its proposed relations is never
+    a silent resting state."""
+    store = multi.get_store()
+    target = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "Batch Target", "entityType": "concept", "observations": ["obs"]}
+        )
+    )
+    _patch_proposals(monkeypatch, [_proposal("Proposed Thing", target.id)])
+    monkeypatch.setattr("theloom.composites.self_improve.simulate_change", _fake_simulate_change)
+
+    def boom(self: FalkorGraphStore, specs: Any) -> Any:
+        raise OperationError("simulated relation write failure")
+
+    monkeypatch.setattr(FalkorGraphStore, "create_relations", boom)
+
+    result = self_improve(
+        SelfImproveInput.model_validate({"autoApply": True, "applyTopN": 1}),
+        multi,
+    )
+
+    assert result["applied"] == []
+    assert result["failedWrites"] == []  # the gate passed; this was a write failure
+
+    apply_failures = result["applyFailures"]
+    assert len(apply_failures) == 1
+    failure = apply_failures[0]
+    assert failure["proposalEntityName"] == "Proposed Thing"
+    assert failure["stage"] == "createRelations"
+    assert "simulated relation write failure" in failure["reason"]
+    assert failure["rolledBackEntityId"]
+
+    # No orphan: the entity created just before the failed batch is gone.
+    entity_names = [e.name for e in store.list_entities()]
+    assert "Proposed Thing" not in entity_names
+
+
+def test_autoapply_reports_credit_propagation_failure(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Credit-propagation failure must surface in creditFailures — never be
+    silently suppressed — while the applied entity and relations stand."""
+    store = multi.get_store()
+    target = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "Credit Target", "entityType": "concept", "observations": ["obs"]}
+        )
+    )
+    _patch_proposals(monkeypatch, [_proposal("Credited Proposal", target.id)])
+    monkeypatch.setattr("theloom.composites.self_improve.simulate_change", _fake_simulate_change)
+
+    def failing_credit(_params: Any, _multi: Any) -> dict[str, Any]:
+        raise RuntimeError("credit propagation exploded")
+
+    monkeypatch.setattr("theloom.composites.self_improve.propagate_credit", failing_credit)
+
+    result = self_improve(
+        SelfImproveInput.model_validate({"autoApply": True, "applyTopN": 1}),
+        multi,
+    )
+
+    applied = result["applied"]
+    assert len(applied) == 1
+    assert len(applied[0]["createdRelationIds"]) == 1
+
+    credit_failures = result["creditFailures"]
+    assert len(credit_failures) == 1
+    assert credit_failures[0]["entityId"] == applied[0]["createdEntityId"]
+    assert credit_failures[0]["proposalEntityName"] == "Credited Proposal"
+    assert "credit propagation exploded" in credit_failures[0]["reason"]
+
+    # The applied entity and its relation survive a credit failure.
+    relations = store.list_relations()
+    assert any(r.from_ == applied[0]["createdEntityId"] and r.to == target.id for r in relations)
