@@ -8,8 +8,10 @@ mutation and bi-temporal point-in-time reads.
 
 from __future__ import annotations
 
+import itertools
 import re
 import time
+from collections.abc import Iterator
 
 import pytest
 from falkordb import FalkorDB
@@ -612,32 +614,48 @@ def _index_status_rows(status: str) -> list[list[object]]:
     return [["_Entity", {"_embedding": ["VECTOR"]}, status]]
 
 
+def _index_probe(statuses: Iterator[str], polls: dict[str, int]):  # type: ignore[no-untyped-def]
+    """Answer the two ``db.indexes()`` probes ensure_vector_index makes: the
+    width probe (no index yet, so the CREATE really runs) and the readiness
+    poll behind it, which walks ``statuses``."""
+
+    def probe(query: str, params: object = None) -> list[list[object]]:
+        assert "db.indexes" in query
+        if "options" in query:
+            return []
+        polls["count"] += 1
+        return _index_status_rows(next(statuses))
+
+    return probe
+
+
 def test_ensure_vector_index_waits_for_construction_to_finish(
     store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     statuses = iter(["UNDER CONSTRUCTION", "UNDER CONSTRUCTION", "OPERATIONAL"])
     polls = {"count": 0}
-
-    def fake_rows(query: str, params: object = None) -> list[list[object]]:
-        assert "db.indexes" in query
-        polls["count"] += 1
-        return _index_status_rows(next(statuses))
-
-    monkeypatch.setattr(store, "_rows", fake_rows)
+    monkeypatch.setattr(store, "_rows", _index_probe(statuses, polls))
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
-    store._wait_vector_index_operational(timeout=5.0)
+
+    store.ensure_vector_index(dimension=2)
+
     assert polls["count"] == 3
 
 
 def test_ensure_vector_index_raises_when_construction_never_finishes(
     store: FalkorGraphStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        store, "_rows", lambda query, params=None: _index_status_rows("UNDER CONSTRUCTION")
-    )
+    polls = {"count": 0}
+    monkeypatch.setattr(store, "_rows", _index_probe(itertools.repeat("UNDER CONSTRUCTION"), polls))
     monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    # A clock that runs a minute per reading, so the 30s barrier expires on the
+    # second poll instead of really blocking the suite for half a minute.
+    clock = itertools.count(0.0, 60.0)
+    monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+
     with pytest.raises(LoomError) as excinfo:
-        store._wait_vector_index_operational(timeout=0.01)
+        store.ensure_vector_index(dimension=2)
+
     assert "operational" in str(excinfo.value).lower()
 
 
