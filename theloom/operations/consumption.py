@@ -44,18 +44,27 @@ JSON-in/JSON-out contract holds.
 
 from __future__ import annotations
 
-import json
-import math
 import posixpath
-import re
-from collections import defaultdict
 from typing import Any
 
 from pydantic import Field
 
 from theloom.errors import NotFoundError
-from theloom.model import Relation, RelationFilter
+from theloom.extraction.encoding import (
+    is_file_entity_name,
+    parse_call_site_text,
+    parse_file_path,
+    parse_line_range,
+)
+from theloom.model import Relation
+from theloom.operations.blast_radius_traversal import group_by_module, run_traversal
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
+from theloom.operations.consumption_budget import (
+    allocate_rows,
+    json_cost,
+    rollup,
+    truncation_block,
+)
 from theloom.operations.entity import compact_entity_doc
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
@@ -110,12 +119,6 @@ SECTION_KEYS = (
     "semantic",
 )
 
-#: ``<caller> calls <callee> at <file>:<line>`` — the fixed evidence form the
-#: codebase extractor writes for every call edge.
-_CALL_SITE_RE = re.compile(r"\bat\s+(?P<site>\S+:\d+)\s*$")
-_FILE_PATH_PREFIX = "file path:"
-_LINE_RANGE_PREFIX = "line range:"
-
 
 # =============================================================================
 # Input models
@@ -156,16 +159,8 @@ class BlastRadiusInput(CommandInput):
 # =============================================================================
 
 
-def _observation(doc: dict[str, Any], prefix: str) -> str | None:
-    for observation in doc.get("observations") or []:
-        text = str(observation)
-        if text.lower().startswith(prefix):
-            return text[len(prefix) :].strip()
-    return None
-
-
 def _file_of(doc: dict[str, Any]) -> str | None:
-    return _observation(doc, _FILE_PATH_PREFIX)
+    return parse_file_path(doc.get("observations") or [])
 
 
 def _definition(doc: dict[str, Any]) -> str | None:
@@ -173,8 +168,11 @@ def _definition(doc: dict[str, Any]) -> str | None:
     path = _file_of(doc)
     if path is None:
         return None
-    lines = _observation(doc, _LINE_RANGE_PREFIX)
-    return f"{path}:{lines}" if lines else path
+    line_range = parse_line_range(doc.get("observations") or [])
+    if line_range is None:
+        return path
+    start_line, end_line = line_range
+    return f"{path}:{start_line + 1}-{end_line + 1}"
 
 
 def _module_of(doc: dict[str, Any]) -> str:
@@ -189,10 +187,7 @@ def _module_of(doc: dict[str, Any]) -> str:
 
 
 def _call_site(evidence: str | None) -> str | None:
-    if not evidence:
-        return None
-    match = _CALL_SITE_RE.search(evidence)
-    return match.group("site") if match else None
+    return parse_call_site_text(evidence)
 
 
 def _is_semantic(doc: dict[str, Any]) -> bool:
@@ -224,7 +219,7 @@ def _semantic_anchor(doc: dict[str, Any]) -> str | None:
 def _row(doc: dict[str, Any], *, at: str | None = None, kind: str | None = None) -> dict[str, Any]:
     """One neighbour line: who it is, where it lives, and — for a call edge —
     the call site it was reached through."""
-    row: dict[str, Any] = {"name": doc["name"], "entityType": doc["entityType"]}
+    row = _entity_header(doc)
     if kind is not None:
         row["kind"] = kind
     if at is not None:
@@ -235,31 +230,25 @@ def _row(doc: dict[str, Any], *, at: str | None = None, kind: str | None = None)
     return row
 
 
-def _cost(value: Any) -> int:
-    return len(json.dumps(value, separators=(",", ":")))
-
-
 def _rollup(rows: list[dict[str, Any]], key: str = "file") -> list[dict[str, Any]]:
     """Grouped counts for rows that did not fit — the count and the place
     survive even when the names do not. Code rows group by file; semantic-layer
     rows have no file, so they group by entity type instead."""
-    counts: dict[str, int] = defaultdict(int)
-    for row in rows:
-        counts[str(row.get(key) or UNKNOWN_FILE)] += 1
-    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    if len(ordered) <= MAX_ROLLUP_FILES:
-        return [{key: name, "count": count} for name, count in ordered]
-    head = ordered[:MAX_ROLLUP_FILES]
-    rest = sum(count for _, count in ordered[MAX_ROLLUP_FILES:])
-    entries = [{key: name, "count": count} for name, count in head]
-    entries.append({key: f"({len(ordered) - MAX_ROLLUP_FILES} more)", "count": rest})
-    return entries
+    return rollup(rows, key, max_entries=MAX_ROLLUP_FILES, unknown=UNKNOWN_FILE)
 
 
 def _section_rollup(key: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Semantic-layer entities live outside any file, so they roll up by type;
     everything else rolls up by file."""
     return _rollup(rows, "entityType") if key == "semantic" else _rollup(rows)
+
+
+def _entity_header(doc: dict[str, Any], **extra: Any) -> dict[str, Any]:
+    """The minimal way to name an entity in an output row — its name and
+    type — plus whatever this call site needs alongside it (an id to address
+    it by, a degree that got it suppressed, ...). One shape, filled in per
+    site, instead of a hand-rolled dict at each one."""
+    return {"name": doc["name"], "entityType": doc["entityType"], **extra}
 
 
 def _is_active(doc: dict[str, Any] | None) -> bool:
@@ -309,30 +298,12 @@ def _entity_doc(store: FalkorGraphStore, entity_id: str) -> dict[str, Any]:
 
 
 def _allocate(sections: dict[str, list[dict[str, Any]]], available: int) -> dict[str, int]:
-    """How many rows of each section fit the budget.
-
-    Round-robin, one row per section per pass, so a wide section can never eat
-    the budget before a narrow one is reached. The first row of every populated
-    section is unconditional: a section that exists must be visible, whatever
-    the budget says.
-    """
-    counts = {key: (1 if rows else 0) for key, rows in sections.items()}
-    spent = sum(_cost(rows[0]) for rows in sections.values() if rows)
-    blocked: set[str] = set()
-    while True:
-        progressed = False
-        for key, rows in sections.items():
-            if key in blocked or len(rows) <= counts[key]:
-                continue
-            cost = _cost(rows[counts[key]])
-            if spent + cost > available:
-                blocked.add(key)  # this row is too big; smaller rows elsewhere may still fit
-                continue
-            counts[key] += 1
-            spent += cost
-            progressed = True
-        if not progressed:
-            return counts
+    """How many rows of each section fit the budget: explore's policy
+    (byte-costed, first row of every populated section unconditional) over
+    ``allocate_rows``, the shared round-robin allocator."""
+    keys = list(sections)
+    counts = allocate_rows([sections[key] for key in keys], available, json_cost, floor=True)
+    return dict(zip(keys, counts, strict=True))
 
 
 def _semantic_rows(
@@ -352,7 +323,7 @@ def _semantic_rows(
             if not _is_semantic(doc):
                 continue
             seen.add(neighbour_id)
-            row: dict[str, Any] = {"name": doc["name"], "entityType": doc["entityType"]}
+            row = _entity_header(doc)
             anchor = _semantic_anchor(doc)
             if anchor is not None:
                 row["anchor"] = anchor
@@ -406,7 +377,7 @@ def explore(params: ExploreInput, multi: MultiGraph) -> dict[str, Any]:
             elif relation_type == "part_of":
                 if outgoing:
                     sections["partOf"].append(_row(other))
-                    if file_id is None and str(other["name"]).startswith("file:"):
+                    if file_id is None and is_file_entity_name(str(other["name"])):
                         file_id = other_id
                 else:
                     sections["contains"].append(_row(other))
@@ -440,16 +411,12 @@ def explore(params: ExploreInput, multi: MultiGraph) -> dict[str, Any]:
             section["byType" if key == "semantic" else "byFile"] = _section_rollup(key, dropped)
         result[key] = section
 
-    result["truncation"] = {
-        "applied": bool(cut),
-        "shown": shown,
-        "total": total,
-        "cut": cut,
-        "hint": _explore_hint(budget, total - shown),
-    }
+    result["truncation"] = truncation_block(
+        shown=shown, total=total, cut=cut, hint=_explore_hint(budget, total - shown)
+    )
     # The floor — the entity plus one row per populated section — is not
     # negotiable, so a budget below it is reported rather than obeyed.
-    spent_tokens = _cost(result) // CHARS_PER_TOKEN
+    spent_tokens = json_cost(result) // CHARS_PER_TOKEN
     if spent_tokens > budget:
         result["truncation"]["hint"] += (
             f" This answer is ~{spent_tokens} tokens: the entity plus one row per section is the "
@@ -465,20 +432,20 @@ def _overhead(head: dict[str, Any], sections: dict[str, list[dict[str, Any]]], b
     skeleton: dict[str, Any] = dict(head)
     for key, rows in sections.items():
         skeleton[key] = {"total": len(rows), "shown": []}
-    skeleton["truncation"] = {
-        "applied": True,
-        "shown": 0,
-        "total": 0,
-        "cut": {key: 0 for key in SECTION_KEYS},
-        "hint": _explore_hint(budget, 1),
-    }
+    skeleton["truncation"] = truncation_block(
+        shown=0,
+        total=0,
+        applied=True,
+        cut={key: 0 for key in SECTION_KEYS},
+        hint=_explore_hint(budget, 1),
+    )
     # Reserve the worst-case rollup for every section that can be cut: rolling
     # up fewer rows can only produce fewer groups, never more, so this is an
     # upper bound and the rollups can never overrun the budget behind our back.
     reserve = sum(
-        _cost(_section_rollup(key, rows)) for key, rows in sections.items() if len(rows) > 1
+        json_cost(_section_rollup(key, rows)) for key, rows in sections.items() if len(rows) > 1
     )
-    return _cost(skeleton) + reserve
+    return json_cost(skeleton) + reserve
 
 
 def _explore_hint(budget: int, dropped: int) -> str:
@@ -533,22 +500,21 @@ def _find_calls(params: FindCallsInput, multi: MultiGraph, *, incoming: bool) ->
     shown = rows[:limit]
     dropped = rows[limit:]
     result: dict[str, Any] = {
-        "entity": {"id": doc["id"], "name": doc["name"], "entityType": doc["entityType"]},
+        "entity": _entity_header(doc, id=doc["id"]),
         "callers" if incoming else "callees": shown,
     }
     if dropped:
         result["byFile"] = _rollup(dropped)
-    result["truncation"] = {
-        "applied": bool(dropped),
-        "shown": len(shown),
-        "total": len(rows),
-        "hint": (
+    result["truncation"] = truncation_block(
+        shown=len(shown),
+        total=len(rows),
+        hint=(
             f'{len(dropped)} row(s) past the limit of {limit} are rolled up in "byFile". '
             'Raise "limit" to list them.'
             if dropped
             else "Nothing was cut."
         ),
-    }
+    )
     return result
 
 
@@ -565,72 +531,12 @@ def find_callees(params: FindCallsInput, multi: MultiGraph) -> dict[str, Any]:
 # =============================================================================
 
 
-def _dependency_index(
-    store: FalkorGraphStore,
-) -> tuple[dict[str, list[str]], dict[str, int]]:
-    """``target -> dependants`` over the allowlist, plus each node's degree in
-    that same edge set. One server-side filtered query per relation type."""
-    dependants: dict[str, list[str]] = defaultdict(list)
-    degree: dict[str, int] = defaultdict(int)
-    for relation_type in BLAST_RELATION_TYPES:
-        relation_filter = RelationFilter.model_validate({"relationType": relation_type})
-        for relation in store.list_relations(relation_filter):
-            dependants[relation.to].append(relation.from_)
-            degree[relation.to] += 1
-            degree[relation.from_] += 1
-    return dependants, degree
-
-
-def _members_of(store: FalkorGraphStore, seed_id: str) -> list[str]:
-    """The seed's members, transitively, via part_of — one query, then a walk
-    over the projection. A change to a class is a change to its methods, so
-    callers bound to a method are inside the radius of the class; the members
-    themselves are seeds (reported as ``seededMembers``), not fallout."""
-    members: dict[str, list[str]] = defaultdict(list)
-    relation_filter = RelationFilter.model_validate({"relationType": "part_of"})
-    for relation in store.list_relations(relation_filter):
-        members[relation.to].append(relation.from_)
-    seeded: list[str] = []
-    seen = {seed_id}
-    frontier = [seed_id]
-    while frontier:
-        current = frontier.pop(0)
-        for member in members.get(current, []):
-            if member in seen:
-                continue
-            seen.add(member)
-            seeded.append(member)
-            frontier.append(member)
-    return seeded
-
-
-def _degree_threshold(degrees: list[int], percentile: float) -> int:
-    if not degrees:
-        return 0
-    ordered = sorted(degrees)
-    index = int(math.floor(percentile / 100 * (len(ordered) - 1)))
-    return ordered[index]
-
-
 def _spread(groups: list[list[dict[str, Any]]], limit: int) -> list[list[dict[str, Any]]]:
     """Take up to ``limit`` rows round-robin across groups, so a cut narrows
-    every module a little instead of erasing the last ones entirely."""
-    taken: list[list[dict[str, Any]]] = [[] for _ in groups]
-    remaining = limit
-    index = 0
-    while remaining > 0:
-        progressed = False
-        for position, group in enumerate(groups):
-            if remaining == 0:
-                break
-            if len(group) > index:
-                taken[position].append(group[index])
-                remaining -= 1
-                progressed = True
-        if not progressed:
-            break
-        index += 1
-    return taken
+    every module a little instead of erasing the last ones entirely — the
+    same allocator explore uses, without its first-row floor."""
+    counts = allocate_rows(groups, limit, floor=False)
+    return [group[:count] for group, count in zip(groups, counts, strict=True)]
 
 
 def blast_radius(params: BlastRadiusInput, multi: MultiGraph) -> dict[str, Any]:
@@ -645,95 +551,52 @@ def blast_radius(params: BlastRadiusInput, multi: MultiGraph) -> dict[str, Any]:
         params.hub_percentile if params.hub_percentile is not None else DEFAULT_HUB_PERCENTILE
     )
 
-    dependants, degree = _dependency_index(store)
-    docs: dict[str, dict[str, Any]] = {seed_id: seed_doc}
-    hydrated: set[str] = {seed_id}
-
-    def hydrate(entity_ids: list[str]) -> None:
-        unknown = [entity_id for entity_id in entity_ids if entity_id not in hydrated]
-        if unknown:
-            hydrated.update(unknown)
-            docs.update(store.read_entity_docs(unknown))
-
-    # Retired state is not current state, and retiring an entity does not delete
-    # its edges — so a superseded member, dependant or hub is neither fallout
-    # nor a route to it, and is dropped before it can be reported as either.
-    candidate_members = _members_of(store, seed_id)
-    hydrate(candidate_members)
-    members = [member for member in candidate_members if _is_active(docs.get(member))]
-    seeds = {seed_id, *members}
-    threshold = _degree_threshold(list(degree.values()), percentile)
-
-    # The seed and its members ARE the change, not its fallout: they seed the
-    # traversal (so a caller bound to a method is reached from the class) but
-    # they are reported as ``seededMembers``, never padded into ``affected``.
-    affected: dict[str, int] = {}
-    suppressed: dict[str, int] = {}
-    visited = set(seeds)
-    frontier = sorted(seeds)
-    for hop in range(depth):
-        candidates: list[str] = []
-        for node in frontier:
-            node_degree = degree.get(node, 0)
-            if node not in seeds and node_degree > threshold and node_degree >= MIN_HUB_DEGREE:
-                suppressed[node] = node_degree  # affected, but not a route to everything
-                continue
-            for dependant in dependants.get(node, []):
-                if dependant in visited:
-                    continue
-                visited.add(dependant)
-                candidates.append(dependant)
-        hydrate(candidates)
-        next_frontier = [node for node in candidates if _is_active(docs.get(node))]
-        for node in next_frontier:
-            affected[node] = hop + 1
-        frontier = next_frontier
-        if not frontier:
-            break
-
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for entity_id, hops in affected.items():
-        doc = docs[entity_id]  # only live, hydrated nodes ever enter ``affected``
-        grouped[_module_of(doc)].append({"name": doc["name"], "depth": hops})
-    for rows in grouped.values():
-        rows.sort(key=lambda row: (row["depth"], row["name"]))
-    modules = sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0]))
+    # The reverse-reachability walk, the hub rule, and module grouping live
+    # behind one interface — see blast_radius_traversal for why the
+    # calls/requires/instance_of scan stays global (the hub rule's threshold
+    # is a graph-wide percentile) while the part_of subtree walk is bounded.
+    traversal = run_traversal(
+        store,
+        seed_id,
+        seed_doc,
+        relation_types=BLAST_RELATION_TYPES,
+        depth=depth,
+        hub_percentile=percentile,
+        min_hub_degree=MIN_HUB_DEGREE,
+        is_active=_is_active,
+    )
+    docs = traversal.docs
+    modules = group_by_module(docs, traversal.affected, _module_of)
     kept = _spread([rows for _, rows in modules], limit)
 
     by_module = [
         {"module": module, "count": len(rows), "entities": kept[position]}
         for position, (module, rows) in enumerate(modules)
     ]
-    total = len(affected)
+    total = len(traversal.affected)
     shown = sum(len(rows) for rows in kept)
     hub_rows = [
-        {
-            "name": docs[hub_id]["name"] if hub_id in docs else hub_id,
-            "entityType": docs[hub_id]["entityType"] if hub_id in docs else "unknown",
-            "degree": hub_degree,
-        }
-        for hub_id, hub_degree in sorted(suppressed.items(), key=lambda item: -item[1])
+        _entity_header(
+            docs.get(hub_id, {"name": hub_id, "entityType": "unknown"}), degree=hub_degree
+        )
+        for hub_id, hub_degree in sorted(traversal.suppressed.items(), key=lambda item: -item[1])
     ]
     return {
-        "seed": {
-            "id": seed_doc["id"],
-            "name": seed_doc["name"],
-            "entityType": seed_doc["entityType"],
-        },
+        "seed": _entity_header(seed_doc, id=seed_doc["id"]),
         "depth": depth,
         "relationTypes": list(BLAST_RELATION_TYPES),
-        "seededMembers": len(members),
+        "seededMembers": len(traversal.members),
         "affected": {"total": total, "byModule": by_module},
         "suppressedHubs": hub_rows,
-        "truncation": {
-            # A suppressed hub withholds its whole dependant subtree, which
-            # never enters ``affected`` and so is counted by neither number:
-            # the list is incomplete even when every reached row is listed.
-            "applied": shown < total or bool(hub_rows),
-            "shown": shown,
-            "total": total,
-            "hint": _blast_hint(total - shown, limit, hub_rows, percentile),
-        },
+        # A suppressed hub withholds its whole dependant subtree, which never
+        # enters ``affected`` and so is counted by neither number: the list is
+        # incomplete even when every reached row is listed.
+        "truncation": truncation_block(
+            shown=shown,
+            total=total,
+            applied=shown < total or bool(hub_rows),
+            hint=_blast_hint(total - shown, limit, hub_rows, percentile),
+        ),
     }
 
 

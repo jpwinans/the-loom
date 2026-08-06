@@ -245,6 +245,19 @@ def test_no_changes_returns_the_empty_result(seeded: Path, multi: MultiGraph) ->
     assert set(result["stats"].values()) == {0}
 
 
+def test_exclude_keeps_a_changed_file_out_of_the_diff(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    (seeded / "src" / "service.py").write_text(REWRITTEN_SERVICE, encoding="utf-8")
+    commit(seeded, "rewrite the service on top of policy")
+
+    before = names(store)
+    result = update(seeded, multi, exclude=["src/*"])
+
+    assert result["changedFiles"] == []
+    assert names(store) == before
+
+
 def test_changed_file_relations_are_rediffed(
     seeded: Path, multi: MultiGraph, store: FalkorGraphStore
 ) -> None:
@@ -336,6 +349,26 @@ def test_a_hand_authored_reference_into_changed_code_survives(
     live = edges(store)
     assert ("Transfers must check the policy ceiling", "file:src/service.py", "references") in live
     assert result["stats"]["relationsRemoved"] == 2
+
+
+def test_a_new_mention_resolves_to_a_superseded_entity_sharing_its_name(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """A relation naming an entity this diff doesn't otherwise touch, and that
+    isn't currently active (superseded for some unrelated reason before this
+    update ran), resolves with the same active-preferred name->id tie-break
+    bulk import uses for its own relation resolution — rather than being
+    silently dropped because name_to_id only ever saw active entities."""
+    target = entity_by_name(store, "transfer (service)")
+    store.update_entity(target.id, {"status": "superseded", "statusReason": "duplicate"})
+
+    doc = seeded / "docs" / "architecture.md"
+    doc.write_text(doc.read_text(encoding="utf-8") + "\nSee also `transfer()`.\n", encoding="utf-8")
+    commit(seeded, "mention transfer in the docs")
+
+    update(seeded, multi)
+
+    assert ("file:docs/architecture.md", "transfer (service)", "references") in edges(store)
 
 
 def test_editing_a_doc_retracts_the_mentions_it_dropped(
@@ -607,6 +640,51 @@ def test_guard_runs_before_a_dry_run_reports(seeded: Path, multi: MultiGraph) ->
 
     with pytest.raises(OperationError):
         update(seeded, multi, dry_run=True)
+
+
+def test_guard_ignores_a_file_that_becomes_git_untracked_before_the_update(
+    repo: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """A file the diff names must be judged in scope by the *same* rule
+    extraction itself uses (git tracking included), or a file that legitimately
+    left scope between the named commits and the current working tree looks
+    like a collapse and trips the guard for no reason."""
+    tool = repo / "tools" / "gen.py"
+    tool.parent.mkdir()
+    tool.write_text(
+        '"""Codegen tool."""\n\n\ndef generate() -> str:\n    return "gen"\n', encoding="utf-8"
+    )
+    commit(repo, "add the codegen tool")
+    before_sha = git(repo, "rev-parse", "HEAD").strip()
+
+    extraction = treesitter.extract_codebase(str(repo))
+    bulk_import(
+        BulkImportInput.model_validate(
+            {
+                "entities": extraction["entities"],
+                "relations": extraction["relations"],
+                "graph": GRAPH,
+            }
+        ),
+        multi,
+    )
+    assert "generate (gen)" in names(store)
+
+    tool.write_text(
+        '"""Codegen tool."""\n\n\ndef generate() -> str:\n    return "generated"\n',
+        encoding="utf-8",
+    )
+    commit(repo, "tweak the codegen tool")
+    after_sha = git(repo, "rev-parse", "HEAD").strip()
+
+    (repo / ".gitignore").write_text("tools/\n", encoding="utf-8")
+    git(repo, "rm", "--cached", "tools/gen.py")
+    commit(repo, "stop tracking the codegen tool")
+
+    result = update(repo, multi, git_ref=f"{before_sha}..{after_sha}")
+
+    assert result["stats"]["entitiesRetracted"] == 0
+    assert "generate (gen)" in names(store)
 
 
 def _all_statuses() -> EntityFilter:

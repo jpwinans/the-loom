@@ -140,7 +140,14 @@ class TestResolveCalls:
                 "unresolvedCalls": [],
             },
         ]
-        out = resolution.resolve_calls(per_file, FILES)
+        out = resolution.resolve_symbol_edges(
+            per_file,
+            FILES,
+            field="unresolvedCalls",
+            relation_type="calls",
+            verb="calls",
+            anchored=True,
+        )
         assert [(r["from"], r["to"], r["relationType"]) for r in out["relations"]] == [
             ("onboard (service)", "open_account (models)", "calls")
         ]
@@ -152,7 +159,7 @@ class TestResolveCalls:
         )
         assert out["relations"][0]["polarity"] is None
         assert out["relations"][0]["confidence"]["basis"] == "direct_observation"
-        assert out["stats"]["importGuidedCalls"] == 1
+        assert out["stats"]["proven"] == 1
 
     def test_a_project_unique_name_resolves_as_a_deduction(self) -> None:
         per_file = [
@@ -175,7 +182,14 @@ class TestResolveCalls:
                 "unresolvedCalls": [],
             },
         ]
-        out = resolution.resolve_calls(per_file, FILES)
+        out = resolution.resolve_symbol_edges(
+            per_file,
+            FILES,
+            field="unresolvedCalls",
+            relation_type="calls",
+            verb="calls",
+            anchored=True,
+        )
         assert out["relations"][0]["to"] == "only_one (models)"
         assert out["relations"][0]["relationType"] == "calls"
         # A deduced edge is anchored the same way; only the confidence basis
@@ -186,7 +200,7 @@ class TestResolveCalls:
         )
         # No import names it, so the link is deduced rather than observed.
         assert out["relations"][0]["confidence"]["basis"] == "inference"
-        assert out["stats"]["uniqueNameCalls"] == 1
+        assert out["stats"]["inferred"] == 1
 
     def test_an_ambiguous_name_resolves_to_nothing(self) -> None:
         """A wrong edge is worse than a missing one: cycles, centrality and
@@ -215,9 +229,16 @@ class TestResolveCalls:
                 "symbolKinds": {"run": "procedure"},
             },
         ]
-        out = resolution.resolve_calls(per_file, FILES)
+        out = resolution.resolve_symbol_edges(
+            per_file,
+            FILES,
+            field="unresolvedCalls",
+            relation_type="calls",
+            verb="calls",
+            anchored=True,
+        )
         assert out["relations"] == []
-        assert out["stats"]["ambiguousCallsSkipped"] == 1
+        assert out["stats"]["ambiguous"] == 1
 
     def test_import_evidence_beats_an_ambiguous_name(self) -> None:
         per_file = [
@@ -230,7 +251,14 @@ class TestResolveCalls:
             {"path": "src/models.py", "imports": [], "symbols": {"run": "run (models)"}},
             {"path": "lib/helper.js", "imports": [], "symbols": {"run": "run (helper)"}},
         ]
-        out = resolution.resolve_calls(per_file, FILES)
+        out = resolution.resolve_symbol_edges(
+            per_file,
+            FILES,
+            field="unresolvedCalls",
+            relation_type="calls",
+            verb="calls",
+            anchored=True,
+        )
         assert [(r["from"], r["to"], r["relationType"]) for r in out["relations"]] == [
             ("onboard (service)", "run (models)", "calls")
         ]
@@ -280,7 +308,7 @@ class TestUniqueNameGuards:
     """
 
     def _calls(self, callee: str, target_lang: str, target_kind: str) -> dict[str, object]:
-        return resolution.resolve_calls(
+        return resolution.resolve_symbol_edges(
             [
                 {
                     "path": "src/service.py",
@@ -302,6 +330,10 @@ class TestUniqueNameGuards:
                 },
             ],
             FILES,
+            field="unresolvedCalls",
+            relation_type="calls",
+            verb="calls",
+            anchored=True,
         )
 
     def test_a_language_builtin_never_resolves(self) -> None:
@@ -345,7 +377,13 @@ class TestResolveInheritances:
                 "unresolvedInheritances": [],
             },
         ]
-        out = resolution.resolve_inheritances(per_file, FILES)
+        out = resolution.resolve_symbol_edges(
+            per_file,
+            FILES,
+            field="unresolvedInheritances",
+            relation_type="instance_of",
+            verb="extends",
+        )
         assert [(r["from"], r["to"], r["relationType"]) for r in out["relations"]] == [
             ("Savings (service)", "Account (models)", "instance_of")
         ]
@@ -355,7 +393,7 @@ class TestResolveInheritances:
             out["relations"][0]["evidence"]
             == "Savings (service) extends Account, imported from src/models.py"
         )
-        assert out["stats"]["importGuidedInheritances"] == 1
+        assert out["stats"]["proven"] == 1
 
     def test_an_ambiguous_base_class_resolves_to_nothing(self) -> None:
         per_file = [
@@ -382,9 +420,15 @@ class TestResolveInheritances:
                 "symbolKinds": {"Base": "concept"},
             },
         ]
-        out = resolution.resolve_inheritances(per_file, FILES)
+        out = resolution.resolve_symbol_edges(
+            per_file,
+            FILES,
+            field="unresolvedInheritances",
+            relation_type="instance_of",
+            verb="extends",
+        )
         assert out["relations"] == []
-        assert out["stats"]["ambiguousInheritancesSkipped"] == 1
+        assert out["stats"]["ambiguous"] == 1
 
 
 class TestEndToEnd:

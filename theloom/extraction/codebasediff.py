@@ -41,24 +41,28 @@ from __future__ import annotations
 import os
 import subprocess
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from theloom.errors import OperationError
 from theloom.extraction import doclinks, treesitter
-from theloom.model import Entity, EntityCreate, RelationCreate
+from theloom.extraction.encoding import is_file_entity_name, parse_file_entity_name, parse_file_path
+from theloom.model import Entity, EntityCreate, EntityFilter, RelationCreate
 from theloom.store.falkor import FalkorGraphStore
+from theloom.store.filters import NON_RETRACTED_ENTITY_STATUSES, prefer_active_by_name
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
 
+# Fallback pool for resolving a relation endpoint's name to an id when it
+# isn't among the (active-only) entities the planner already read — see
+# ``_plan_update``'s ``name_to_id`` fallback.
+_NON_RETRACTED = EntityFilter.model_validate({"statusFilter": list(NON_RETRACTED_ENTITY_STATUSES)})
+
 # (fromName, toName, relationType) — the identity of an edge across extractions.
 RelationKey = tuple[str, str, str]
-
-_FILE_PREFIX = "file:"
-_FILE_PATH_OBSERVATION = "File path: "
 
 # Why an entity stopped appearing, in the model's closed vocabulary. The prose
 # form the user reads travels on ``changeReason``.
@@ -83,18 +87,14 @@ _STRUCTURAL_RELATION_TYPES = frozenset(
 _DOC_SUFFIXES = tuple(f".{extension}" for extension in sorted(doclinks.DOC_EXTENSIONS))
 
 
-def _is_extractable(path: str) -> bool:
-    """True when extraction would collect this path — one rule, treesitter's."""
-    parts = path.split("/")
-    if any(part in treesitter.SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
-        return False
-    return (
-        treesitter.detect_language(path) is not None
-        or treesitter.detect_text_kind(path) is not None
-    )
-
-
-def _detect_changed_files(project_path: str, git_ref: str) -> list[Doc]:
+def _detect_changed_files(
+    project_path: str,
+    git_ref: str,
+    *,
+    include_tests: bool,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> list[Doc]:
     if ".." in git_ref:
         left, right = git_ref.split("..", 1)
         args = ["git", "diff", "--name-status", "--diff-filter=ACDMR", left, right]
@@ -106,10 +106,38 @@ def _detect_changed_files(project_path: str, git_ref: str) -> list[Doc]:
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return []
-    return _parse_git_diff(output)
+    is_extractable = treesitter.extractable_paths(
+        project_path, include_tests=include_tests, include=include, exclude=exclude
+    )
+    return _parse_git_diff(output, is_extractable, include=include, exclude=exclude)
 
 
-def _parse_git_diff(output: str) -> list[Doc]:
+def _is_extractable_shape(
+    path: str, *, include: Sequence[str] | None, exclude: Sequence[str] | None
+) -> bool:
+    """The part of treesitter's rule that survives the file being gone: path
+    shape alone (skip directories, extension/text-kind, include/exclude
+    globs). Used only for a deletion, where the file no longer exists to
+    stat, read, or check git tracking on — every other status defers to
+    ``treesitter.extractable_paths`` in full.
+    """
+    parts = path.split("/")
+    if any(part in treesitter.SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
+        return False
+    if treesitter.detect_language(path) is None and treesitter.detect_text_kind(path) is None:
+        return False
+    if include and not treesitter.matches_globs(path, include):
+        return False
+    return not treesitter.matches_globs(path, exclude)
+
+
+def _parse_git_diff(
+    output: str,
+    is_extractable: Callable[[str], bool],
+    *,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> list[Doc]:
     changes: list[Doc] = []
     status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "added", "C": "added"}
     for line in output.splitlines():
@@ -118,7 +146,12 @@ def _parse_git_diff(output: str) -> list[Doc]:
             continue
         status = parts[0][0]
         path = parts[2] if status in ("R", "C") and len(parts) >= 3 else parts[1]
-        if not _is_extractable(path):
+        in_scope = (
+            _is_extractable_shape(path, include=include, exclude=exclude)
+            if status == "D"
+            else is_extractable(path)
+        )
+        if not in_scope:
             continue
         change = status_map.get(status)
         if change:
@@ -144,13 +177,10 @@ def _empty_result(changed_files: list[str]) -> Doc:
 
 def _file_of(name: str, observations: Sequence[Any]) -> str | None:
     """The project file an entity was extracted from, or None (e.g. a package)."""
-    if name.startswith(_FILE_PREFIX):
-        return name[len(_FILE_PREFIX) :]
-    for observation in observations:
-        text = str(observation)
-        if text.startswith(_FILE_PATH_OBSERVATION):
-            return text[len(_FILE_PATH_OBSERVATION) :]
-    return None
+    file_path = parse_file_entity_name(name)
+    if file_path is not None:
+        return file_path
+    return parse_file_path(observations)
 
 
 @dataclass
@@ -186,8 +216,19 @@ def _plan_update(changed: list[Doc], extraction: Doc, store: FalkorGraphStore) -
     for entity in existing:
         existing_by_name.setdefault(entity.name, entity)
 
+    name_to_id = {name: entity.id for name, entity in existing_by_name.items()}
+    # A relation may name an entity this update doesn't otherwise touch and
+    # that isn't currently active (superseded by something unrelated to this
+    # diff) — resolved with the same name->id tie-break bulk import uses for
+    # its own relation resolution (prefer active, else first-seen over every
+    # non-retracted status) rather than left unresolvable and silently
+    # dropped just because `existing` above only ever saw actives.
+    if extraction["relations"]:
+        for name, entity in prefer_active_by_name(store.list_entities(_NON_RETRACTED)).items():
+            name_to_id.setdefault(name, entity.id)
+
     plan = _Plan(
-        name_to_id={name: entity.id for name, entity in existing_by_name.items()},
+        name_to_id=name_to_id,
         supersedable_total=sum(1 for e in existing if existing_file.get(e.name) is not None),
     )
 
@@ -235,7 +276,7 @@ def _is_structural(relation_type: str, from_name: str, from_path: str | None) ->
     if relation_type != "references":
         return True
     return (
-        from_name.startswith(_FILE_PREFIX)
+        is_file_entity_name(from_name)
         and from_path is not None
         and from_path.endswith(_DOC_SUFFIXES)
     )
@@ -391,13 +432,30 @@ def _relation_spec(relation: Doc, name_to_id: dict[str, str]) -> RelationCreate:
     return RelationCreate.model_validate(spec)
 
 
-def _apply(plan: _Plan, store: FalkorGraphStore) -> list[str]:
-    """Write the plan; returns every entity id the update touched."""
+@dataclass
+class _ApplyResult:
+    """What ``_apply`` wrote. ``changed_ids`` is every entity id the update
+    touched (created, updated, or superseded) — the wire ``changedEntityIds``.
+    ``created_entity_ids``/``created_relation_ids`` are the strict subset this
+    run actually *created*: safe for a rollback to hard-delete, unlike an
+    update or a supersession, which changed something that predates this run.
+    """
+
+    changed_ids: list[str]
+    created_entity_ids: list[str]
+    created_relation_ids: list[str]
+
+
+def _apply(plan: _Plan, store: FalkorGraphStore) -> _ApplyResult:
+    """Write the plan."""
     changed_ids: list[str] = []
+    created_entity_ids: list[str] = []
+    created_relation_ids: list[str] = []
     for doc in plan.creates:
         created = store.create_entity(_entity_spec(doc))
         plan.name_to_id[doc["name"]] = created.id
         changed_ids.append(created.id)
+        created_entity_ids.append(created.id)
     for entity_id, doc in plan.updates:
         store.update_entity(entity_id, {"observations": doc["observations"]})
         changed_ids.append(entity_id)
@@ -415,8 +473,11 @@ def _apply(plan: _Plan, store: FalkorGraphStore) -> list[str]:
     for doc in plan.retract_relations:
         store.invalidate_relation(doc["from"], doc["to"], doc["relationType"])
     for relation in plan.create_relations:
-        store.create_relation(_relation_spec(relation, plan.name_to_id))
-    return changed_ids
+        created_relation = store.create_relation(_relation_spec(relation, plan.name_to_id))
+        created_relation_ids.append(
+            f"{created_relation.from_}->{created_relation.to}->{created_relation.relation_type.value}"
+        )
+    return _ApplyResult(changed_ids, created_entity_ids, created_relation_ids)
 
 
 def update_codebase_diff(
@@ -425,6 +486,8 @@ def update_codebase_diff(
     *,
     git_ref: str = "HEAD~1..HEAD",
     include_tests: bool = True,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
     multi: MultiGraph,
@@ -432,12 +495,17 @@ def update_codebase_diff(
     if not os.path.exists(project_path):
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
-    changed = _detect_changed_files(project_path, git_ref)
+    started_at = iso_now()
+    changed = _detect_changed_files(
+        project_path, git_ref, include_tests=include_tests, include=include, exclude=exclude
+    )
     if not changed:
         return _empty_result([])
 
     store = multi.get_store(graph_name)
-    extraction = treesitter.extract_codebase(project_path, include_tests=include_tests)
+    extraction = treesitter.extract_codebase(
+        project_path, include_tests=include_tests, include=include, exclude=exclude
+    )
     plan = _plan_update(changed, extraction, store)
 
     if not force:
@@ -448,9 +516,17 @@ def update_codebase_diff(
                 'Re-run with "force": true to apply it anyway.'
             )
 
+    apply_result = _ApplyResult([], [], []) if dry_run else _apply(plan, store)
+    run_id = multi.run_store().save_codebase_run(
+        started_at=started_at,
+        created_entity_ids=apply_result.created_entity_ids,
+        created_relation_ids=apply_result.created_relation_ids,
+        dry_run=dry_run,
+    )
     return {
         "changedFiles": [change["path"] for change in changed],
         "entityDiffs": _entity_diffs(plan),
         "stats": _stats(plan),
-        "changedEntityIds": [] if dry_run else _apply(plan, store),
+        "changedEntityIds": apply_result.changed_ids,
+        "runId": run_id,
     }

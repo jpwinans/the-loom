@@ -28,7 +28,19 @@ import os
 import posixpath
 from typing import Any
 
+from theloom.extraction.encoding import call_evidence as call_evidence
+from theloom.extraction.encoding import file_entity_name as file_entity_name
+from theloom.extraction.encoding import symbol_kind_observation
+
 Doc = dict[str, Any]
+
+# ``call_evidence`` and ``file_entity_name`` used to be defined here; they now
+# live in ``theloom.extraction.encoding`` (the one place the codebase-graph
+# encoding is built and parsed) and are imported back in — with the explicit
+# ``as``-re-export mypy strict mode requires to treat them as this module's
+# own public names — so existing importers (``from theloom.extraction.resolution
+# import file_entity_name``, used by ``theloom.extraction.doclinks``) keep
+# working unchanged.
 
 # Suffix probes for a module specifier that omits its extension, in the order a
 # bundler would try them. ``/index`` forms come last so ``./x.ts`` wins over
@@ -129,19 +141,6 @@ BUILTIN_NAMES = frozenset(
 )
 
 
-def call_evidence(caller: str, callee: str, path: str, line: int) -> str:
-    """Evidence for a call edge, anchored at the **call site**.
-
-    One fixed, parseable format for every call edge, whichever pass emitted it:
-    ``<caller> calls <callee> at <file>:<line>``. ``line`` is 0-based (the
-    tree-sitter convention the extractor carries) and renders 1-based. The site
-    is where the call is written, not where the callee is defined — following
-    an edge means reading the caller. How the target was established is carried
-    by ``confidence.basis``, not by prose, so the format stays fixed.
-    """
-    return f"{caller} calls {callee} at {path}:{line + 1}"
-
-
 # Where a repository keeps its tests, across the conventions the supported
 # languages use: a marked file name (``x.test.ts``, ``test_x.py``, ``x_test.go``)
 # or a directory set aside for them.
@@ -168,11 +167,6 @@ def is_test_path(path: str) -> bool:
         return True
     stem = segments[-1].rsplit(".", 1)[0]
     return stem == "conftest" or stem.startswith("test_") or stem.endswith("_test")
-
-
-def file_entity_name(path: str) -> str:
-    """The entity name the extractor gives a file."""
-    return f"file:{path}"
 
 
 def external_entity_name(package: str) -> str:
@@ -321,7 +315,7 @@ def resolve_imports(
                             "entityType": "system",
                             "observations": [
                                 f"Package: {package}",
-                                "Symbol kind: ExternalPackage",
+                                symbol_kind_observation("ExternalPackage"),
                                 "Dependency: third-party (not a file in this project)",
                             ],
                             "provenance": {
@@ -377,7 +371,7 @@ def _imported_symbol_origin(
     return None
 
 
-def _resolve_symbol_edges(
+def resolve_symbol_edges(
     per_file: list[Doc],
     known_files: frozenset[str],
     *,
@@ -396,10 +390,14 @@ def _resolve_symbol_edges(
     picking one would be a guess presented as structure.
 
     Calls and base classes differ only in the edge they produce, so both run
-    through this one resolver. ``anchored`` picks the evidence form: a call
-    site carries a line, so its evidence is the fixed ``call_evidence`` format
-    and the proven/deduced distinction is left to ``confidence.basis``; a base
-    class has no site, so its evidence spells out how it was resolved.
+    through this one resolver: the caller (``treesitter.extract_from_files``)
+    passes ``field``/``relation_type``/``verb``/``anchored`` for each, and
+    renames ``stats``' generic ``proven``/``inferred``/``ambiguous`` to its own
+    ``*Calls``/``*Inheritances`` wire names. ``anchored`` picks the evidence
+    form: a call site carries a line, so its evidence is the fixed
+    ``call_evidence`` format and the proven/deduced distinction is left to
+    ``confidence.basis``; a base class has no site, so its evidence spells out
+    how it was resolved.
     """
     # (file, bare symbol name) -> entity name; and, for the unique-name rule,
     # bare name -> every candidate with the language and kind needed to judge it.
@@ -473,56 +471,6 @@ def _resolve_symbol_edges(
     return {
         "relations": relations,
         "stats": {"proven": proven_count, "inferred": inferred_count, "ambiguous": ambiguous},
-    }
-
-
-def resolve_calls(per_file: list[Doc], known_files: frozenset[str]) -> Doc:
-    """Cross-file calls: ``calls``, matching the per-file pass's convention.
-
-    Every edge is anchored at its call site — the line in the *caller's* file
-    where the call is written.
-    """
-    out = _resolve_symbol_edges(
-        per_file,
-        known_files,
-        field="unresolvedCalls",
-        relation_type="calls",
-        verb="calls",
-        anchored=True,
-    )
-    stats = out["stats"]
-    return {
-        "relations": out["relations"],
-        "stats": {
-            "importGuidedCalls": stats["proven"],
-            "uniqueNameCalls": stats["inferred"],
-            "ambiguousCallsSkipped": stats["ambiguous"],
-        },
-    }
-
-
-def resolve_inheritances(per_file: list[Doc], known_files: frozenset[str]) -> Doc:
-    """Base classes defined in another file: ``instance_of``.
-
-    Naming an imported base class as though it lived in the subclass's file
-    invents an entity that is never created, so the edge is dropped on import —
-    the same defect that lost every import edge.
-    """
-    out = _resolve_symbol_edges(
-        per_file,
-        known_files,
-        field="unresolvedInheritances",
-        relation_type="instance_of",
-        verb="extends",
-    )
-    stats = out["stats"]
-    return {
-        "relations": out["relations"],
-        "stats": {
-            "importGuidedInheritances": stats["proven"],
-            "uniqueNameInheritances": stats["inferred"],
-            "ambiguousInheritancesSkipped": stats["ambiguous"],
-        },
     }
 
 
