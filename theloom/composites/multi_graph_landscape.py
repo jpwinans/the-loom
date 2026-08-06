@@ -13,26 +13,12 @@ from typing import Any
 from theloom.composites.framework import failed_section, run_composite, time_section
 from theloom.operations.analysis import GraphOnlyInput, graph_stats
 from theloom.operations.common import CommandInput
+from theloom.operations.multigraph import GraphInput, find_related_graphs
 from theloom.store.multigraph import MultiGraph
 
 
 class MultiGraphLandscapeInput(CommandInput):
     graph: str | None = None
-
-
-def _find_related(multi: MultiGraph, graph: str) -> list[str]:
-    """Mirror of registry `_find_related_graphs`: bridges touching `graph`."""
-    if not multi.has_graph(graph):
-        from theloom.errors import NotFoundError
-
-        raise NotFoundError(f"Graph '{graph}' not found. Use list_graphs to see available graphs.")
-    related: set[str] = set()
-    for bridge in multi.bridges.list_bridges():
-        if bridge["from_graph"] == graph:
-            related.add(bridge["to_graph"])
-        if bridge["to_graph"] == graph:
-            related.add(bridge["from_graph"])
-    return sorted(related)
 
 
 def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -> dict[str, Any]:
@@ -92,7 +78,7 @@ def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -
         focus_graph = params.graph
 
         def _related_specific() -> dict[str, list[str]]:
-            return {focus_graph: _find_related(multi, focus_graph)}
+            return {focus_graph: find_related_graphs(GraphInput(graph=focus_graph), multi)}
 
         related_section = time_section(_related_specific)
     elif graphs_unavailable:
@@ -100,7 +86,10 @@ def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -
     else:
 
         def _related_all() -> dict[str, list[str]]:
-            return {g["name"]: _find_related(multi, g["name"]) for g in graphs_section["data"]}
+            return {
+                g["name"]: find_related_graphs(GraphInput(graph=g["name"]), multi)
+                for g in graphs_section["data"]
+            }
 
         related_section = time_section(_related_all)
 
