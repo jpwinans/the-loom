@@ -12,8 +12,13 @@ prefix. Hybrid fusion uses raw (un-normalized) weights .6/.25/.15 over vector/
 keyword/graph signals, recency decays by half-life before MMR, and quality
 groups split on score gaps (mean*1.5*strategy, min 0.05).
 
-The one-shot CLI never accumulates queue state, so flush/retry/dead-letters/
-pipelineStatus report empty-queue shapes.
+The one-shot CLI never accumulates an in-memory queue, so pipelineStatus
+reports an empty-queue shape (isProcessing, lastProcessedAt, …) — but
+flush-pending-embeddings, retry-failed-embeddings and list-dead-letters are
+not queue reports; they act on the embedding state machine
+(theloom/semantic/embedding_state.py) directly: flush embeds everything
+needs_embedding, retry re-embeds status=error entities, and dead-letters
+lists status=error entities with their embeddingError.
 
 Tier note: document vectors are stored verbatim, but live query vectors come
 from fastembed — so ranked outputs are embedding-ranked, while
@@ -32,7 +37,7 @@ from pydantic import Field
 from theloom.config import load_config
 from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
-from theloom.model import ALL_RELATION_TYPES, EntityFilter, EntityType
+from theloom.model import ALL_RELATION_TYPES, EmbeddingStatus, EntityFilter, EntityType
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
@@ -40,6 +45,14 @@ from theloom.semantic.embed import (
     build_embedding_text,
     compute_content_hash,
     get_embedder,
+)
+from theloom.semantic.embedding_state import (
+    apply_reconcile_action,
+    mark_completed,
+    mark_error,
+    needs_embedding,
+    plan_reconcile,
+    status_counts,
 )
 from theloom.semantic.ranking import (
     DEFAULT_RECENCY_HALF_LIFE_DAYS,
@@ -54,7 +67,6 @@ from theloom.semantic.ranking import (
 from theloom.semantic.search import search_entities
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
-from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
 
@@ -103,14 +115,6 @@ STOP_WORDS = frozenset(
         "may",
     }
 )
-EMPTY_PROGRESS = {
-    "total": 0,
-    "completed": 0,
-    "skipped": 0,
-    "failed": 0,
-    "currentBatch": 0,
-    "totalBatches": 1,
-}
 
 
 def _empty_pipeline_status() -> dict[str, Any]:
@@ -320,31 +324,22 @@ _EMBED_TYPES_MSG = (
 
 
 def _embed_one(store: FalkorGraphStore, entity: Doc, skip_hash_check: bool) -> dict[str, Any]:
-    """The pipeline's embedEntity: hash-skip, embed, store vector + metadata."""
-    current_hash = compute_content_hash(entity)
-    if (
-        not skip_hash_check
-        and entity.get("embeddingStatus") == "completed"
-        and entity.get("contentHash") == current_hash
-    ):
+    """The pipeline's embedEntity: hash-skip, embed, store vector + metadata.
+
+    The skip predicate and the transition writes both live in
+    :mod:`theloom.semantic.embedding_state` — this is thin over it."""
+    if not skip_hash_check and not needs_embedding(entity):
         return {"entityId": entity["id"], "status": "skipped"}
+    current_hash = compute_content_hash(entity)
     try:
         vector = get_embedder().embed_document(build_embedding_text(entity))
         store.ensure_vector_index()
         store.set_entity_vector(entity["id"], vector)
-        store.update_entity(
-            entity["id"],
-            {
-                "embeddingStatus": "completed",
-                "contentHash": current_hash,
-                "lastEmbeddedAt": iso_now(),
-                "embeddingVersion": EMBEDDING_VERSION,
-            },
-        )
+        mark_completed(store, entity["id"], current_hash)
         return {"entityId": entity["id"], "status": "embedded", "contentHash": current_hash}
     except Exception as exc:
         message = str(exc)
-        store.update_entity(entity["id"], {"embeddingStatus": "error", "embeddingError": message})
+        mark_error(store, entity["id"], message)
         return {"entityId": entity["id"], "status": "error", "error": message}
 
 
@@ -405,14 +400,38 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
     for start in range(0, total, batch_size):
         progress["currentBatch"] += 1
         for entity in entities[start : start + batch_size]:
-            if not params.force_reembed:
-                current_hash = compute_content_hash(entity)
-                if (
-                    entity.get("embeddingStatus") == "completed"
-                    and entity.get("contentHash") == current_hash
-                ):
-                    progress["skipped"] += 1
-                    continue
+            if not params.force_reembed and not needs_embedding(entity):
+                progress["skipped"] += 1
+                continue
+            result = _embed_one(store, entity, skip_hash_check=True)
+            if result["status"] == "embedded":
+                progress["completed"] += 1
+            elif result["status"] == "skipped":
+                progress["skipped"] += 1
+            else:
+                progress["failed"] += 1
+    return progress
+
+
+def _batch_embed(store: FalkorGraphStore, entities: list[Doc]) -> dict[str, Any]:
+    """Embed every entity in ``entities`` unconditionally (the caller already
+    decided the selection), batched for the same progress shape
+    ``embed_entities`` reports."""
+    batch_size = 16
+    total = len(entities)
+    progress = {
+        "total": total,
+        "completed": 0,
+        "skipped": 0,
+        "failed": 0,
+        "currentBatch": 0,
+        "totalBatches": max(1, math.ceil(total / batch_size)),
+    }
+    if total == 0:
+        return progress
+    for start in range(0, total, batch_size):
+        progress["currentBatch"] += 1
+        for entity in entities[start : start + batch_size]:
             result = _embed_one(store, entity, skip_hash_check=True)
             if result["status"] == "embedded":
                 progress["completed"] += 1
@@ -424,62 +443,61 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
 
 
 def flush_pending_embeddings(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
-    # One-shot CLI: the in-memory queue is empty by construction.
-    return dict(EMPTY_PROGRESS)
+    """Embed every entity the state machine says needs it. The one-shot CLI
+    never accumulates an in-memory queue to drain — flushing IS embedding,
+    now, over exactly the ``needs_embedding`` set."""
+    store = multi.get_store(params.graph)
+    pending = [e for e in _entity_docs(store) if needs_embedding(e)]
+    return _batch_embed(store, pending)
 
 
 def retry_failed_embeddings(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
-    return {"retriedCount": 0, "results": dict(EMPTY_PROGRESS)}
+    """Re-embed every entity whose last attempt landed in ``error``."""
+    store = multi.get_store(params.graph)
+    failed = [
+        e for e in _entity_docs(store) if e.get("embeddingStatus") == EmbeddingStatus.ERROR.value
+    ]
+    return {"retriedCount": len(failed), "results": _batch_embed(store, failed)}
 
 
 def embedding_status(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
-    counts: dict[str, int] = {"pending": 0, "processing": 0, "completed": 0, "error": 0, "none": 0}
     entities = _entity_docs(store)
-    for entity in entities:
-        status = entity.get("embeddingStatus") or "none"
-        counts[status] = counts.get(status, 0) + 1
+    counts = status_counts(entities)
     counts["total"] = len(entities)
     return {"counts": counts, "pipelineStatus": _empty_pipeline_status()}
 
 
 def list_dead_letters(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
-    return {"deadLetters": [], "count": 0}
+    """Every entity currently in ``error``, with the reason it failed."""
+    store = multi.get_store(params.graph)
+    errored = [
+        e for e in _entity_docs(store) if e.get("embeddingStatus") == EmbeddingStatus.ERROR.value
+    ]
+    dead_letters = [
+        {
+            "entityId": e["id"],
+            "name": e["name"],
+            "entityType": e["entityType"],
+            "embeddingError": e.get("embeddingError"),
+        }
+        for e in errored
+    ]
+    return {"deadLetters": dead_letters, "count": len(dead_letters)}
 
 
 def embedding_reconcile(params: EmbeddingReconcileInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     dry_run = params.dry_run if params.dry_run is not None else True
     entities = _entity_docs(store)
-    vectors = store.get_entity_vectors()
-    status_fixed_missing = 0
-    status_fixed_has = 0
-    for entity in entities:
-        has_vector = entity["id"] in vectors
-        if entity.get("embeddingStatus") == "completed" and not has_vector:
-            status_fixed_missing += 1
-            if not dry_run:
-                store.update_entity(
-                    entity["id"],
-                    {
-                        "embeddingStatus": None,
-                        "contentHash": None,
-                        "lastEmbeddedAt": None,
-                        "embeddingVersion": None,
-                    },
-                )
-        elif entity.get("embeddingStatus") != "completed" and has_vector:
-            status_fixed_has += 1
-            if not dry_run:
-                store.update_entity(
-                    entity["id"],
-                    {
-                        "embeddingStatus": "completed",
-                        "contentHash": compute_content_hash(entity),
-                        "lastEmbeddedAt": iso_now(),
-                        "embeddingVersion": EMBEDDING_VERSION,
-                    },
-                )
+    by_id = {e["id"]: e for e in entities}
+    vector_ids = set(store.get_entity_vectors())
+    actions = plan_reconcile(entities, vector_ids)
+    if not dry_run:
+        for action in actions:
+            apply_reconcile_action(store, action, by_id[action.entity_id])
+    status_fixed_missing = sum(1 for a in actions if a.kind == "clear_status")
+    status_fixed_has = sum(1 for a in actions if a.kind == "mark_completed")
     return {
         "entitiesScanned": len(entities),
         "statusFixedMissingVector": status_fixed_missing,

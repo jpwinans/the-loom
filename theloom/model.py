@@ -209,8 +209,13 @@ class ChangeType(StrEnum):
 
 
 class EmbeddingStatus(StrEnum):
-    PENDING = "pending"
-    PROCESSING = "processing"
+    """The embedding state machine is binary in practice: ``None ->
+    COMPLETED`` (a successful embed) or ``None -> ERROR`` (a failed one).
+    There is no queue worker in this one-shot CLI, so no code path ever
+    writes a ``PENDING``/``PROCESSING`` state — those members were removed
+    rather than left declared and unreachable. See
+    :mod:`theloom.semantic.embedding_state` for the machine itself."""
+
     COMPLETED = "completed"
     ERROR = "error"
 
