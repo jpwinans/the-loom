@@ -371,7 +371,7 @@ def _imported_symbol_origin(
     return None
 
 
-def _resolve_symbol_edges(
+def resolve_symbol_edges(
     per_file: list[Doc],
     known_files: frozenset[str],
     *,
@@ -390,10 +390,14 @@ def _resolve_symbol_edges(
     picking one would be a guess presented as structure.
 
     Calls and base classes differ only in the edge they produce, so both run
-    through this one resolver. ``anchored`` picks the evidence form: a call
-    site carries a line, so its evidence is the fixed ``call_evidence`` format
-    and the proven/deduced distinction is left to ``confidence.basis``; a base
-    class has no site, so its evidence spells out how it was resolved.
+    through this one resolver: the caller (``treesitter.extract_from_files``)
+    passes ``field``/``relation_type``/``verb``/``anchored`` for each, and
+    renames ``stats``' generic ``proven``/``inferred``/``ambiguous`` to its own
+    ``*Calls``/``*Inheritances`` wire names. ``anchored`` picks the evidence
+    form: a call site carries a line, so its evidence is the fixed
+    ``call_evidence`` format and the proven/deduced distinction is left to
+    ``confidence.basis``; a base class has no site, so its evidence spells out
+    how it was resolved.
     """
     # (file, bare symbol name) -> entity name; and, for the unique-name rule,
     # bare name -> every candidate with the language and kind needed to judge it.
@@ -467,56 +471,6 @@ def _resolve_symbol_edges(
     return {
         "relations": relations,
         "stats": {"proven": proven_count, "inferred": inferred_count, "ambiguous": ambiguous},
-    }
-
-
-def resolve_calls(per_file: list[Doc], known_files: frozenset[str]) -> Doc:
-    """Cross-file calls: ``calls``, matching the per-file pass's convention.
-
-    Every edge is anchored at its call site — the line in the *caller's* file
-    where the call is written.
-    """
-    out = _resolve_symbol_edges(
-        per_file,
-        known_files,
-        field="unresolvedCalls",
-        relation_type="calls",
-        verb="calls",
-        anchored=True,
-    )
-    stats = out["stats"]
-    return {
-        "relations": out["relations"],
-        "stats": {
-            "importGuidedCalls": stats["proven"],
-            "uniqueNameCalls": stats["inferred"],
-            "ambiguousCallsSkipped": stats["ambiguous"],
-        },
-    }
-
-
-def resolve_inheritances(per_file: list[Doc], known_files: frozenset[str]) -> Doc:
-    """Base classes defined in another file: ``instance_of``.
-
-    Naming an imported base class as though it lived in the subclass's file
-    invents an entity that is never created, so the edge is dropped on import —
-    the same defect that lost every import edge.
-    """
-    out = _resolve_symbol_edges(
-        per_file,
-        known_files,
-        field="unresolvedInheritances",
-        relation_type="instance_of",
-        verb="extends",
-    )
-    stats = out["stats"]
-    return {
-        "relations": out["relations"],
-        "stats": {
-            "importGuidedInheritances": stats["proven"],
-            "uniqueNameInheritances": stats["inferred"],
-            "ambiguousInheritancesSkipped": stats["ambiguous"],
-        },
     }
 
 

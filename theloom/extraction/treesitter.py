@@ -1117,7 +1117,7 @@ def _static_scope(
         allowed = visible if lang is not None else tracked
         if rel.replace(os.sep, "/") not in allowed:
             return False
-    if not include_tests and _is_test_file(rel):
+    if not include_tests and resolution.is_test_path(rel):
         return False
     if include and not matches_globs(rel, include):
         return False
@@ -1237,10 +1237,6 @@ def _text_file_entity(path: str, kind: str) -> Doc:
     }
 
 
-def _is_test_file(rel: str) -> bool:
-    return resolution.is_test_path(rel)
-
-
 def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> Doc:
     """Parse every file, then join the edges that span files.
 
@@ -1291,8 +1287,42 @@ def extract_from_files(files: list[Doc], *, external_entities: bool = True) -> D
 
     known_files = frozenset(record["path"] for record in per_file)
     imports = resolution.resolve_imports(per_file, known_files, external_entities=external_entities)
-    calls = resolution.resolve_calls(per_file, known_files)
-    inheritances = resolution.resolve_inheritances(per_file, known_files)
+    # Cross-file calls (`calls`), anchored at the call site in the caller's
+    # file. `resolve_symbol_edges`'s generic proven/inferred/ambiguous stats
+    # are renamed here, the one place that calls it for calls.
+    raw_calls = resolution.resolve_symbol_edges(
+        per_file,
+        known_files,
+        field="unresolvedCalls",
+        relation_type="calls",
+        verb="calls",
+        anchored=True,
+    )
+    calls = {
+        "relations": raw_calls["relations"],
+        "stats": {
+            "importGuidedCalls": raw_calls["stats"]["proven"],
+            "uniqueNameCalls": raw_calls["stats"]["inferred"],
+            "ambiguousCallsSkipped": raw_calls["stats"]["ambiguous"],
+        },
+    }
+    # Base classes defined in another file (`instance_of`) — same resolver,
+    # renamed here for inheritances instead of calls.
+    raw_inheritances = resolution.resolve_symbol_edges(
+        per_file,
+        known_files,
+        field="unresolvedInheritances",
+        relation_type="instance_of",
+        verb="extends",
+    )
+    inheritances = {
+        "relations": raw_inheritances["relations"],
+        "stats": {
+            "importGuidedInheritances": raw_inheritances["stats"]["proven"],
+            "uniqueNameInheritances": raw_inheritances["stats"]["inferred"],
+            "ambiguousInheritancesSkipped": raw_inheritances["stats"]["ambiguous"],
+        },
+    }
     docs = doclinks.resolve_doc_links(doc_files, frozenset(file_paths), per_file)
     for entity in imports["entities"]:
         if entity["name"] not in entity_names:
