@@ -5,7 +5,18 @@ Chunks are ``:_Chunk`` nodes in a dedicated per-prefix graph (``{prefix}:_chunks
 NOT inside any knowledge graph: documents are global across graphs, so
 ingest/list/delete take no graph param. Each node carries the verbatim metadata
 doc in ``_doc`` and an optional ``_embedding`` (vecf32) so analyze-category can
-cluster. Row order follows ``id(n)`` (insertion order).
+cluster and ``vector_knn`` can search. Row order follows ``id(n)`` (insertion
+order).
+
+This is a store over one FalkorDB graph like any other, so it *is* one:
+``ChunkStore`` extends :class:`theloom.store.space.GraphSpace` and owns no
+graph handle, no Redis connection, no commit primitive and no vector-index
+Cypher of its own. Chunk writes therefore get exactly the store's guarantees
+rather than a second, subtly different copy of them — the chunk vector index in
+particular used to be created by a hand-rolled statement that swallowed every
+error and never waited for the index to become operational, and (because
+nothing ever called it) was never created at all, leaving every chunk embedding
+unsearchable.
 
 Chunk writes are event-sourced like every other mutation: each one is a single
 Cypher statement plus its event append, committed as one MULTI/EXEC unit
@@ -26,14 +37,14 @@ from __future__ import annotations
 
 import contextlib
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from falkordb import FalkorDB
-from redis import Redis
-
-from theloom.store.commit import commit_steps
-from theloom.store.events import EventLog
 from theloom.store.paging import fetch_all_rows
+from theloom.store.space import GraphSpace
+
+if TYPE_CHECKING:
+    from falkordb import FalkorDB
+    from redis import Redis
 
 Doc = dict[str, Any]
 CHUNK_GRAPH_SUFFIX = "_chunks"
@@ -44,38 +55,21 @@ CHUNK_GRAPH_SUFFIX = "_chunks"
 _MAX_CHUNKS_PER_DOCUMENT = 100_000
 
 
-class ChunkStore:
+class ChunkStore(GraphSpace):
+    """The document-chunk rows, over the shared store machinery."""
+
+    _VECTOR_LABEL = "_Chunk"
+
     def __init__(self, db: FalkorDB, key_prefix: str = "loom", redis: Redis | None = None) -> None:
-        self._graph = db.select_graph(f"{key_prefix}:graph:{CHUNK_GRAPH_SUFFIX}")
         # FalkorDB *is* the Redis server, so the chunk write and its event
         # append are two commands on one connection; default to the client the
         # graph handle already speaks through.
-        self._redis: Redis = redis if redis is not None else db.connection
-        self.events = EventLog(self._redis, CHUNK_GRAPH_SUFFIX, key_prefix)
-
-    def _query(self, cypher: str, params: Doc | None = None) -> Any:
-        return self._graph.query(cypher, params or {})
-
-    def _rows(self, cypher: str, params: Doc | None = None) -> list[list[Any]]:
-        result = self._query(cypher, params)
-        return result.result_set or []
-
-    def _commit(
-        self,
-        step: tuple[str, dict[str, Any]],
-        events: list[tuple[str, dict[str, Any]]],
-    ) -> Any:
-        """One Cypher statement plus its events, as one transaction; the
-        statement's result (so a caller can report what actually changed)."""
-        results, _ = commit_steps(self._redis, self._graph, self.events, [step], events)
-        return results[0]
-
-    def ensure_vector_index(self, dimension: int = 768) -> None:
-        with contextlib.suppress(Exception):
-            self._query(
-                "CREATE VECTOR INDEX FOR (c:_Chunk) ON (c._embedding) "
-                f"OPTIONS {{dimension: {dimension}, similarityFunction: 'cosine'}}"
-            )
+        super().__init__(
+            db,
+            redis if redis is not None else db.connection,
+            CHUNK_GRAPH_SUFFIX,
+            key_prefix,
+        )
 
     def upsert_chunk(self, chunk_id: str, metadata: Doc, vector: list[float] | None) -> None:
         """Insert-or-replace a chunk row keyed by chunk id, and log it."""
@@ -134,6 +128,16 @@ class ChunkStore:
             result.append((meta, vector))
         return result
 
+    def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
+        """(chunk id, cosine similarity) for the k nearest embedded chunks.
+
+        The chunk vector index is created on first search at the width of the
+        vectors already stored, through the store's barrier-guarded path — see
+        ``GraphSpace._vector_knn``. Nothing embedded means nothing to search
+        and no index to guess at, so the answer is empty.
+        """
+        return self._vector_knn(query_vector, k)
+
     def delete_where_source(self, source_id: str) -> int:
         """Delete the document's chunks named by one snapshot; how many went.
 
@@ -157,7 +161,7 @@ class ChunkStore:
         chunk_ids = [str(row[0]) for row in rows]
         if not chunk_ids:
             return 0
-        result = self._commit(
+        results, _ = self._commit(
             ("MATCH (c:_Chunk) WHERE c.id IN $ids DELETE c", {"ids": chunk_ids}),
             [
                 (
@@ -166,7 +170,7 @@ class ChunkStore:
                 )
             ],
         )
-        return int(result.nodes_deleted)
+        return int(results[0].nodes_deleted)
 
     def delete_chunk(self, chunk_id: str) -> None:
         self._commit(
