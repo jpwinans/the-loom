@@ -41,7 +41,7 @@ from __future__ import annotations
 import os
 import subprocess
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -81,18 +81,7 @@ _STRUCTURAL_RELATION_TYPES = frozenset(
 _DOC_SUFFIXES = tuple(f".{extension}" for extension in sorted(doclinks.DOC_EXTENSIONS))
 
 
-def _is_extractable(path: str) -> bool:
-    """True when extraction would collect this path — one rule, treesitter's."""
-    parts = path.split("/")
-    if any(part in treesitter.SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
-        return False
-    return (
-        treesitter.detect_language(path) is not None
-        or treesitter.detect_text_kind(path) is not None
-    )
-
-
-def _detect_changed_files(project_path: str, git_ref: str) -> list[Doc]:
+def _detect_changed_files(project_path: str, git_ref: str, *, include_tests: bool) -> list[Doc]:
     if ".." in git_ref:
         left, right = git_ref.split("..", 1)
         args = ["git", "diff", "--name-status", "--diff-filter=ACDMR", left, right]
@@ -104,10 +93,27 @@ def _detect_changed_files(project_path: str, git_ref: str) -> list[Doc]:
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return []
-    return _parse_git_diff(output)
+    is_extractable = treesitter.extractable_paths(project_path, include_tests=include_tests)
+    return _parse_git_diff(output, is_extractable)
 
 
-def _parse_git_diff(output: str) -> list[Doc]:
+def _is_extractable_shape(path: str) -> bool:
+    """The part of treesitter's rule that survives the file being gone: path
+    shape alone (skip directories, extension/text-kind). Used only for a
+    deletion, where the file no longer exists to stat, read, or check git
+    tracking on — every other status defers to
+    ``treesitter.extractable_paths`` in full.
+    """
+    parts = path.split("/")
+    if any(part in treesitter.SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
+        return False
+    return (
+        treesitter.detect_language(path) is not None
+        or treesitter.detect_text_kind(path) is not None
+    )
+
+
+def _parse_git_diff(output: str, is_extractable: Callable[[str], bool]) -> list[Doc]:
     changes: list[Doc] = []
     status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "added", "C": "added"}
     for line in output.splitlines():
@@ -116,7 +122,8 @@ def _parse_git_diff(output: str) -> list[Doc]:
             continue
         status = parts[0][0]
         path = parts[2] if status in ("R", "C") and len(parts) >= 3 else parts[1]
-        if not _is_extractable(path):
+        in_scope = _is_extractable_shape(path) if status == "D" else is_extractable(path)
+        if not in_scope:
             continue
         change = status_map.get(status)
         if change:
@@ -427,7 +434,7 @@ def update_codebase_diff(
     if not os.path.exists(project_path):
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
-    changed = _detect_changed_files(project_path, git_ref)
+    changed = _detect_changed_files(project_path, git_ref, include_tests=include_tests)
     if not changed:
         return _empty_result([])
 

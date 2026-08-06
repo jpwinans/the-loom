@@ -50,6 +50,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from typing import Any
 
 from theloom.extraction import doclinks, encoding, resolution
@@ -1065,6 +1066,90 @@ def _git_visibility(root: str) -> tuple[set[str], set[str]] | None:
     return tracked, tracked | untracked
 
 
+def _skips_a_component(rel_path: str) -> bool:
+    """True when a directory component of ``rel_path`` is out of scope.
+
+    Applied to every component but the last (the filename itself is judged by
+    extension/text-kind, not by this)."""
+    parts = rel_path.replace(os.sep, "/").split("/")
+    return any(part in SKIP_DIRS or part.startswith(".") for part in parts[:-1])
+
+
+def _static_scope(
+    rel: str, visibility: tuple[set[str], set[str]] | None, include_tests: bool
+) -> bool:
+    """The part of the collection rule decidable from the path and git alone —
+    no stat, no read. Directory/dotfile skipping, extension/text-kind
+    recognition, git tracking visibility, and the test-path exclusion.
+
+    Deliberately excludes symlink-ness, ``MAX_TEXT_FILE_BYTES``, and
+    decodability: those are properties of the file's *current bytes*, which
+    can regress out from under a previously-collected file — and catching
+    exactly that regression is what the incremental-update shrink guard
+    exists for (see ``codebasediff``). Folding them in here would let a
+    corrupted-in-place file quietly disappear from the diff instead of
+    tripping the guard.
+    """
+    if _skips_a_component(rel):
+        return False
+    lang = detect_language(rel)
+    if lang is None and detect_text_kind(rel) is None:
+        return False
+    if visibility is not None:
+        tracked, visible = visibility
+        allowed = visible if lang is not None else tracked
+        if rel.replace(os.sep, "/") not in allowed:
+            return False
+    return not (not include_tests and _is_test_file(rel))
+
+
+def _collect_content(
+    root: str,
+    rel: str,
+    visibility: tuple[set[str], set[str]] | None,
+    include_tests: bool,
+) -> str | None:
+    """The file's text if ``collect_source_files`` would collect it, else
+    ``None`` — the single membership rule, usable per-path as well as during
+    the directory walk."""
+    if not _static_scope(rel, visibility, include_tests):
+        return None
+    full = os.path.join(root, rel)
+    if os.path.islink(full):
+        return None
+    if detect_language(rel) is None:
+        try:
+            if os.path.getsize(full) > MAX_TEXT_FILE_BYTES:
+                return None
+        except OSError:
+            return None
+    try:
+        with open(full, encoding="utf-8") as handle:
+            return handle.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def extractable_paths(project_path: str, *, include_tests: bool = True) -> Callable[[str], bool]:
+    """A membership predicate for the *static* scope of ``collect_source_files``
+    — path shape, extension/text-kind, git visibility, and ``include_tests``
+    — resolved once per project root rather than once per path. Built for the
+    incremental-update diff planner: it decides which git-diff-named paths are
+    candidates for reconciliation at all (so an ignored, untracked, or
+    test-excluded path never becomes one), while leaving whether a candidate
+    still actually collects right now (not a symlink, under the size cap,
+    decodable) to the real extraction pass and the shrink guard that watches
+    it — see ``_static_scope`` for why that split matters.
+    """
+    root = os.path.abspath(project_path)
+    visibility = _git_visibility(root)
+
+    def in_static_scope(rel_path: str) -> bool:
+        return _static_scope(rel_path, visibility, include_tests)
+
+    return in_static_scope
+
+
 def collect_source_files(project_path: str, include_tests: bool = True) -> list[Doc]:
     """Sorted list of {relativePath, content} for supported files (sorted so
     the walk is deterministic).
@@ -1081,31 +1166,10 @@ def collect_source_files(project_path: str, include_tests: bool = True) -> list[
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS and not d.startswith("."))
         for filename in sorted(filenames):
             full = os.path.join(dirpath, filename)
-            if os.path.islink(full):
-                continue
             rel = os.path.relpath(full, root)
-            lang = detect_language(rel)
-            if lang is None:
-                if detect_text_kind(rel) is None:
-                    continue
-                try:
-                    if os.path.getsize(full) > MAX_TEXT_FILE_BYTES:
-                        continue
-                except OSError:
-                    continue
-            if visibility is not None:
-                tracked, visible = visibility
-                allowed = visible if lang is not None else tracked
-                if rel.replace(os.sep, "/") not in allowed:
-                    continue
-            if not include_tests and _is_test_file(rel):
-                continue
-            try:
-                with open(full, encoding="utf-8") as handle:
-                    content = handle.read()
-            except (OSError, UnicodeDecodeError):
-                continue
-            files.append({"relativePath": rel, "content": content})
+            content = _collect_content(root, rel, visibility, include_tests)
+            if content is not None:
+                files.append({"relativePath": rel, "content": content})
     return sorted(files, key=lambda f: f["relativePath"])
 
 
