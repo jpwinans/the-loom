@@ -10,22 +10,11 @@ from __future__ import annotations
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.model import EntityCreate, RelationCreate
 from theloom.operations.semantic import HybridSearchInput, hybrid_search
 from theloom.semantic.search import search_entities
 from theloom.store.multigraph import MultiGraph
-
-
-class _FixedEmbedder:
-    """embed_query returns one fixed vector regardless of the query text."""
-
-    def __init__(self, vector: list[float]) -> None:
-        self._vector = vector
-        self.calls = 0
-
-    def embed_query(self, text: str) -> list[float]:
-        self.calls += 1
-        return self._vector
 
 
 def _seed(
@@ -51,7 +40,7 @@ def test_search_scores_are_l2_similarity_not_cosine(multi: MultiGraph) -> None:
     _seed(multi, {"exact": [1.0, 0.0], "oblique": [0.6, 0.8]})
 
     hits = search_entities(
-        multi.get_store(), "anything", limit=10, embedder=_FixedEmbedder([1.0, 0.0])
+        multi.get_store(), "anything", limit=10, embedder=FakeEmbedder([1.0, 0.0])
     )
 
     by_name = {hit["metadata"]["name"]: hit for hit in hits}
@@ -67,7 +56,7 @@ def test_search_drops_non_active_entities_unless_asked_for_them(multi: MultiGrap
     store = multi.get_store()
     ids = _seed(multi, {"live": [1.0, 0.0], "old": [0.99, 0.14]})
     store.update_entity(ids["old"], {"status": "superseded"})
-    embedder = _FixedEmbedder([1.0, 0.0])
+    embedder = FakeEmbedder([1.0, 0.0])
 
     active_only = search_entities(store, "q", limit=10, embedder=embedder)
     every_status = search_entities(store, "q", limit=10, embedder=embedder, require_active=False)
@@ -90,7 +79,7 @@ def test_search_grows_the_candidate_window_until_a_rare_type_surfaces(multi: Mul
     store.set_entity_vector(rare.id, [0.2, 0.98])
 
     hits = search_entities(
-        store, "q", limit=1, entity_types=["claim"], embedder=_FixedEmbedder([1.0, 0.0])
+        store, "q", limit=1, entity_types=["claim"], embedder=FakeEmbedder([1.0, 0.0])
     )
 
     assert [hit["metadata"]["name"] for hit in hits] == ["rare-claim"]
@@ -102,7 +91,7 @@ def test_search_reports_the_raw_cosine_alongside_the_l2_score(multi: MultiGraph)
     the core carries the cosine through instead of forcing a second scan."""
     _seed(multi, {"oblique": [0.6, 0.8]})
 
-    hits = search_entities(multi.get_store(), "q", limit=1, embedder=_FixedEmbedder([1.0, 0.0]))
+    hits = search_entities(multi.get_store(), "q", limit=1, embedder=FakeEmbedder([1.0, 0.0]))
 
     assert hits[0]["cosine"] == pytest.approx(0.6, rel=1e-6)
     assert hits[0]["score"] == pytest.approx(0.5278640450004206, rel=1e-6)
@@ -139,7 +128,7 @@ def test_hybrid_search_fuses_vector_keyword_and_graph_signals(
         )
     )
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _FixedEmbedder([1.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
 
     result = hybrid_search(HybridSearchInput.model_validate({"query": "alpha"}), multi)

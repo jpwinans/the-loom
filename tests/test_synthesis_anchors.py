@@ -9,19 +9,10 @@ from __future__ import annotations
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.model import EntityCreate
 from theloom.operations.synthesis import anchor_search_for
 from theloom.store.multigraph import MultiGraph
-
-
-class _FixedEmbedder:
-    def __init__(self, vector: list[float]) -> None:
-        self._vector = vector
-        self.calls = 0
-
-    def embed_query(self, text: str) -> list[float]:
-        self.calls += 1
-        return self._vector
 
 
 def _seed(multi: MultiGraph, vectors: dict[str, list[float]]) -> dict[str, str]:
@@ -44,7 +35,7 @@ def test_anchor_search_excludes_invalidated_entities(multi: MultiGraph) -> None:
     ids = _seed(multi, {"live": [1.0, 0.0], "old": [1.0, 0.0]})
     store.update_entity(ids["old"], {"status": "superseded"})
 
-    search = anchor_search_for([store], embedder=_FixedEmbedder([1.0, 0.0]))
+    search = anchor_search_for([store], embedder=FakeEmbedder([1.0, 0.0]))
     hits = search("anything", 10)
 
     assert [hit["entityId"] for hit in hits] == [ids["live"]]
@@ -55,7 +46,7 @@ def test_anchor_search_scores_on_the_shared_scale(multi: MultiGraph) -> None:
     cosine of 0.6 is 1/(1+sqrt(0.8)) = 0.52786...; a cosine of 1.0 is 1.0."""
     ids = _seed(multi, {"exact": [1.0, 0.0], "oblique": [0.6, 0.8]})
 
-    search = anchor_search_for([multi.get_store()], embedder=_FixedEmbedder([1.0, 0.0]))
+    search = anchor_search_for([multi.get_store()], embedder=FakeEmbedder([1.0, 0.0]))
     hits = search("anything", 10)
 
     by_id = {hit["entityId"]: hit["score"] for hit in hits}
@@ -72,9 +63,9 @@ def test_anchor_search_is_empty_without_embeddings_and_never_embeds(multi: Multi
             {"name": "unembedded", "entityType": "concept", "observations": []}
         )
     )
-    embedder = _FixedEmbedder([1.0, 0.0])
+    embedder = FakeEmbedder([1.0, 0.0])
 
     hits = anchor_search_for([store], embedder=embedder)("anything", 10)
 
     assert hits == []
-    assert embedder.calls == 0
+    assert embedder.query_calls == 0

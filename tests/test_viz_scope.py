@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.errors import LoomError
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
@@ -85,14 +86,6 @@ def test_unknown_mode_is_validation_error(multi: MultiGraph) -> None:
     assert err.value.code == "VALIDATION_ERROR"
 
 
-class _StubEmbedder:
-    def __init__(self, vector: list[float]) -> None:
-        self._vector = vector
-
-    def embed_query(self, text: str) -> list[float]:
-        return self._vector
-
-
 def test_search_scope_keeps_matches_and_induced_relations(
     multi: MultiGraph, seeded: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -102,7 +95,7 @@ def test_search_scope_keeps_matches_and_induced_relations(
     store.set_entity_vector(seeded["b"], [0.98, 0.20])
     store.set_entity_vector(seeded["c"], [0.0, 1.0])
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
     entities, relations, label = resolve_scope(
         ScopeInput.model_validate({"mode": "search", "query": "a and b"}),
@@ -133,7 +126,7 @@ def test_search_scope_accepts_paraphrase_level_matches(
     store.set_entity_vector(seeded["b"], [0.8, 0.6])
     store.set_entity_vector(seeded["c"], [0.0, 1.0])
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
     entities, _relations, _label = resolve_scope(
         ScopeInput.model_validate({"mode": "search", "query": "topic"}), store
