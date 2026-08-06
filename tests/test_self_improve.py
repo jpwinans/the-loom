@@ -316,6 +316,51 @@ def test_autoapply_rolls_back_entity_when_relation_batch_write_fails(
     assert "Proposed Thing" not in entity_names
 
 
+def test_autoapply_double_failure_reports_the_stranded_entity_id(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the relation batch fails AND the compensating delete fails, an
+    orphan entity remains — and the report must carry its id under
+    ``strandedEntityId`` so an operator can clean it up (names are not
+    unique). ``rolledBackEntityId: None`` keeps meaning 'nothing was rolled
+    back'."""
+    store = multi.get_store()
+    target = store.create_entity(
+        EntityCreate.model_validate(
+            {"name": "Batch Target", "entityType": "concept", "observations": ["obs"]}
+        )
+    )
+    _patch_proposals(monkeypatch, [_proposal("Stranded Proposal", target.id)])
+    monkeypatch.setattr("theloom.composites.self_improve.simulate_change", _fake_simulate_change)
+
+    def boom_batch(self: FalkorGraphStore, specs: Any) -> Any:
+        raise OperationError("simulated relation write failure")
+
+    def boom_delete(self: FalkorGraphStore, entity_id: str, hard: bool = False) -> Any:
+        raise OperationError("store unreachable during rollback")
+
+    monkeypatch.setattr(FalkorGraphStore, "create_relations", boom_batch)
+    monkeypatch.setattr(FalkorGraphStore, "delete_entity", boom_delete)
+
+    result = self_improve(
+        SelfImproveInput.model_validate({"autoApply": True, "applyTopN": 1}),
+        multi,
+    )
+
+    apply_failures = result["applyFailures"]
+    assert len(apply_failures) == 1
+    failure = apply_failures[0]
+    assert failure["rolledBackEntityId"] is None  # nothing was rolled back
+    assert "store unreachable during rollback" in failure["rollbackError"]
+    stranded_id = failure["strandedEntityId"]
+
+    # The orphan really is in the graph, and the id in the report finds it.
+    monkeypatch.undo()
+    stranded = store.read_entity_doc(stranded_id)
+    assert stranded is not None
+    assert stranded["name"] == "Stranded Proposal"
+
+
 def test_autoapply_reports_credit_propagation_failure(
     multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:

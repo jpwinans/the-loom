@@ -454,7 +454,13 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                     try:
                         store.delete_entity(entity_id, hard=True)
                     except Exception as rollback_exc:  # noqa: BLE001 — still reported.
+                        # The compensating delete failed too: the entity is
+                        # stranded in the graph. Keep its id under its own key
+                        # (names are not unique) so an operator can clean up;
+                        # rolledBackEntityId: None keeps meaning "nothing was
+                        # rolled back".
                         failure["rolledBackEntityId"] = None
+                        failure["strandedEntityId"] = entity_id
                         failure["rollbackError"] = str(rollback_exc)
                     apply_failures.append(failure)
                     continue
