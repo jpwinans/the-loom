@@ -119,6 +119,14 @@ def get_embedder() -> Embedder | Any:
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine of the angle between two vectors, or 0.0 when there is no
+    comparable signal — an empty vector, a zero vector, or two vectors of
+    different width. Stored vector widths are not enforced (a graph can hold
+    embeddings from an older or other model), and callers score a proposal
+    against every stored vector, so a width mismatch is ordinary input to be
+    scored 0 rather than an error to raise mid-loop."""
+    if len(a) != len(b):
+        return 0.0
     va = np.asarray(a, dtype=np.float64)
     vb = np.asarray(b, dtype=np.float64)
     denominator = float(np.linalg.norm(va) * np.linalg.norm(vb))
