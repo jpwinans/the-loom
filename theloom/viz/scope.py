@@ -14,7 +14,7 @@ from theloom.graph.subgraph import (
 )
 from theloom.model import EntityFilter, EntityStatus
 from theloom.operations.common import CommandInput
-from theloom.operations.semantic import _search_similar  # shared search internal
+from theloom.semantic.search import search_entities as search_similar_entities
 from theloom.store.falkor import FalkorGraphStore
 
 Doc = dict[str, Any]
@@ -87,7 +87,7 @@ def resolve_scope(
         entity_types = [scope.entity_type] if scope.entity_type else None
         matched = {
             result["id"]
-            for result in _search_similar(
+            for result in search_similar_entities(
                 store,
                 scope.query,
                 limit=_SEARCH_LIMIT,
@@ -95,12 +95,12 @@ def resolve_scope(
                 entity_types=entity_types,
             )
         }
-        search_entities = [e for e in entities if e["id"] in matched]
-        matched_ids = {e["id"] for e in search_entities}
+        matched_entities = [e for e in entities if e["id"] in matched]
+        matched_ids = {e["id"] for e in matched_entities}
         search_relations = [
             r for r in relations if r["from"] in matched_ids and r["to"] in matched_ids
         ]
-        return search_entities, search_relations, f"search:{scope.query}"
+        return matched_entities, search_relations, f"search:{scope.query}"
     if scope.mode == "full":
         return entities, relations, "full"
     if scope.mode == "causal":

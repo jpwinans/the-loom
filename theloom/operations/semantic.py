@@ -148,11 +148,12 @@ def _search_similar(
     min_score: float | None = None,
     entity_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Deprecated alias for :func:`theloom.semantic.search.search_entities`.
+    """This module's binding of :func:`theloom.semantic.search.search_entities`.
 
-    Kept so ``viz/scope.py`` keeps importing a stable name while it is flipped
-    over to the public seam. The embedder is resolved here, from this module's
-    ``get_embedder``, so nothing that patched it changes behaviour.
+    Private to ``operations.semantic``: the only thing it adds is resolving the
+    embedder from *this* module's ``get_embedder``, so the five command handlers
+    below share one injection point. Callers outside this module should import
+    ``theloom.semantic.search.search_entities`` directly.
     """
     return search_entities(
         store,
