@@ -1,9 +1,9 @@
 {
   "graphName": "codebase-the-loom",
   "projectPath": "/Users/jameswinans/Dropbox/Development/the-loom",
-  "commit": "e4a12a1b188e5391ec431a8c5754d2fa4733b1f9",
+  "commit": "5b60a8b78c90634aeb8f99639acba9549bd3f9e5",
   "mode": "incremental",
-  "timestamp": "2026-08-06T15:30:43.835Z",
+  "timestamp": "2026-08-06T21:37:26.856Z",
   "groups": [
     "docs (part 1/4)",
     "docs (part 2/4)",
@@ -20,6 +20,9 @@
     "tapestry/src (part 3/4)",
     "tapestry/src (part 4/4)",
     "tapestry/src/lib",
+    "tapestry/src/views/overview",
+    "tapestry/src/views/semantic",
+    "tapestry/src/views/systems",
     "tests (part 1/4)",
     "tests (part 1/6)",
     "tests (part 2/4)",
