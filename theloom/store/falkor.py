@@ -581,21 +581,33 @@ class FalkorGraphStore(GraphSpace, GraphStore):
         }
         for i, doc in enumerate(redirects):
             rid, rdoc, other = f"r{i}Id", f"r{i}Doc", f"r{i}Other"
-            edge = f"[:{doc['relationType']} {{id: ${rid}, _doc: ${rdoc}}}]"
+            # A redirect rewrites the edge's endpoint — bi-temporally an
+            # update like any other, so snapshot the pre-merge incarnation as
+            # a closed ``:_RelationVersion`` (falling back to the doc's
+            # ``created_at`` for a never-updated edge) and reopen the live
+            # interval at the merge instant, exactly as ``update_relation``
+            # does. Without this the recreated edge re-covers the past and
+            # shadows the version nodes in as-of reads.
+            snapshot = (
+                f"CREATE (:_RelationVersion {{relation_id: ${rid}, _doc: r{i}._doc, "
+                f"tx_from: coalesce(r{i}.tx_from, $r{i}Tf), tx_to: $now}}) "
+            )
+            edge = f"[:{doc['relationType']} {{id: ${rid}, _doc: ${rdoc}, tx_from: $now}}]"
             if doc["from"] == primary_id:  # was outgoing from the secondary
                 params[other] = doc["to"]
                 parts.append(
                     f" WITH p, s MATCH (s)-[r{i}]->(o{i}:_Entity {{id: ${other}}}) "
-                    f"WHERE r{i}.id = ${rid} DELETE r{i} CREATE (p)-{edge}->(o{i})"
+                    f"WHERE r{i}.id = ${rid} {snapshot}DELETE r{i} CREATE (p)-{edge}->(o{i})"
                 )
             else:  # was incoming to the secondary
                 params[other] = doc["from"]
                 parts.append(
                     f" WITH p, s MATCH (o{i}:_Entity {{id: ${other}}})-[r{i}]->(s) "
-                    f"WHERE r{i}.id = ${rid} DELETE r{i} CREATE (o{i})-{edge}->(p)"
+                    f"WHERE r{i}.id = ${rid} {snapshot}DELETE r{i} CREATE (o{i})-{edge}->(p)"
                 )
             params[rid] = doc["id"]
             params[rdoc] = json.dumps(dict(doc))
+            params[f"r{i}Tf"] = str(doc.get("created_at") or now)
         if supersedes_doc is not None:
             parts.append(
                 " WITH p, s CREATE (p)-[:supersedes {id: $supersedesId, _doc: $supersedesDoc}]->(s)"
