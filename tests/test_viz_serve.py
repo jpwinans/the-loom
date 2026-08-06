@@ -176,9 +176,7 @@ def test_bundle_maps_each_query_param_to_its_own_scope_field(
     assert meta["sections"] == []
 
 
-def test_as_of_maps_the_asof_param_onto_the_bundle(
-    client: TestClient, multi: MultiGraph
-) -> None:
+def test_as_of_maps_the_asof_param_onto_the_bundle(client: TestClient, multi: MultiGraph) -> None:
     """Pins /api/as-of's construction: asOf lands on the bundle's asOf field
     (not swapped onto title or elsewhere) and the scope/include flags stay
     at their fixed full/true/true/true defaults for this endpoint."""
