@@ -264,6 +264,12 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
     entities_merged = 0
     relations_created = 0
     relations_skipped = 0
+    # What this call actually wrote — narrower than the counts above, which
+    # also credit dryRun's would-be creates: only these are safe for a caller
+    # (e.g. extraction-rollback) to hard-delete, since a merge only appended
+    # observations onto an entity that predates this run.
+    created_entity_ids: list[str] = []
+    created_relation_ids: list[str] = []
 
     lookup = _existing_lookup(store) if entities else {}
 
@@ -310,6 +316,7 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
             created = store.create_entity(EntityCreate.model_validate(doc))
             mapping[entity_input["name"]] = created.id
             lookup[key] = created
+            created_entity_ids.append(created.id)
             entities_created += 1
 
     # Combined name resolution: import batch first, then existing graph
@@ -373,6 +380,7 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
                     }
                 )
             )
+            created_relation_ids.append(f"{from_id}->{to_id}->{relation_input['relationType']}")
             relations_created += 1
         except Exception as exc:  # per-item creation error, collected not raised
             errors.append(
@@ -391,6 +399,8 @@ def bulk_import(params: BulkImportInput, multi: MultiGraph) -> dict[str, Any]:
         "relationsSkipped": relations_skipped,
         "errors": [*parse_errors, *errors],
         "mapping": mapping,
+        "createdEntityIds": created_entity_ids,
+        "createdRelationIds": created_relation_ids,
     }
 
 
@@ -402,4 +412,6 @@ def _limit_result(message: str) -> dict[str, Any]:
         "relationsSkipped": 0,
         "errors": [{"type": "validation_error", "message": message}],
         "mapping": {},
+        "createdEntityIds": [],
+        "createdRelationIds": [],
     }

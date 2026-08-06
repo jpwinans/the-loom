@@ -89,6 +89,32 @@ def test_reimport_is_idempotent_merge_and_skip(multi: MultiGraph) -> None:
     assert merged.observations == ["first", "third"]  # dedup, append new only
 
 
+def test_created_ids_name_only_what_this_call_actually_wrote(multi: MultiGraph) -> None:
+    """A rollback needs to erase exactly what one run created, never what it
+    merely merged into — so the id lists must stay narrower than the counts,
+    which also credit dry-run's would-be creates."""
+    first = run(multi, entities=ENTITIES, relations=RELATIONS)
+    assert set(first["createdEntityIds"]) == set(first["mapping"].values())
+    assert first["createdRelationIds"] == [
+        f"{first['mapping']['Alpha']}->{first['mapping']['Beta']}->supports"
+    ]
+
+    second = run(
+        multi,
+        entities=[{"name": "Alpha", "entityType": "concept", "observations": ["first", "third"]}],
+        relations=RELATIONS,
+    )
+    assert second["createdEntityIds"] == []
+    assert second["createdRelationIds"] == []
+
+
+def test_dry_run_creates_no_ids_to_roll_back(multi: MultiGraph) -> None:
+    result = run(multi, entities=ENTITIES, relations=RELATIONS, dryRun=True)
+    assert result["entitiesCreated"] == 2
+    assert result["createdEntityIds"] == []
+    assert result["createdRelationIds"] == []
+
+
 def test_relation_dedup_is_per_type_not_per_pair(multi: MultiGraph) -> None:
     """Parallel typed edges between one pair are native to the model; an
     existing relation of one type must not block importing another type."""

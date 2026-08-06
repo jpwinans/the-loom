@@ -22,6 +22,7 @@ from theloom.operations.common import CommandInput
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis.llm import create_synthesis_client
+from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
 
@@ -172,6 +173,7 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
     # The tool handler wraps failures as
     # "Error in codebase extraction: <msg>"; "does not exist" then classifies
     # as OPERATION_ERROR (not NOT_FOUND).
+    started_at = iso_now()
     try:
         extraction = treesitter.extract_codebase(
             params.project_path,
@@ -188,13 +190,14 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
         "extractionMethod": extraction["extractionMethod"],
     }
     if params.graph is not None:
+        dry_run = params.dry_run or False
         import_result = bulk_import(
             BulkImportInput.model_validate(
                 {
                     "entities": extraction["entities"],
                     "relations": extraction["relations"],
                     "graph": params.graph,
-                    "dryRun": params.dry_run or False,
+                    "dryRun": dry_run,
                 }
             ),
             multi,
@@ -204,7 +207,13 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
             multi.get_store(params.graph),
             extraction["relations"],
             import_result["mapping"],
-            dry_run=params.dry_run or False,
+            dry_run=dry_run,
+        )
+        result["runId"] = multi.run_store().save_codebase_run(
+            started_at=started_at,
+            created_entity_ids=import_result["createdEntityIds"],
+            created_relation_ids=import_result["createdRelationIds"],
+            dry_run=dry_run,
         )
     return result
 

@@ -432,13 +432,30 @@ def _relation_spec(relation: Doc, name_to_id: dict[str, str]) -> RelationCreate:
     return RelationCreate.model_validate(spec)
 
 
-def _apply(plan: _Plan, store: FalkorGraphStore) -> list[str]:
-    """Write the plan; returns every entity id the update touched."""
+@dataclass
+class _ApplyResult:
+    """What ``_apply`` wrote. ``changed_ids`` is every entity id the update
+    touched (created, updated, or superseded) — the wire ``changedEntityIds``.
+    ``created_entity_ids``/``created_relation_ids`` are the strict subset this
+    run actually *created*: safe for a rollback to hard-delete, unlike an
+    update or a supersession, which changed something that predates this run.
+    """
+
+    changed_ids: list[str]
+    created_entity_ids: list[str]
+    created_relation_ids: list[str]
+
+
+def _apply(plan: _Plan, store: FalkorGraphStore) -> _ApplyResult:
+    """Write the plan."""
     changed_ids: list[str] = []
+    created_entity_ids: list[str] = []
+    created_relation_ids: list[str] = []
     for doc in plan.creates:
         created = store.create_entity(_entity_spec(doc))
         plan.name_to_id[doc["name"]] = created.id
         changed_ids.append(created.id)
+        created_entity_ids.append(created.id)
     for entity_id, doc in plan.updates:
         store.update_entity(entity_id, {"observations": doc["observations"]})
         changed_ids.append(entity_id)
@@ -456,8 +473,11 @@ def _apply(plan: _Plan, store: FalkorGraphStore) -> list[str]:
     for doc in plan.retract_relations:
         store.invalidate_relation(doc["from"], doc["to"], doc["relationType"])
     for relation in plan.create_relations:
-        store.create_relation(_relation_spec(relation, plan.name_to_id))
-    return changed_ids
+        created_relation = store.create_relation(_relation_spec(relation, plan.name_to_id))
+        created_relation_ids.append(
+            f"{created_relation.from_}->{created_relation.to}->{created_relation.relation_type.value}"
+        )
+    return _ApplyResult(changed_ids, created_entity_ids, created_relation_ids)
 
 
 def update_codebase_diff(
@@ -475,6 +495,7 @@ def update_codebase_diff(
     if not os.path.exists(project_path):
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
+    started_at = iso_now()
     changed = _detect_changed_files(
         project_path, git_ref, include_tests=include_tests, include=include, exclude=exclude
     )
@@ -495,9 +516,17 @@ def update_codebase_diff(
                 'Re-run with "force": true to apply it anyway.'
             )
 
+    apply_result = _ApplyResult([], [], []) if dry_run else _apply(plan, store)
+    run_id = multi.run_store().save_codebase_run(
+        started_at=started_at,
+        created_entity_ids=apply_result.created_entity_ids,
+        created_relation_ids=apply_result.created_relation_ids,
+        dry_run=dry_run,
+    )
     return {
         "changedFiles": [change["path"] for change in changed],
         "entityDiffs": _entity_diffs(plan),
         "stats": _stats(plan),
-        "changedEntityIds": [] if dry_run else _apply(plan, store),
+        "changedEntityIds": apply_result.changed_ids,
+        "runId": run_id,
     }
