@@ -26,6 +26,7 @@ def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -
     # Several sections execute before the runner is called; hand it the real
     # start so totalDurationMs covers them too.
     start = time.perf_counter()
+
     def _graphs() -> list[dict[str, Any]]:
         # list_graphs yields only {name, loaded}; entityCount/relationCount are
         # absent (omitted rather than emitted as null).
