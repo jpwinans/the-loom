@@ -87,7 +87,14 @@ _STRUCTURAL_RELATION_TYPES = frozenset(
 _DOC_SUFFIXES = tuple(f".{extension}" for extension in sorted(doclinks.DOC_EXTENSIONS))
 
 
-def _detect_changed_files(project_path: str, git_ref: str, *, include_tests: bool) -> list[Doc]:
+def _detect_changed_files(
+    project_path: str,
+    git_ref: str,
+    *,
+    include_tests: bool,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> list[Doc]:
     if ".." in git_ref:
         left, right = git_ref.split("..", 1)
         args = ["git", "diff", "--name-status", "--diff-filter=ACDMR", left, right]
@@ -99,27 +106,38 @@ def _detect_changed_files(project_path: str, git_ref: str, *, include_tests: boo
         ).stdout
     except (subprocess.SubprocessError, OSError):
         return []
-    is_extractable = treesitter.extractable_paths(project_path, include_tests=include_tests)
-    return _parse_git_diff(output, is_extractable)
+    is_extractable = treesitter.extractable_paths(
+        project_path, include_tests=include_tests, include=include, exclude=exclude
+    )
+    return _parse_git_diff(output, is_extractable, include=include, exclude=exclude)
 
 
-def _is_extractable_shape(path: str) -> bool:
+def _is_extractable_shape(
+    path: str, *, include: Sequence[str] | None, exclude: Sequence[str] | None
+) -> bool:
     """The part of treesitter's rule that survives the file being gone: path
-    shape alone (skip directories, extension/text-kind). Used only for a
-    deletion, where the file no longer exists to stat, read, or check git
-    tracking on — every other status defers to
+    shape alone (skip directories, extension/text-kind, include/exclude
+    globs). Used only for a deletion, where the file no longer exists to
+    stat, read, or check git tracking on — every other status defers to
     ``treesitter.extractable_paths`` in full.
     """
     parts = path.split("/")
     if any(part in treesitter.SKIP_DIRS or part.startswith(".") for part in parts[:-1]):
         return False
-    return (
-        treesitter.detect_language(path) is not None
-        or treesitter.detect_text_kind(path) is not None
-    )
+    if treesitter.detect_language(path) is None and treesitter.detect_text_kind(path) is None:
+        return False
+    if include and not treesitter.matches_globs(path, include):
+        return False
+    return not treesitter.matches_globs(path, exclude)
 
 
-def _parse_git_diff(output: str, is_extractable: Callable[[str], bool]) -> list[Doc]:
+def _parse_git_diff(
+    output: str,
+    is_extractable: Callable[[str], bool],
+    *,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> list[Doc]:
     changes: list[Doc] = []
     status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "added", "C": "added"}
     for line in output.splitlines():
@@ -128,7 +146,11 @@ def _parse_git_diff(output: str, is_extractable: Callable[[str], bool]) -> list[
             continue
         status = parts[0][0]
         path = parts[2] if status in ("R", "C") and len(parts) >= 3 else parts[1]
-        in_scope = _is_extractable_shape(path) if status == "D" else is_extractable(path)
+        in_scope = (
+            _is_extractable_shape(path, include=include, exclude=exclude)
+            if status == "D"
+            else is_extractable(path)
+        )
         if not in_scope:
             continue
         change = status_map.get(status)
@@ -444,6 +466,8 @@ def update_codebase_diff(
     *,
     git_ref: str = "HEAD~1..HEAD",
     include_tests: bool = True,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
     dry_run: bool = False,
     force: bool = False,
     multi: MultiGraph,
@@ -451,12 +475,16 @@ def update_codebase_diff(
     if not os.path.exists(project_path):
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
 
-    changed = _detect_changed_files(project_path, git_ref, include_tests=include_tests)
+    changed = _detect_changed_files(
+        project_path, git_ref, include_tests=include_tests, include=include, exclude=exclude
+    )
     if not changed:
         return _empty_result([])
 
     store = multi.get_store(graph_name)
-    extraction = treesitter.extract_codebase(project_path, include_tests=include_tests)
+    extraction = treesitter.extract_codebase(
+        project_path, include_tests=include_tests, include=include, exclude=exclude
+    )
     plan = _plan_update(changed, extraction, store)
 
     if not force:

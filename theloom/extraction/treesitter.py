@@ -47,10 +47,11 @@ directory walk would be machine-dependent).
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from theloom.extraction import doclinks, encoding, resolution
@@ -1075,12 +1076,28 @@ def _skips_a_component(rel_path: str) -> bool:
     return any(part in SKIP_DIRS or part.startswith(".") for part in parts[:-1])
 
 
+def matches_globs(rel_path: str, patterns: Sequence[str] | None) -> bool:
+    """True when ``rel_path`` (forward-slash) matches any of ``patterns``.
+    ``fnmatch``-style: ``*`` matches across ``/`` too, so ``src/*`` and
+    ``src/**/*.py`` both work as a caller would expect."""
+    if not patterns:
+        return False
+    posix_rel = rel_path.replace(os.sep, "/")
+    return any(fnmatch.fnmatch(posix_rel, pattern) for pattern in patterns)
+
+
 def _static_scope(
-    rel: str, visibility: tuple[set[str], set[str]] | None, include_tests: bool
+    rel: str,
+    visibility: tuple[set[str], set[str]] | None,
+    include_tests: bool,
+    include: Sequence[str] | None,
+    exclude: Sequence[str] | None,
 ) -> bool:
     """The part of the collection rule decidable from the path and git alone —
     no stat, no read. Directory/dotfile skipping, extension/text-kind
-    recognition, git tracking visibility, and the test-path exclusion.
+    recognition, git tracking visibility, the test-path exclusion, and the
+    caller's own ``include``/``exclude`` globs (``exclude`` wins; an empty or
+    absent ``include`` means no restriction).
 
     Deliberately excludes symlink-ness, ``MAX_TEXT_FILE_BYTES``, and
     decodability: those are properties of the file's *current bytes*, which
@@ -1100,7 +1117,11 @@ def _static_scope(
         allowed = visible if lang is not None else tracked
         if rel.replace(os.sep, "/") not in allowed:
             return False
-    return not (not include_tests and _is_test_file(rel))
+    if not include_tests and _is_test_file(rel):
+        return False
+    if include and not matches_globs(rel, include):
+        return False
+    return not matches_globs(rel, exclude)
 
 
 def _collect_content(
@@ -1108,11 +1129,13 @@ def _collect_content(
     rel: str,
     visibility: tuple[set[str], set[str]] | None,
     include_tests: bool,
+    include: Sequence[str] | None,
+    exclude: Sequence[str] | None,
 ) -> str | None:
     """The file's text if ``collect_source_files`` would collect it, else
     ``None`` — the single membership rule, usable per-path as well as during
     the directory walk."""
-    if not _static_scope(rel, visibility, include_tests):
+    if not _static_scope(rel, visibility, include_tests, include, exclude):
         return None
     full = os.path.join(root, rel)
     if os.path.islink(full):
@@ -1130,34 +1153,49 @@ def _collect_content(
         return None
 
 
-def extractable_paths(project_path: str, *, include_tests: bool = True) -> Callable[[str], bool]:
+def extractable_paths(
+    project_path: str,
+    *,
+    include_tests: bool = True,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> Callable[[str], bool]:
     """A membership predicate for the *static* scope of ``collect_source_files``
-    — path shape, extension/text-kind, git visibility, and ``include_tests``
-    — resolved once per project root rather than once per path. Built for the
-    incremental-update diff planner: it decides which git-diff-named paths are
-    candidates for reconciliation at all (so an ignored, untracked, or
-    test-excluded path never becomes one), while leaving whether a candidate
-    still actually collects right now (not a symlink, under the size cap,
-    decodable) to the real extraction pass and the shrink guard that watches
-    it — see ``_static_scope`` for why that split matters.
+    — path shape, extension/text-kind, git visibility, ``include_tests``, and
+    the ``include``/``exclude`` globs — resolved once per project root rather
+    than once per path. Built for the incremental-update diff planner: it
+    decides which git-diff-named paths are candidates for reconciliation at
+    all (so an ignored, untracked, test-excluded, or filtered-out path never
+    becomes one), while leaving whether a candidate still actually collects
+    right now (not a symlink, under the size cap, decodable) to the real
+    extraction pass and the shrink guard that watches it — see
+    ``_static_scope`` for why that split matters.
     """
     root = os.path.abspath(project_path)
     visibility = _git_visibility(root)
 
     def in_static_scope(rel_path: str) -> bool:
-        return _static_scope(rel_path, visibility, include_tests)
+        return _static_scope(rel_path, visibility, include_tests, include, exclude)
 
     return in_static_scope
 
 
-def collect_source_files(project_path: str, include_tests: bool = True) -> list[Doc]:
+def collect_source_files(
+    project_path: str,
+    include_tests: bool = True,
+    *,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
+) -> list[Doc]:
     """Sorted list of {relativePath, content} for supported files (sorted so
     the walk is deterministic).
 
     Recognised non-code text files come along too — they become root file
     entities. A binary (which fails to decode) or an oversized data file is
     skipped, and inside a git work tree so is anything git ignores (see the
-    module docstring).
+    module docstring). ``include``/``exclude`` are ``fnmatch`` globs against
+    the project-relative path; ``exclude`` wins when a path matches both, and
+    an empty or absent ``include`` restricts nothing.
     """
     files: list[Doc] = []
     root = os.path.abspath(project_path)
@@ -1167,7 +1205,7 @@ def collect_source_files(project_path: str, include_tests: bool = True) -> list[
         for filename in sorted(filenames):
             full = os.path.join(dirpath, filename)
             rel = os.path.relpath(full, root)
-            content = _collect_content(root, rel, visibility, include_tests)
+            content = _collect_content(root, rel, visibility, include_tests, include, exclude)
             if content is not None:
                 files.append({"relativePath": rel, "content": content})
     return sorted(files, key=lambda f: f["relativePath"])
@@ -1281,10 +1319,12 @@ def extract_codebase(
     project_path: str,
     *,
     include_tests: bool = True,
+    include: Sequence[str] | None = None,
+    exclude: Sequence[str] | None = None,
 ) -> Doc:
     if not os.path.exists(project_path):
         raise FileNotFoundError(f"Project path does not exist: {project_path}")
-    files = collect_source_files(project_path, include_tests)
+    files = collect_source_files(project_path, include_tests, include=include, exclude=exclude)
     result = extract_from_files(files)
     entities = result["entities"]
     relations = result["relations"]

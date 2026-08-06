@@ -31,12 +31,23 @@ Doc = dict[str, Any]
 # =============================================================================
 
 
+_INCLUDE_DESC = (
+    "Only collect files whose project-relative path matches one of these "
+    'fnmatch globs (e.g. "src/*", "**/*.py"); unset or empty means no '
+    "restriction."
+)
+_EXCLUDE_DESC = (
+    "Never collect files whose project-relative path matches one of these "
+    "fnmatch globs; takes priority over `include` when a path matches both."
+)
+
+
 class ExtractCodebaseInput(CommandInput):
     project_path: str = Field(alias="projectPath")
     graph: str | None = None
     include_tests: bool | None = Field(default=None, alias="includeTests")
-    include: list[str] | None = None
-    exclude: list[str] | None = None
+    include: list[str] | None = Field(default=None, description=_INCLUDE_DESC)
+    exclude: list[str] | None = Field(default=None, description=_EXCLUDE_DESC)
     dry_run: bool | None = Field(default=None, alias="dryRun")
 
 
@@ -45,8 +56,8 @@ class UpdateCodebaseInput(CommandInput):
     graph_name: str = Field(alias="graphName")
     git_ref: str | None = Field(default=None, alias="gitRef")
     include_tests: bool | None = Field(default=None, alias="includeTests")
-    include: list[str] | None = None
-    exclude: list[str] | None = None
+    include: list[str] | None = Field(default=None, description=_INCLUDE_DESC)
+    exclude: list[str] | None = Field(default=None, description=_EXCLUDE_DESC)
     dry_run: bool | None = Field(default=None, alias="dryRun")
     # Override the shrink guard (a collapsed extraction is refused by default).
     force: bool | None = None
@@ -165,6 +176,8 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
         extraction = treesitter.extract_codebase(
             params.project_path,
             include_tests=params.include_tests if params.include_tests is not None else True,
+            include=params.include,
+            exclude=params.exclude,
         )
     except FileNotFoundError as exc:
         raise OperationError(f"Error in codebase extraction: {exc}") from exc
@@ -213,6 +226,8 @@ def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
             params.graph_name,
             git_ref=params.git_ref or "HEAD~1..HEAD",
             include_tests=params.include_tests if params.include_tests is not None else True,
+            include=params.include,
+            exclude=params.exclude,
             dry_run=params.dry_run or False,
             force=params.force or False,
             multi=multi,

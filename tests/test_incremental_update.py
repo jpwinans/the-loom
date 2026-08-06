@@ -246,6 +246,19 @@ def test_no_changes_returns_the_empty_result(seeded: Path, multi: MultiGraph) ->
     assert set(result["stats"].values()) == {0}
 
 
+def test_exclude_keeps_a_changed_file_out_of_the_diff(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    (seeded / "src" / "service.py").write_text(REWRITTEN_SERVICE, encoding="utf-8")
+    commit(seeded, "rewrite the service on top of policy")
+
+    before = names(store)
+    result = update(seeded, multi, exclude=["src/*"])
+
+    assert result["changedFiles"] == []
+    assert names(store) == before
+
+
 def test_changed_file_relations_are_rediffed(
     seeded: Path, multi: MultiGraph, store: FalkorGraphStore
 ) -> None:
