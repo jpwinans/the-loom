@@ -11,6 +11,7 @@ pytest.importorskip("fastapi")  # viz-serve extra; mirrors the UMAP importorskip
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from tests.fakes import FakeEmbedder  # noqa: E402
 from theloom.model import EntityCreate, RelationCreate  # noqa: E402
 from theloom.store.multigraph import MultiGraph  # noqa: E402
 from theloom.viz.serve import create_app  # noqa: E402
@@ -118,11 +119,9 @@ def test_search_returns_hits(client: TestClient, multi: MultiGraph, monkeypatch)
     store.set_entity_vector(hit.id, [1.0, 0.0])
     store.set_entity_vector(miss.id, [0.0, 1.0])
 
-    class _Stub:
-        def embed_query(self, text: str) -> list[float]:
-            return [1.0, 0.0]
-
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _Stub())
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
+    )
     response = client.get("/api/search", params={"q": "vector", "limit": 5})
     assert response.status_code == 200
     names = [h["name"] for h in response.json()]

@@ -19,6 +19,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from theloom.semantic.embed import cosine_similarity
+
 # =============================================================================
 # Constants
 # =============================================================================
@@ -35,24 +37,6 @@ DEFAULT_WEIGHTS: dict[str, float] = {
     "structuralWeight": 1 / 3,
     "compressionWeight": 1 / 3,
 }
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Cosine similarity via an explicit loop (with a fixed summation order)
-    that returns 0 for empty or mismatched-length vectors and for a zero-norm
-    operand."""
-    if len(a) != len(b) or len(a) == 0:
-        return 0.0
-    dot = 0.0
-    norm_a = 0.0
-    norm_b = 0.0
-    for x, y in zip(a, b, strict=False):
-        dot += x * y
-        norm_a += x * x
-        norm_b += y * y
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
 # =============================================================================
@@ -72,7 +56,7 @@ def compute_subjective_information_density(
 
     effective_k = k if k is not None else DEFAULT_K
 
-    similarities = [_cosine_similarity(proposal_emb, other) for other in existing]
+    similarities = [cosine_similarity(proposal_emb, other) for other in existing]
     similarities.sort(reverse=True)
 
     top_k = similarities[: min(effective_k, len(similarities))]

@@ -26,6 +26,7 @@ from theloom.reification.fingerprint import (
     neighborhood_meta,
 )
 from theloom.semantic.deduplication_gate import deduplicate_proposals, proposal_to_text
+from theloom.semantic.embed import cosine_similarity
 from theloom.semantic.entity_proposer import propose_entities
 from theloom.verification.capability_spec import CapabilitySpec
 
@@ -58,6 +59,18 @@ class FakeStore:
 
     def get_entity_vectors(self) -> dict[str, list[float]]:
         return dict(self._vectors)
+
+    def has_entity_vectors(self) -> bool:
+        return bool(self._vectors)
+
+    def vector_knn(self, query_vector: list[float], k: int) -> list[tuple[str, float]]:
+        """Exact stand-in for the store's ANN index: (id, cosine), nearest first."""
+        scored = [
+            (entity_id, cosine_similarity(query_vector, vector))
+            for entity_id, vector in self._vectors.items()
+        ]
+        scored.sort(key=lambda pair: -pair[1])
+        return scored[:k]
 
     def read_entity(self, entity_id: str) -> Doc | None:
         return next((e for e in self._entities if e["id"] == entity_id), None)

@@ -23,6 +23,7 @@ from theloom.documents.ingestion import (
 )
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.operations.common import CommandInput
+from theloom.semantic.embed import cosine_similarity
 from theloom.store.multigraph import MultiGraph
 
 _SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
@@ -262,8 +263,9 @@ class _UnionFind:
             self._rank[root_a] = rank_a + 1
 
 
-def _cosine(a: list[float], b: list[float]) -> float:
-    return sum(x * y for x, y in zip(a, b, strict=True))
+# Chunk vectors are L2-normalized, so the shared cosine is the dot product
+# these call sites always meant.
+_cosine = cosine_similarity
 
 
 def _derive_theme_label(metadata: Doc) -> str:

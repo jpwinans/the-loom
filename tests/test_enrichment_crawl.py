@@ -15,16 +15,10 @@ from __future__ import annotations
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.composites.enrichment_crawl import EnrichmentCrawlInput, enrichment_crawl
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
-
-
-class _StubEmbedder:
-    """embed_query returns a fixed vector regardless of text (no real model)."""
-
-    def embed_query(self, text: str) -> list[float]:
-        return [1.0, 0.0, 0.0]
 
 
 def _seed_frontier(multi: MultiGraph) -> dict[str, str]:
@@ -141,7 +135,9 @@ def test_semantic_context_is_used_when_entity_vectors_exist(
     store = multi.get_store()
     store.set_entity_vector(ids["beta"], [1.0, 0.0, 0.0])
     store.set_entity_vector(ids["gamma"], [0.99, 0.14, 0.0])
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _StubEmbedder())
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
 
     result = enrichment_crawl(EnrichmentCrawlInput(), multi)
 

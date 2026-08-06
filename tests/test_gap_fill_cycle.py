@@ -14,16 +14,10 @@ from typing import Any
 
 import pytest
 
+from tests.fakes import FakeEmbedder
 from theloom.composites.gap_fill_cycle import GapFillCycleInput, gap_fill_cycle
 from theloom.model import EntityCreate
 from theloom.store.multigraph import MultiGraph
-
-
-class _StubEmbedder:
-    """embed_query returns a fixed vector regardless of text (no real model)."""
-
-    def embed_query(self, text: str) -> list[float]:
-        return [1.0, 0.0, 0.0]
 
 
 def _seed_close_pair(multi: MultiGraph) -> tuple[str, str]:
@@ -47,7 +41,9 @@ def test_commit_threshold_zero_actually_commits(
     multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     a_id, b_id = _seed_close_pair(multi)
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _StubEmbedder())
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
 
     result = gap_fill_cycle(
         GapFillCycleInput.model_validate({"seedEntity": a_id, "commitThreshold": 0}),
@@ -66,7 +62,9 @@ def test_commit_threshold_does_not_commit_when_structural_gate_fails(
     when the structural gate (constraint/invariant) fails — the "skipped"
     fix must not turn the gate into an unconditional pass-through."""
     a_id, b_id = _seed_close_pair(multi)
-    monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: _StubEmbedder())
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
 
     def _failing_verify_graph(*args: Any, **kwargs: Any) -> dict[str, Any]:
         return {"pass": False, "tier1": None, "tier2": None, "tier2Skipped": True}
