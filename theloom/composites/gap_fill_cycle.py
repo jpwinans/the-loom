@@ -30,6 +30,7 @@ After :func:`run_composite`, the aggregate metadata is extended with
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -104,6 +105,9 @@ def _compute_multiplicative_interestingness(
 
 
 def gap_fill_cycle(params: GapFillCycleInput, multi: MultiGraph) -> dict[str, Any]:
+    # Sections execute as they are built, above the run_composite call, so the
+    # runner needs the cycle's real start to report a truthful duration.
+    start = time.perf_counter()
     graph = params.graph
     auto_create = params.auto_create if params.auto_create is not None else False
     commit_threshold = params.commit_threshold
@@ -270,7 +274,8 @@ def gap_fill_cycle(params: GapFillCycleInput, multi: MultiGraph) -> dict[str, An
             ("suggestions", suggestions_section),
             ("validation", validation_section),
             ("verification", verification_section),
-        ]
+        ],
+        start=start,
     )
     result["metadata"]["committed"] = counters["committed"]
     result["metadata"]["skipped"] = counters["skipped"]

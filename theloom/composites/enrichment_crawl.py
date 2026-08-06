@@ -52,6 +52,7 @@ half of the context — structural closure still applies.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from pydantic import Field
@@ -183,6 +184,10 @@ def _closure_candidates(graph: LoomGraph, entity_id: str) -> list[tuple[str, flo
 
 
 def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[str, Any]:
+    # Sections are built (and therefore executed) before the runner is called,
+    # so the runner is handed the crawl's real start — otherwise
+    # totalDurationMs would time only the envelope assembly.
+    start = time.perf_counter()
     max_nodes = params.max_nodes if params.max_nodes is not None else DEFAULT_MAX_NODES
     max_candidates = (
         params.max_candidates if params.max_candidates is not None else DEFAULT_MAX_CANDIDATES
@@ -463,7 +468,8 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             ("crawl", crawl_section),
             ("enrich", enrich_section),
             ("summary", summary_section),
-        ]
+        ],
+        start=start,
     )
     enrich_result: Doc | None = enrich_section["data"]
     # null, not 0: nothing was written *and* nothing was attempted.

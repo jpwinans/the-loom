@@ -11,6 +11,7 @@ embeddings; ``categoryAnalysis`` runs over stored chunk vectors (deterministic).
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from pydantic import Field
@@ -38,6 +39,9 @@ class SemanticLandscapeInput(CommandInput):
 
 
 def semantic_landscape(params: SemanticLandscapeInput, multi: MultiGraph) -> dict[str, Any]:
+    # Several sections execute before the runner is called; hand it the real
+    # start so totalDurationMs covers them too.
+    start = time.perf_counter()
     limit = params.limit
     min_similarity = params.min_similarity
     graph = params.graph
@@ -102,5 +106,6 @@ def semantic_landscape(params: SemanticLandscapeInput, multi: MultiGraph) -> dic
             ("suggestions", suggestions_section),
             ("neighbors", neighbors_section),
             ("categoryAnalysis", category_section),
-        ]
+        ],
+        start=start,
     )

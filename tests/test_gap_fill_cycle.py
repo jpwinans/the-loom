@@ -91,3 +91,33 @@ def test_registered_summary_says_commit_threshold_writes() -> None:
     descriptor = next(c for c in COMMANDS if c.name == "gap-fill-cycle")
     assert "commitThreshold" in descriptor.summary
     assert "WRITES" in descriptor.summary
+
+
+def test_total_duration_covers_work_done_in_the_sections(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``metadata.totalDurationMs`` is the whole cycle's wall clock, not the
+    runner's own bookkeeping."""
+    import time
+
+    from theloom.composites import gap_fill_cycle as module
+
+    a_id, _ = _seed_close_pair(multi)
+    monkeypatch.setattr(
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
+    )
+    real_semantic_gaps = module.semantic_gaps
+
+    def slow_semantic_gaps(*args: Any, **kwargs: Any) -> Any:
+        time.sleep(0.05)
+        return real_semantic_gaps(*args, **kwargs)
+
+    monkeypatch.setattr(module, "semantic_gaps", slow_semantic_gaps)
+
+    result = gap_fill_cycle(GapFillCycleInput.model_validate({"seedEntity": a_id}), multi)
+
+    # The gaps section alone sleeps 50ms.
+    assert result["metadata"]["totalDurationMs"] >= 50
+    assert result["metadata"]["totalDurationMs"] >= max(
+        section["durationMs"] for section in result["result"].values()
+    )

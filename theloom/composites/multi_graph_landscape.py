@@ -8,6 +8,7 @@ on section 1 and degrade to :func:`failed_section` if the graph list failed.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from theloom.composites.framework import failed_section, run_composite, time_section
@@ -22,6 +23,9 @@ class MultiGraphLandscapeInput(CommandInput):
 
 
 def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -> dict[str, Any]:
+    # Several sections execute before the runner is called; hand it the real
+    # start so totalDurationMs covers them too.
+    start = time.perf_counter()
     def _graphs() -> list[dict[str, Any]]:
         # list_graphs yields only {name, loaded}; entityCount/relationCount are
         # absent (omitted rather than emitted as null).
@@ -100,5 +104,6 @@ def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -
             ("bridges", _bridges),
             ("perGraphStats", per_graph_stats_section),
             ("relatedGraphs", related_section),
-        ]
+        ],
+        start=start,
     )

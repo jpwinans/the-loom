@@ -8,6 +8,7 @@ except path finding, which degrades to :func:`failed_section` without a target.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from pydantic import Field
@@ -43,6 +44,9 @@ class StructuralSurveyInput(CommandInput):
 
 
 def structural_survey(params: StructuralSurveyInput, multi: MultiGraph) -> dict[str, Any]:
+    # Several sections execute before the runner is called; hand it the real
+    # start so totalDurationMs covers them too.
+    start = time.perf_counter()
     graph = params.graph
     entity_id = params.entity_id
 
@@ -138,5 +142,6 @@ def structural_survey(params: StructuralSurveyInput, multi: MultiGraph) -> dict[
             ("paths", paths_section),
             ("metapaths", _metapaths),
             ("crossType", _cross_type),
-        ]
+        ],
+        start=start,
     )

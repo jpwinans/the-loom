@@ -340,3 +340,31 @@ def test_candidate_budget_is_not_burned_by_already_merged_pairs(multi: MultiGrap
     assert by_name["Alpha"]["candidatesProposed"] == 0, (
         "candidatesProposed must count real proposals, not skipped duplicates"
     )
+
+
+def test_total_duration_covers_work_done_in_the_sections(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``metadata.totalDurationMs`` is the whole crawl's wall clock, not the
+    runner's own bookkeeping — a caller budgets crawl cost from it."""
+    import time
+
+    from theloom.composites import enrichment_crawl as module
+
+    _seed_frontier(multi)
+    real_get_relations = module.get_relations
+
+    def slow_get_relations(*args: object, **kwargs: object) -> object:
+        time.sleep(0.05)
+        return real_get_relations(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module, "get_relations", slow_get_relations)
+
+    result = enrichment_crawl(EnrichmentCrawlInput(), multi)
+
+    # One 50ms sleep per crawled frontier node, so the crawl itself cannot
+    # have taken less than 50ms.
+    assert result["metadata"]["totalDurationMs"] >= 50
+    assert result["metadata"]["totalDurationMs"] >= max(
+        section["durationMs"] for section in result["result"].values()
+    )
