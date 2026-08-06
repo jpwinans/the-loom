@@ -40,6 +40,11 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from theloom.documents.metadata import ChunkMetadata
+
+# The store's paging, called by name rather than through ``_rows_paged``: a
+# document delete must snapshot the ids it will remove, and the tests that pin
+# what happens when another writer moves in *during* that snapshot substitute
+# this function to open the window. Same machinery either way.
 from theloom.store.paging import fetch_all_rows
 from theloom.store.space import GraphSpace
 
