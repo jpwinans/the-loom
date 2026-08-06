@@ -31,6 +31,9 @@ from theloom.operations.common import CommandInput
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.verification import checks, propagation
+from theloom.verification.metrics import capability_result as _capability_result
+from theloom.verification.metrics import coupling as _coupling
+from theloom.verification.metrics import coverage as _coverage
 
 Doc = dict[str, Any]
 
@@ -437,10 +440,6 @@ def propagate_constraints(params: PropagateConstraintsInput, multi: MultiGraph) 
 # =============================================================================
 
 
-def _capability_result(name: str, violations: list[Doc]) -> Doc:
-    return {"name": name, "pass": len(violations) == 0, "violations": violations}
-
-
 def check_capabilities(params: CheckCapabilitiesInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     entities, relations = _all_docs(store)
@@ -487,71 +486,6 @@ def check_capabilities(params: CheckCapabilitiesInput, multi: MultiGraph) -> Doc
         "violations": all_violations,
         "capabilities": capabilities,
     }
-
-
-def _coverage(
-    entities: list[Doc], relations: list[Doc], parent_type: str, child_type: str, relation_type: str
-) -> Doc:
-    name = f"coverage({parent_type}->{child_type} via {relation_type})"
-    child_ids = {e["id"] for e in entities if e.get("entityType") == child_type}
-    parents = [e for e in entities if e.get("entityType") == parent_type]
-    violations: list[Doc] = []
-    for parent in parents:
-        has_child = any(
-            r["relationType"] == relation_type
-            and (
-                (r["from"] == parent["id"] and r["to"] in child_ids)
-                or (r["to"] == parent["id"] and r["from"] in child_ids)
-            )
-            for r in relations
-        )
-        if not has_child:
-            violations.append(
-                {
-                    "capabilityName": name,
-                    "violationType": "coverage",
-                    "elementId": parent["id"],
-                    "message": (
-                        f"Entity '{parent['name']}' (type: {parent_type}) has no "
-                        f"linked '{child_type}' via '{relation_type}'"
-                    ),
-                    "suggestedAction": (
-                        f"Create a '{child_type}' entity and link it to "
-                        f"'{parent['name']}' via '{relation_type}'"
-                    ),
-                }
-            )
-    return _capability_result(name, violations)
-
-
-def _coupling(entities: list[Doc], relations: list[Doc], metric: str, threshold: float) -> Doc:
-    name = f"coupling({metric}<{threshold})"
-    if not entities:
-        return _capability_result(name, [])
-    from theloom.graph.analytics import betweenness_centrality, degree_centrality
-    from theloom.graph.hydrate import hydrate_graph
-
-    graph = hydrate_graph(entities, relations)
-    scores = betweenness_centrality(graph) if metric == "betweenness" else degree_centrality(graph)
-    names = {e["id"]: e["name"] for e in entities}
-    violations = [
-        {
-            "capabilityName": name,
-            "violationType": "coupling",
-            "elementId": entity_id,
-            "message": (
-                f"Entity '{names.get(entity_id, entity_id)}' has {metric} centrality "
-                f"{score:.3f} exceeding threshold {threshold}"
-            ),
-            "suggestedAction": (
-                f"Decompose '{names.get(entity_id, entity_id)}' into smaller entities or "
-                f"redistribute its relations to reduce {metric} centrality below {threshold}"
-            ),
-        }
-        for entity_id, score in scores.items()
-        if score > threshold
-    ]
-    return _capability_result(name, violations)
 
 
 # =============================================================================
