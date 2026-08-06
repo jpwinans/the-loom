@@ -60,7 +60,8 @@ theloom/                     the package
   config.py                    configuration (single resolution path)
   errors.py                    typed error codes
   cli/                         Typer CLI (io, app, command registry, docs)
-  store/                       FalkorDB store, event log, lifecycle, filters, migration
+  store/                       FalkorDB store, read port + in-memory adapter, event log,
+                               lifecycle, filters, migration
   graph/  semantic/  algebra/  synthesis/
   documents/  extraction/  verification/  operations/  composites/
   viz/                          TapestryBundle assembly + HTML template injection

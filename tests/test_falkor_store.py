@@ -24,6 +24,7 @@ from theloom.model import (
 )
 from theloom.store.events import EventLog
 from theloom.store.falkor import FalkorGraphStore
+from theloom.timeutil import iso_now
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
@@ -565,6 +566,35 @@ def test_read_entity_as_of_returns_historical_state(store: FalkorGraphStore) -> 
 def test_read_entity_as_of_before_creation_is_none(store: FalkorGraphStore) -> None:
     created = store.create_entity(spec())
     assert store.read_entity_as_of(created.id, "2000-01-01T00:00:00.000Z") is None
+
+
+def test_read_graph_as_of_restores_a_retraction_and_the_edges_it_closed_out(
+    store: FalkorGraphStore,
+) -> None:
+    """Retraction closes out every attached edge, so the edges *and* the
+    entity's pre-retraction incarnation must come back from a bound before it —
+    the one write path where an as-of read that only sees live edges silently
+    loses a whole neighbourhood."""
+    a = store.create_entity(spec("Population"))
+    b = store.create_entity(spec("Resources"))
+    edge = store.create_relation(
+        RelationCreate.model_validate({"from": a.id, "to": b.id, "relationType": "causes"})
+    )
+    time.sleep(0.01)
+    pivot = iso_now()
+    time.sleep(0.01)
+    store.delete_entity(b.id)
+
+    snapshot = store.read_graph_as_of(pivot)
+
+    assert [e.name for e in snapshot.entities] == ["Population", "Resources"]
+    assert [e.status for e in snapshot.entities] == [None, None]  # not yet retracted
+    assert [r.id for r in snapshot.relations] == [edge.id]
+    # ...and today the edge is gone and the entity is retracted.
+    assert store.list_relations() == []
+    retracted = store.read_entity(b.id)
+    assert retracted is not None and retracted.status is not None
+    assert retracted.status.value == "retracted"
 
 
 # =============================================================================

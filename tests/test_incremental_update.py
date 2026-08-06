@@ -11,14 +11,13 @@ from tests/fixtures/repo.
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
-from falkordb import FalkorDB
 
 from theloom.errors import NotFoundError, OperationError
 from theloom.extraction import treesitter
@@ -27,6 +26,7 @@ from theloom.model import EntityCreate, EntityFilter, RelationCreate
 from theloom.operations.bulk import BulkImportInput, bulk_import
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
+from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
 
@@ -173,9 +173,7 @@ def test_invalidate_relation_removes_it_from_the_projection(store: FalkorGraphSt
     assert store.list_relations() == []
 
 
-def test_invalidate_relation_keeps_history(
-    multi: MultiGraph, store: FalkorGraphStore, db: FalkorDB, namespace: str
-) -> None:
+def test_invalidate_relation_keeps_history(multi: MultiGraph, store: FalkorGraphStore) -> None:
     a = store.create_entity(
         EntityCreate.model_validate({"name": "A", "entityType": "concept", "observations": []})
     )
@@ -185,18 +183,19 @@ def test_invalidate_relation_keeps_history(
     relation = store.create_relation(
         RelationCreate.model_validate({"from": a.id, "to": b.id, "relationType": "calls"})
     )
+    time.sleep(0.01)
+    while_live = iso_now()
+    time.sleep(0.01)
 
     store.invalidate_relation(a.id, b.id, "calls")
 
-    result = db.select_graph(f"{namespace}:graph:{GRAPH}").query(
-        "MATCH (v:_RelationVersion) RETURN v.relation_id, v._doc, v.tx_from, v.tx_to"
-    )
-    assert len(result.result_set) == 1
-    relation_id, doc, tx_from, tx_to = result.result_set[0]
-    assert relation_id == relation.id
-    assert json.loads(doc)["id"] == relation.id
-    assert tx_from == relation.created_at
-    assert tx_to >= tx_from
+    assert store.list_relations() == []  # gone from the live projection
+    # ...and still there in history, over the whole interval it was open:
+    # from the doc's own created_at up to (not including) the retirement.
+    for bound in (relation.created_at, while_live):
+        restored = store.read_graph_as_of(bound).relations
+        assert [r.id for r in restored] == [relation.id]
+        assert restored[0].relation_type.value == "calls"
 
     events = multi.event_log(GRAPH).read_all()
     assert events[-1].type == "relation_invalidated"

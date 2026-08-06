@@ -24,6 +24,11 @@ Storage model — one FalkorDB graph per named Loom graph:
   tx_to}`` — the same bi-temporal shape for an edge that has left the live
   projection (``invalidate_relation``). An edge carries no status field, so
   retiring one means closing its system-time interval, not flipping a flag.
+
+Both version labels are read by ``read_graph_as_of``, the graph-level answer to
+"state as of time T": it is the only read that can see a closed interval, so
+anything reconstructing a past graph from the live projection alone is missing
+exactly what these nodes record.
 - Metadata = singleton node ``:_GraphMeta {_doc}``.
 
 Every mutation goes through ``_commit``: ONE Cypher statement plus its event
@@ -74,6 +79,7 @@ from theloom.store.filters import (
     extract_neighbor_ids,
 )
 from theloom.store.paging import PAGE_SIZE, fetch_all_rows
+from theloom.store.read_port import GraphSnapshot
 from theloom.timeutil import iso_now
 
 _ENTITY_LABEL = "_Entity"
@@ -458,6 +464,79 @@ class FalkorGraphStore(GraphStore):
             return Entity.model_validate(json.loads(version_rows[0][0]))
         return None
 
+    def read_graph_as_of(self, timestamp: str) -> GraphSnapshot:
+        """The whole graph as it stood at ``timestamp`` (see the read port)."""
+        entities = self._entities_as_of(timestamp)
+        present = {entity.id for entity in entities}
+        relations = [
+            relation
+            for relation in self._relations_as_of(timestamp)
+            if relation.from_ in present and relation.to in present
+        ]
+        return GraphSnapshot(entities=entities, relations=relations)
+
+    def _entities_as_of(self, timestamp: str) -> list[Entity]:
+        """Every entity's incarnation current at ``timestamp``, creation order.
+
+        Two reads, not one per entity: the live nodes (whose ``tx_from`` opens
+        the current incarnation) and the closed ``:_EntityVersion`` intervals
+        containing the bound. A live node younger than the bound falls back to
+        its version; with no covering version the entity was not yet born.
+        """
+        live = self._rows_paged("MATCH (n:_Entity) RETURN n.id, n._doc, n.tx_from ORDER BY id(n)")
+        stale = [row[0] for row in live if row[2] > timestamp]
+        versions = self._entity_versions_as_of(stale, timestamp) if stale else {}
+        entities: list[Entity] = []
+        for entity_id, doc, tx_from in live:
+            covering = doc if tx_from <= timestamp else versions.get(entity_id)
+            if covering is not None:
+                entities.append(Entity.model_validate(json.loads(covering)))
+        return entities
+
+    def _entity_versions_as_of(self, entity_ids: Sequence[str], timestamp: str) -> dict[str, str]:
+        """``entity_id -> _doc`` for the closed version interval containing the
+        bound, for the ids asked about. Intervals per entity are disjoint, so
+        at most one row can match each."""
+        rows = self._rows_paged(
+            "MATCH (v:_EntityVersion) WHERE v.entity_id IN $ids "
+            "AND v.tx_from <= $t AND $t < v.tx_to "
+            "RETURN v.entity_id, v._doc ORDER BY id(v)",
+            {"ids": list(entity_ids), "t": timestamp},
+        )
+        return {row[0]: row[1] for row in rows}
+
+    def _relations_as_of(self, timestamp: str) -> list[Relation]:
+        """Every edge whose system-time interval was open at ``timestamp``.
+
+        Two sources, because an edge's interval can be open or closed: the live
+        edges (interval ``[created_at, ∞)``) created at/before the bound, then
+        the ``:_RelationVersion`` snapshots whose closed ``[tx_from, tx_to)``
+        contains it — an edge retired since the bound was still there then, and
+        it is this second read that keeps history queryable rather than merely
+        stored. Live edges come first, each group in creation order; an id
+        appearing in both (an edge retired and later recreated under the same
+        id) is answered by the live doc, the one still in the projection.
+        """
+        rows = self._rows_paged("MATCH ()-[r]->() RETURN r._doc ORDER BY id(r)")
+        docs: list[dict[str, Any]] = [
+            doc
+            for doc in (json.loads(row[0]) for row in rows)
+            if doc.get("created_at", "") <= timestamp
+        ]
+        live_ids = {doc["id"] for doc in docs}
+        version_rows = self._rows_paged(
+            "MATCH (v:_RelationVersion) WHERE v.tx_from <= $t AND $t < v.tx_to "
+            "RETURN v.relation_id, v._doc ORDER BY id(v)",
+            {"t": timestamp},
+        )
+        seen = set(live_ids)
+        for relation_id, doc_json in version_rows:
+            if relation_id in seen:
+                continue
+            seen.add(relation_id)
+            docs.append(json.loads(doc_json))
+        return [Relation.model_validate(doc) for doc in docs]
+
     def update_entity(self, entity_id: str, updates: Mapping[str, Any]) -> Entity:
         current = self._read_doc(entity_id)
         if current is None:
@@ -588,6 +667,14 @@ class FalkorGraphStore(GraphStore):
         )
         docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
         return {doc["id"]: doc for doc in docs}
+
+    def read_entities(self, entity_ids: Iterable[str]) -> dict[str, Entity]:
+        """``read_entity_docs`` in the model dialect — the read port's bulk
+        entity read. One query, ids with no live node absent."""
+        return {
+            entity_id: Entity.model_validate(doc)
+            for entity_id, doc in self.read_entity_docs(entity_ids).items()
+        }
 
     def apply_entity_merge(
         self,
