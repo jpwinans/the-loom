@@ -477,12 +477,10 @@ def inference_trace_for_fact(params: InferenceTraceForFactInput, multi: MultiGra
         or provenance.get("sourceType") != "inference"
         or not provenance.get("externalRef")
     ):
-        # "No inference trace found for relation" lacks the contiguous substring
-        # "not found" -> the error classifier returns OPERATION_ERROR.
-        raise OperationError(f"No inference trace found for relation: {params.relation_id}")
+        raise NotFoundError(f"No inference trace found for relation: {params.relation_id}")
     trace = _get_trace(store, provenance["externalRef"])
     if trace is None:
-        raise OperationError(f"No inference trace found for relation: {params.relation_id}")
+        raise NotFoundError(f"No inference trace found for relation: {params.relation_id}")
     return trace
 
 

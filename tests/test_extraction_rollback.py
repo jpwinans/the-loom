@@ -102,6 +102,16 @@ class TestExtractCodebaseRollback:
         assert rollback["deletedEntities"] > 0
         assert names(store) == set()
 
+    def test_missing_project_path_raises_not_found(self, multi: MultiGraph) -> None:
+        with pytest.raises(NotFoundError, match="does not exist") as excinfo:
+            extract_codebase(
+                ExtractCodebaseInput.model_validate(
+                    {"projectPath": str(FIXTURE_REPO / "does-not-exist"), "graph": GRAPH}
+                ),
+                multi,
+            )
+        assert excinfo.value.code == "NOT_FOUND"
+
     def test_rollback_never_touches_a_merged_entity_from_an_earlier_run(
         self, multi: MultiGraph, store: FalkorGraphStore
     ) -> None:
