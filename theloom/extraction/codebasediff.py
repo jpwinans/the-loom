@@ -500,7 +500,18 @@ def update_codebase_diff(
         project_path, git_ref, include_tests=include_tests, include=include, exclude=exclude
     )
     if not changed:
-        return _empty_result([])
+        # A no-op run is still a run: the response shape must not depend on
+        # whether git found changes, so a caller can always chain `runId` into
+        # extraction-rollback (which then has nothing to undo).
+        return {
+            **_empty_result([]),
+            "runId": multi.run_store().save_codebase_run(
+                started_at=started_at,
+                created_entity_ids=[],
+                created_relation_ids=[],
+                dry_run=dry_run,
+            ),
+        }
 
     store = multi.get_store(graph_name)
     extraction = treesitter.extract_codebase(

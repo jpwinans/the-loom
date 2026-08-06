@@ -225,3 +225,19 @@ class TestUpdateCodebaseRollback:
             multi,
         )
         assert names(store) == before
+
+    def test_a_no_op_update_still_reports_a_run_id(self, repo: Path, multi: MultiGraph) -> None:
+        """The response shape must not depend on whether git found changes —
+        a caller chaining update-codebase into extraction-rollback reads
+        ``runId`` unconditionally."""
+        extract_codebase(
+            ExtractCodebaseInput.model_validate({"projectPath": str(repo), "graph": GRAPH}), multi
+        )
+        result = update_codebase_diff(str(repo), GRAPH, git_ref="HEAD..HEAD", multi=multi)
+
+        assert result["changedFiles"] == []
+        run = extraction_status(
+            ExtractionStatusInput.model_validate({"runId": result["runId"]}), multi
+        )
+        assert run["createdEntityIds"] == []
+        assert run["createdRelationIds"] == []
