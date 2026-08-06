@@ -55,7 +55,7 @@ All 38 groups are enriched. None were skipped.
 | Immediate neighbours only | `loom get-neighbors '{"name": "X", "compact": true, "limit": 12, "graph": "codebase-the-loom"}'` | → 12 rows with relation type and direction |
 | How are `X` and `Y` connected? | `loom find-shortest-path '{"from": "X", "to": "Y", "graph": "codebase-the-loom"}'` then `loom explain-path` | → hop chain with relation types |
 | Whole-graph shape | `loom graph-stats '{"graph": "codebase-the-loom"}'` | → counts by entity and relation type |
-| Hubs | `loom analyze-centrality '{"metric": "degree", "limit": 15, "graph": "codebase-the-loom"}'` | → 15 rows of `{id, name, entityType, score}` — no id follow-up needed |
+| Hubs | `loom analyze-centrality '{"algorithm": "degree", "limit": 15, "graph": "codebase-the-loom"}'` | → 15 rows of `{id, name, entityType, score}` — no id follow-up needed |
 
 ## Naming conventions in this graph
 

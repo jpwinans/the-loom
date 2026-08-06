@@ -8,7 +8,13 @@ stamps timing.
 
 from __future__ import annotations
 
+import time
+
 from theloom.composites import framework
+from theloom.composites.graph_reconnaissance import GraphReconInput, graph_reconnaissance
+from theloom.composites.self_improve import SelfImproveInput, self_improve
+from theloom.operations.entity import CreateEntityInput, create_entity
+from theloom.store.multigraph import MultiGraph
 
 
 class TestTimeSection:
@@ -61,3 +67,164 @@ class TestBuildCompositeResult:
         composite = framework.build_composite_result(sections, total_duration_ms=0)
         assert composite["metadata"]["sectionsSucceeded"] == 1
         assert composite["metadata"]["sectionsFailed"] == 0
+
+
+class TestRunComposite:
+    """The runner: executes a declared list of (name, section) pairs and stamps
+    the envelope. Each spec is either a zero-arg callable (run through
+    `time_section`) or an already-built SectionResult (used as-is — the
+    pattern `failed_section`-style short-circuits rely on)."""
+
+    def test_runs_callables_in_order_and_builds_envelope(self) -> None:
+        calls: list[str] = []
+
+        def first() -> dict[str, int]:
+            calls.append("first")
+            return {"n": 1}
+
+        def second() -> dict[str, int]:
+            calls.append("second")
+            return {"n": 2}
+
+        composite = framework.run_composite([("first", first), ("second", second)])
+
+        assert calls == ["first", "second"], "sections run in declared order"
+        assert composite["result"]["first"]["data"] == {"n": 1}
+        assert composite["result"]["second"]["data"] == {"n": 2}
+        assert list(composite["result"].keys()) == ["first", "second"]
+        assert composite["metadata"]["sectionsSucceeded"] == 2
+        assert composite["metadata"]["sectionsFailed"] == 0
+        assert isinstance(composite["metadata"]["totalDurationMs"], int)
+        assert composite["metadata"]["totalDurationMs"] >= 0
+
+    def test_a_failing_callable_still_lets_later_sections_run(self) -> None:
+        def boom() -> None:
+            raise ValueError("kaboom")
+
+        def ok() -> int:
+            return 42
+
+        composite = framework.run_composite([("bad", boom), ("good", ok)])
+
+        assert composite["result"]["bad"]["error"] == "kaboom"
+        assert composite["result"]["bad"]["data"] is None
+        assert composite["result"]["good"]["data"] == 42
+        assert composite["metadata"]["sectionsSucceeded"] == 1
+        assert composite["metadata"]["sectionsFailed"] == 1
+
+    def test_an_already_built_section_result_passes_through_unexecuted(self) -> None:
+        """A pre-built SectionResult (e.g. from `failed_section`, for a
+        conditional short-circuit decided before the runner is called) is used
+        as-is rather than being treated as a callable."""
+        prebuilt = framework.failed_section("no prerequisite data")
+
+        composite = framework.run_composite([("skipped", prebuilt)])
+
+        assert composite["result"]["skipped"] is prebuilt
+        assert composite["metadata"]["sectionsFailed"] == 1
+
+    def test_start_override_extends_totalDurationMs_to_include_prior_work(self) -> None:
+        """A caller that already captured `time.perf_counter()` before doing
+        pre-section setup can pass that timestamp in so the setup counts
+        toward totalDurationMs."""
+        earlier = time.perf_counter() - 0.05  # pretend 50ms of setup already happened
+
+        composite = framework.run_composite([("a", lambda: 1)], start=earlier)
+
+        assert composite["metadata"]["totalDurationMs"] >= 45
+
+    def test_no_start_override_times_from_the_call_itself(self) -> None:
+        composite = framework.run_composite([("a", lambda: 1)])
+        assert composite["metadata"]["totalDurationMs"] < 1000
+
+    def test_empty_spec_list_builds_an_empty_but_valid_envelope(self) -> None:
+        composite = framework.run_composite([])
+        assert composite["result"] == {}
+        assert composite["metadata"]["sectionsSucceeded"] == 0
+        assert composite["metadata"]["sectionsFailed"] == 0
+
+
+class TestGraphReconnaissanceWireShape:
+    """graph-reconnaissance migrated from a hand-rolled timer pair straight
+    into `run_composite` — its wire output (both envelope keys and per-section
+    keys) must be unchanged key-for-key."""
+
+    def test_top_level_and_section_keys_are_unchanged(self, multi: MultiGraph) -> None:
+        create_entity(
+            CreateEntityInput.model_validate(
+                {"name": "Node A", "entityType": "concept", "observations": ["a"]}
+            ),
+            multi,
+        )
+
+        result = graph_reconnaissance(GraphReconInput(), multi)
+
+        assert set(result.keys()) == {"result", "metadata"}
+        assert set(result["result"].keys()) == {
+            "stats",
+            "loops",
+            "leveragePoints",
+            "centrality",
+            "components",
+            "bridges",
+        }
+        for section in result["result"].values():
+            assert set(section.keys()) == {"data", "durationMs", "error"}
+        assert set(result["metadata"].keys()) == {
+            "totalDurationMs",
+            "sectionsSucceeded",
+            "sectionsFailed",
+            "executedAt",
+        }
+        assert result["metadata"]["sectionsFailed"] == 0
+        stats = result["result"]["stats"]["data"]
+        assert set(stats.keys()) == {
+            "entityCount",
+            "relationCount",
+            "entityTypeDistribution",
+            "relationTypeDistribution",
+        }
+        assert stats["entityCount"] == 1
+
+
+class TestSelfImproveWireShape:
+    """self-improve migrated its state-threaded, six-section pipeline onto
+    `run_composite` — the top-level result shape and its nested composite
+    envelope must be unchanged key-for-key."""
+
+    def test_top_level_and_envelope_keys_are_unchanged(self, multi: MultiGraph) -> None:
+        create_entity(
+            CreateEntityInput.model_validate(
+                {"name": "Seed", "entityType": "concept", "observations": ["obs"]}
+            ),
+            multi,
+        )
+
+        result = self_improve(SelfImproveInput(), multi)
+
+        assert set(result.keys()) == {
+            "composite",
+            "reconnaissance",
+            "violations",
+            "proposals",
+            "applied",
+            "failedWrites",
+            "summary",
+        }
+        envelope = result["composite"]
+        assert set(envelope.keys()) == {"result", "metadata"}
+        assert set(envelope["result"].keys()) == {
+            "reconnaissance",
+            "capabilityCheck",
+            "propose",
+            "simulate",
+            "rank",
+            "apply",
+        }
+        for section in envelope["result"].values():
+            assert set(section.keys()) == {"data", "durationMs", "error"}
+        assert envelope["metadata"]["sectionsFailed"] == 0
+        # autoApply defaults false -> apply is a no-op, deterministically.
+        assert result["applied"] == []
+        assert result["failedWrites"] == []
+        assert isinstance(result["summary"], str) and result["summary"]

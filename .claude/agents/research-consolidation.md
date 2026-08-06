@@ -50,7 +50,7 @@ loom embed-entities '{"graph": "GRAPH_NAME"}'
 ### 2. Structure survey (read-only, run concurrently)
 
 ```bash
-loom analyze-centrality '{"metric": "degree", "limit": 10, "graph": "GRAPH_NAME"}'   # hubs
+loom analyze-centrality '{"algorithm": "degree", "limit": 10, "graph": "GRAPH_NAME"}'   # hubs
 loom detect-components '{"graph": "GRAPH_NAME"}'                                     # isolated clusters
 loom check-consistency '{"graph": "GRAPH_NAME"}'                                     # integrity findings
 loom check-invariants '{"graph": "GRAPH_NAME"}'                                      # constraint violations

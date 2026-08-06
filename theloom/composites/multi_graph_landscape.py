@@ -8,10 +8,9 @@ on section 1 and degrade to :func:`failed_section` if the graph list failed.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
-from theloom.composites.framework import build_composite_result, failed_section, time_section
+from theloom.composites.framework import failed_section, run_composite, time_section
 from theloom.operations.analysis import GraphOnlyInput, graph_stats
 from theloom.operations.common import CommandInput
 from theloom.store.multigraph import MultiGraph
@@ -37,8 +36,6 @@ def _find_related(multi: MultiGraph, graph: str) -> list[str]:
 
 
 def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
-
     def _graphs() -> list[dict[str, Any]]:
         # list_graphs yields only {name, loaded}; entityCount/relationCount are
         # absent (omitted rather than emitted as null).
@@ -107,12 +104,12 @@ def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -
 
         related_section = time_section(_related_all)
 
-    sections = {
-        "graphs": graphs_section,
-        "connections": time_section(_connections),
-        "bridges": time_section(_bridges),
-        "perGraphStats": per_graph_stats_section,
-        "relatedGraphs": related_section,
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("graphs", graphs_section),
+            ("connections", _connections),
+            ("bridges", _bridges),
+            ("perGraphStats", per_graph_stats_section),
+            ("relatedGraphs", related_section),
+        ]
+    )

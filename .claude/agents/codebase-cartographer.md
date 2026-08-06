@@ -47,8 +47,8 @@ give these calls a long Bash timeout (600000 ms), never the default.
 
 ```bash
 loom graph-stats '{"graph": "GRAPH_NAME"}'
-loom analyze-centrality '{"metric": "degree", "limit": 15, "graph": "GRAPH_NAME"}'
-loom analyze-centrality '{"metric": "betweenness", "limit": 15, "graph": "GRAPH_NAME"}'
+loom analyze-centrality '{"algorithm": "degree", "limit": 15, "graph": "GRAPH_NAME"}'
+loom analyze-centrality '{"algorithm": "betweenness", "limit": 15, "graph": "GRAPH_NAME"}'
 loom detect-cycles '{"includePaths": true, "graph": "GRAPH_NAME"}'
 loom find-clusters '{"maxEntities": 500, "graph": "GRAPH_NAME"}'
 loom detect-components '{"graph": "GRAPH_NAME"}'

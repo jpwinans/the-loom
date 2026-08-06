@@ -144,7 +144,12 @@ class ReadEntitiesByNameInput(CommandInput):
 # =============================================================================
 
 
-def _entity_doc(store: FalkorGraphStore, entity_id: str) -> dict[str, Any] | None:
+def entity_doc(store: FalkorGraphStore, entity_id: str) -> dict[str, Any] | None:
+    """Read an entity and return its wire-ready dict, or None if absent.
+
+    Public so composites needing a plain entity doc (e.g. entity-deep-dive)
+    can call the same helper the entity operations use, instead of reaching
+    for a private name."""
     entity = store.read_entity(entity_id)
     return entity.model_dump(by_alias=True, exclude_unset=True) if entity else None
 
@@ -224,7 +229,7 @@ def create_entity(params: CreateEntityInput, multi: MultiGraph) -> dict[str, Any
 def read_entity(params: ReadEntityInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     entity_id = resolve_entity_ref(store, entity_id=params.id, name=params.name)
-    doc = _entity_doc(store, entity_id)
+    doc = entity_doc(store, entity_id)
     if doc is None:
         raise NotFoundError(
             f"Entity not found with ID: {entity_id}. Use list_entities to see available entities."
@@ -234,7 +239,7 @@ def read_entity(params: ReadEntityInput, multi: MultiGraph) -> dict[str, Any]:
 
 def update_entity(params: UpdateEntityInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
-    current = _entity_doc(store, params.id)
+    current = entity_doc(store, params.id)
     if current is None:
         raise NotFoundError(
             f"Entity not found with ID: {params.id}. "
@@ -279,7 +284,7 @@ def update_entity(params: UpdateEntityInput, multi: MultiGraph) -> dict[str, Any
         updates["changeReason"] = params.change_reason
 
     entity = store.update_entity(params.id, updates)
-    entity_doc = entity.model_dump(by_alias=True, exclude_unset=True)
+    updated_doc = entity.model_dump(by_alias=True, exclude_unset=True)
 
     supersedes_relation: dict[str, Any] | None = None
     if params.status == EntityStatus.SUPERSEDED and params.replaced_by_id is not None:
@@ -312,7 +317,7 @@ def update_entity(params: UpdateEntityInput, multi: MultiGraph) -> dict[str, Any
             multi,
         )
 
-    return {"entity": entity_doc, "supersedesRelation": supersedes_relation}
+    return {"entity": updated_doc, "supersedesRelation": supersedes_relation}
 
 
 def delete_entity(params: DeleteEntityInput, multi: MultiGraph) -> dict[str, Any]:

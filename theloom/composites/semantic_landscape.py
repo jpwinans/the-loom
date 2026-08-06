@@ -11,12 +11,11 @@ embeddings; ``categoryAnalysis`` runs over stored chunk vectors (deterministic).
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, failed_section, time_section
+from theloom.composites.framework import failed_section, run_composite, time_section
 from theloom.operations.common import CommandInput
 from theloom.operations.documents import AnalyzeCategoryInput, analyze_category
 from theloom.operations.semantic import (
@@ -39,7 +38,6 @@ class SemanticLandscapeInput(CommandInput):
 
 
 def semantic_landscape(params: SemanticLandscapeInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     limit = params.limit
     min_similarity = params.min_similarity
     graph = params.graph
@@ -98,11 +96,11 @@ def semantic_landscape(params: SemanticLandscapeInput, multi: MultiGraph) -> dic
     else:
         category_section = failed_section("category parameter required for analyze-category")
 
-    sections = {
-        "gaps": time_section(_gaps),
-        "suggestions": suggestions_section,
-        "neighbors": neighbors_section,
-        "categoryAnalysis": category_section,
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("gaps", _gaps),
+            ("suggestions", suggestions_section),
+            ("neighbors", neighbors_section),
+            ("categoryAnalysis", category_section),
+        ]
+    )

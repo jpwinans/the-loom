@@ -9,12 +9,11 @@ loops swallow individual failures.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite
 from theloom.operations.algebra import (
     CountPathsInput,
     SemiringDistancesInput,
@@ -52,9 +51,11 @@ def _distance_entries(distances: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _derive_targets(
-    confidence: dict[str, Any], shortest: dict[str, Any], limit: int
+    confidence_data: list[dict[str, Any]] | None,
+    shortest_data: list[dict[str, Any]] | None,
+    limit: int,
 ) -> list[dict[str, Any]]:
-    source = shortest["data"] if shortest["data"] is not None else (confidence["data"] or [])
+    source = shortest_data if shortest_data is not None else (confidence_data or [])
     seen: set[str] = set()
     targets: list[dict[str, Any]] = []
     for entry in source:
@@ -65,11 +66,14 @@ def _derive_targets(
 
 
 def influence_map(params: InfluenceMapInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     graph = params.graph
     entity_id = params.entity_id
     max_depth = params.max_depth if params.max_depth is not None else DEFAULT_MAX_DEPTH
     limit = params.limit if params.limit is not None else DEFAULT_LIMIT
+
+    # State threaded across sections (sections run sequentially): the derived
+    # target list depends on both distance passes having already run.
+    state: dict[str, Any] = {"confidence_data": None, "shortest_data": None}
 
     def _confidence() -> list[dict[str, Any]]:
         result = semiring_distances(
@@ -85,7 +89,9 @@ def influence_map(params: InfluenceMapInput, multi: MultiGraph) -> dict[str, Any
             ),
             multi,
         )
-        return _distance_entries(result["distances"])
+        data = _distance_entries(result["distances"])
+        state["confidence_data"] = data
+        return data
 
     def _shortest() -> list[dict[str, Any]]:
         result = semiring_distances(
@@ -101,13 +107,12 @@ def influence_map(params: InfluenceMapInput, multi: MultiGraph) -> dict[str, Any
             ),
             multi,
         )
-        return _distance_entries(result["distances"])
-
-    confidence_section = time_section(_confidence)
-    shortest_section = time_section(_shortest)
-    targets = _derive_targets(confidence_section, shortest_section, limit)
+        data = _distance_entries(result["distances"])
+        state["shortest_data"] = data
+        return data
 
     def _path_counts() -> list[dict[str, Any]]:
+        targets = _derive_targets(state["confidence_data"], state["shortest_data"], limit)
         results: list[dict[str, Any]] = []
         for target in targets:
             try:
@@ -168,6 +173,7 @@ def influence_map(params: InfluenceMapInput, multi: MultiGraph) -> dict[str, Any
         return entries
 
     def _bottlenecks() -> list[dict[str, Any]]:
+        targets = _derive_targets(state["confidence_data"], state["shortest_data"], limit)
         results: list[dict[str, Any]] = []
         for target in targets:
             try:
@@ -191,12 +197,12 @@ def influence_map(params: InfluenceMapInput, multi: MultiGraph) -> dict[str, Any
                 continue
         return results
 
-    sections = {
-        "confidenceDistances": confidence_section,
-        "shortestDistances": shortest_section,
-        "pathCounts": time_section(_path_counts),
-        "neighborhood": time_section(_neighborhood),
-        "bottlenecks": time_section(_bottlenecks),
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("confidenceDistances", _confidence),
+            ("shortestDistances", _shortest),
+            ("pathCounts", _path_counts),
+            ("neighborhood", _neighborhood),
+            ("bottlenecks", _bottlenecks),
+        ]
+    )

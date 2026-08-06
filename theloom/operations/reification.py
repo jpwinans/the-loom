@@ -90,7 +90,12 @@ def _neighborhood_meta(graph: LoomGraph, node_id: str) -> dict[str, list[str]]:
     }
 
 
-def _hash_at_depth(graph: LoomGraph, node_id: str, depth: int, cache: dict[str, str]) -> str:
+def hash_at_depth(graph: LoomGraph, node_id: str, depth: int, cache: dict[str, str]) -> str:
+    """Canonical WL-style fingerprint of ``node_id``'s depth-``depth``
+    neighborhood, memoized in ``cache``. Public so composites needing the
+    same structural fingerprint (e.g. simulate-change's before/after
+    entropy diff) can call it directly instead of reaching for a private
+    name."""
     key = f"{node_id}:{depth}"
     if key in cache:
         return cache[key]
@@ -108,9 +113,9 @@ def _hash_at_depth(graph: LoomGraph, node_id: str, depth: int, cache: dict[str, 
             ]
         )
     else:
-        self_hash = _hash_at_depth(graph, node_id, depth - 1, cache)
+        self_hash = hash_at_depth(graph, node_id, depth - 1, cache)
         neighbor_hashes = sorted(
-            _hash_at_depth(graph, neighbor, depth - 1, cache)
+            hash_at_depth(graph, neighbor, depth - 1, cache)
             for neighbor in graph.neighbors(node_id)
         )
         canonical = f"{self_hash}|{','.join(neighbor_hashes)}"
@@ -171,7 +176,7 @@ def reify_patterns(params: ReifyPatternsInput, multi: MultiGraph) -> Doc:
     cache: dict[str, str] = {}
     buckets: dict[str, dict[str, Any]] = {}
     for node_id in graph.nodes():
-        digest = _hash_at_depth(graph, node_id, max_depth, cache)
+        digest = hash_at_depth(graph, node_id, max_depth, cache)
         meta = _neighborhood_meta(graph, node_id)
         bucket = buckets.get(digest)
         if bucket is None:

@@ -8,12 +8,11 @@ except path finding, which degrades to :func:`failed_section` without a target.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from pydantic import Field
 
-from theloom.composites.framework import build_composite_result, failed_section, time_section
+from theloom.composites.framework import failed_section, run_composite, time_section
 from theloom.operations.algebra import (
     CrossTypeQueryInput,
     MetapathTraverseInput,
@@ -44,7 +43,6 @@ class StructuralSurveyInput(CommandInput):
 
 
 def structural_survey(params: StructuralSurveyInput, multi: MultiGraph) -> dict[str, Any]:
-    start = time.perf_counter()
     graph = params.graph
     entity_id = params.entity_id
 
@@ -133,12 +131,12 @@ def structural_survey(params: StructuralSurveyInput, multi: MultiGraph) -> dict[
             "crossTypeMetadata": result["crossTypeMetadata"],
         }
 
-    sections = {
-        "subgraph": time_section(_subgraph),
-        "cycles": time_section(_cycles),
-        "paths": paths_section,
-        "metapaths": time_section(_metapaths),
-        "crossType": time_section(_cross_type),
-    }
-    total_ms = round((time.perf_counter() - start) * 1000)
-    return build_composite_result(sections, total_ms)
+    return run_composite(
+        [
+            ("subgraph", _subgraph),
+            ("cycles", _cycles),
+            ("paths", paths_section),
+            ("metapaths", _metapaths),
+            ("crossType", _cross_type),
+        ]
+    )

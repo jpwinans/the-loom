@@ -18,7 +18,7 @@ import uuid
 from math import log2
 from typing import Any, Literal
 
-from theloom.composites.framework import build_composite_result, time_section
+from theloom.composites.framework import run_composite, time_section
 from theloom.graph.hydrate import hydrate_graph
 from theloom.model import ALL_ENTITY_STATUSES, EntityCreate, EntityFilter, RelationCreate
 from theloom.operations.analysis import (
@@ -28,7 +28,7 @@ from theloom.operations.analysis import (
     detect_loops,
 )
 from theloom.operations.common import CommandInput
-from theloom.operations.reification import _hash_at_depth
+from theloom.operations.reification import hash_at_depth
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
@@ -85,7 +85,7 @@ def _capture_snapshot(multi: MultiGraph, graph: str | None) -> dict[str, Any]:
     cache: dict[str, str] = {}
     hash_counts: dict[str, int] = {}
     for node_id in graph_obj.nodes():
-        h = _hash_at_depth(graph_obj, node_id, 2, cache)
+        h = hash_at_depth(graph_obj, node_id, 2, cache)
         hash_counts[h] = hash_counts.get(h, 0) + 1
 
     return {
@@ -294,18 +294,19 @@ def simulate_change(params: SimulateChangeInput, multi: MultiGraph) -> dict[str,
             )
         )
 
-        sections = {
-            "centralityDelta": centrality_delta,
-            "brokenLoops": broken_loops,
-            "newLoops": new_loops,
-            "componentChanges": component_changes,
-            "blastRadius": blast_radius,
-            "componentCountReduction": component_count_reduction,
-            "wlEntropyDelta": wl_entropy_delta,
-            "verdict": verdict,
-        }
-        total_ms = round((time.perf_counter() - start) * 1000)
-        return build_composite_result(sections, total_ms)
+        return run_composite(
+            [
+                ("centralityDelta", centrality_delta),
+                ("brokenLoops", broken_loops),
+                ("newLoops", new_loops),
+                ("componentChanges", component_changes),
+                ("blastRadius", blast_radius),
+                ("componentCountReduction", component_count_reduction),
+                ("wlEntropyDelta", wl_entropy_delta),
+                ("verdict", verdict),
+            ],
+            start=start,
+        )
     finally:
         if temp_name is not None:
             with contextlib.suppress(Exception):
