@@ -2,10 +2,10 @@
 
 Weisfeiler-Leman ego fingerprints over a LoomGraph: every node gets a hash of
 its rooted neighborhood up to ``depth`` hops. Nodes sharing a hash form a
-structural pattern group. The hashing logic is identical to the copy inlined in
-``theloom/operations/reification.py`` (reify-patterns) — this module extracts it
-so the entity-proposal engine can reuse it. reify-patterns itself is left
-untouched to preserve its established output.
+structural pattern group. This is the single implementation of the hashing
+logic: ``theloom/operations/reification.py`` (reify-patterns) and
+``theloom/analysis/component_signatures.py`` both import from here, so their
+fingerprints stay bit-identical by construction rather than by convention.
 
 Both functions are pure (no graph mutation, no side effects).
 """
