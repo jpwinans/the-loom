@@ -49,6 +49,7 @@ class ServeInput(CommandInput):
 
 
 def _build_bundle_input(
+    *,
     graph: str | None,
     mode: str,
     center: str | None,
@@ -121,18 +122,18 @@ def create_app(multi: MultiGraph, default_graph: str | None = None) -> FastAPI:
         title: str | None = Query(default=None),
     ) -> dict[str, Any]:
         params = _build_bundle_input(
-            graph if graph is not None else target_default,
-            mode,
-            center,
-            depth,
-            entityType,
-            relationType,
-            query,
-            analytics,
-            temporal,
-            semantic,
-            asOf,
-            title,
+            graph=graph if graph is not None else target_default,
+            mode=mode,
+            center=center,
+            depth=depth,
+            entity_type=entityType,
+            relation_type=relationType,
+            query=query,
+            analytics=analytics,
+            temporal=temporal,
+            semantic=semantic,
+            as_of=asOf,
+            title=title,
         )
         return assemble_bundle(params, multi)
 
@@ -147,18 +148,18 @@ def create_app(multi: MultiGraph, default_graph: str | None = None) -> FastAPI:
                 "Endpoint /api/as-of requires a non-empty 'asOf' query parameter."
             )
         params = _build_bundle_input(
-            graph if graph is not None else target_default,
-            "full",
-            None,
-            1,
-            None,
-            None,
-            None,
-            True,
-            True,
-            True,
-            asOf,
-            None,
+            graph=graph if graph is not None else target_default,
+            mode="full",
+            center=None,
+            depth=1,
+            entity_type=None,
+            relation_type=None,
+            query=None,
+            analytics=True,
+            temporal=True,
+            semantic=True,
+            as_of=asOf,
+            title=None,
         )
         return assemble_bundle(params, multi)
 

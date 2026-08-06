@@ -143,3 +143,54 @@ def test_entity_unknown_is_404(client: TestClient) -> None:
     response = client.get("/api/entity/missing")
     assert response.status_code == 404
     assert response.json()["code"] == "NOT_FOUND"
+
+
+def test_bundle_maps_each_query_param_to_its_own_scope_field(
+    client: TestClient, multi: MultiGraph
+) -> None:
+    """Pins /api/bundle's query-param -> ExportBundleInput mapping: entityType
+    must land on scope.entityType (not relationType) and vice versa, title and
+    the include flags must land on their own fields — a swapped positional
+    argument in the construction would move one of these onto the wrong
+    field and this would catch it via meta.scope/meta.title/meta.sections,
+    independently computed from the request rather than from the code path."""
+    multi.get_store().create_entity(
+        EntityCreate.model_validate({"name": "a", "entityType": "concept", "observations": []})
+    )
+    response = client.get(
+        "/api/bundle",
+        params={
+            "mode": "typed",
+            "entityType": "concept",
+            "relationType": "causes",
+            "title": "My Title",
+            "analytics": "false",
+            "temporal": "false",
+            "semantic": "false",
+        },
+    )
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert meta["scope"] == "typed:concept/causes"
+    assert meta["title"] == "My Title"
+    assert meta["sections"] == []
+
+
+def test_as_of_maps_the_asof_param_onto_the_bundle(
+    client: TestClient, multi: MultiGraph
+) -> None:
+    """Pins /api/as-of's construction: asOf lands on the bundle's asOf field
+    (not swapped onto title or elsewhere) and the scope/include flags stay
+    at their fixed full/true/true/true defaults for this endpoint."""
+    multi.get_store().create_entity(
+        EntityCreate.model_validate({"name": "a", "entityType": "concept", "observations": []})
+    )
+    as_of = "2026-01-01T00:00:00+00:00"
+    response = client.get("/api/as-of", params={"asOf": as_of})
+    assert response.status_code == 200
+    meta = response.json()["meta"]
+    assert meta["asOf"] == as_of
+    assert meta["scope"] == "full"
+    # semantic omits itself below _MIN_VECTORS regardless of the include flag,
+    # so only analytics/temporal (unconditional here) pin the True/True mapping.
+    assert {"analytics", "temporal"}.issubset(meta["sections"])
