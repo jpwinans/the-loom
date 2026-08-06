@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from redis import Redis
@@ -39,6 +40,11 @@ class Event:
     id: str
     type: str
     payload: dict[str, Any]
+    # When the event was appended — recovered from the Redis Stream entry id's
+    # leading `<epoch-ms>-<seq>` field, ISO 8601 UTC. Parsed here, on the store
+    # side of the seam, so callers (theloom.viz.temporal) never need to know
+    # the stream id encodes a timestamp at all.
+    timestamp: str
 
 
 @dataclass(frozen=True)
@@ -128,11 +134,13 @@ class EventLog:
         for entry_id, fields in entries:
             if entry_id is None or fields is None:
                 continue
+            entry_id = entry_id if isinstance(entry_id, str) else entry_id.decode()
             events.append(
                 Event(
-                    id=entry_id if isinstance(entry_id, str) else entry_id.decode(),
+                    id=entry_id,
                     type=_field(fields, "type"),
                     payload=json.loads(_field(fields, "payload")),
+                    timestamp=_entry_id_to_iso(entry_id),
                 )
             )
         return events
@@ -140,6 +148,13 @@ class EventLog:
     def delete(self) -> None:
         """Drop the stream (graph deletion / reseeding)."""
         self._redis.delete(self.key)
+
+
+def _entry_id_to_iso(entry_id: str) -> str:
+    """A Redis Stream entry id is `<epoch-ms>-<seq>`; recover the epoch-ms
+    field and render it as ISO 8601 UTC."""
+    milliseconds = int(entry_id.split("-", maxsplit=1)[0])
+    return datetime.fromtimestamp(milliseconds / 1000, tz=UTC).isoformat()
 
 
 def _field(fields: dict[Any, Any], name: str) -> str:
