@@ -5,10 +5,11 @@ expectations describing what the graph should be able to do. When validated,
 violations become a gap list, each carrying a ``suggestedAction`` that bridges
 to the Entity Proposal Engine.
 
-The coverage and coupling checks reuse the already-golden violation generators
-in ``theloom/operations/verification.py`` (``_coverage`` / ``_coupling``) so
-their output is byte-identical to the ``check-capabilities`` command; the
-completeness, test-coverage and pattern-consistency checks are ported directly.
+The coverage and coupling checks reuse the shared violation generators in
+``theloom/verification/metrics.py`` (``coverage`` / ``coupling``), the same
+functions the ``check-capabilities`` command calls, so output is byte-identical
+between the two surfaces; the completeness, test-coverage and
+pattern-consistency checks are ported directly.
 
 Violation shape: ``{capabilityName, violationType, message, suggestedAction,
 elementId?}`` where violationType is one of completeness | coverage | coupling |
@@ -77,11 +78,11 @@ class CapabilitySpec:
         cap_name = f"coverage({parent_type}->{child_type} via {relation_type})"
 
         def check(store: Any) -> list[Doc]:
-            from theloom.operations.verification import _coverage
+            from theloom.verification.metrics import coverage
 
             entities = _list_entity_docs(store)
             relations = _list_relation_docs(store)
-            result = _coverage(entities, relations, parent_type, child_type, relation_type)
+            result = coverage(entities, relations, parent_type, child_type, relation_type)
             violations: list[Doc] = result["violations"]
             return violations
 
@@ -92,11 +93,11 @@ class CapabilitySpec:
         cap_name = f"coupling({metric}<{threshold})"
 
         def check(store: Any) -> list[Doc]:
-            from theloom.operations.verification import _coupling
+            from theloom.verification.metrics import coupling
 
             entities = _list_entity_docs(store)
             relations = _list_relation_docs(store)
-            result = _coupling(entities, relations, metric, threshold)
+            result = coupling(entities, relations, metric, threshold)
             violations: list[Doc] = result["violations"]
             return violations
 

@@ -209,6 +209,8 @@ class TestSelfImproveWireShape:
             "proposals",
             "applied",
             "failedWrites",
+            "creditFailures",
+            "applyFailures",
             "summary",
         }
         envelope = result["composite"]

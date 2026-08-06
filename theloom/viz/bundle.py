@@ -83,11 +83,17 @@ def assemble_bundle(params: ExportBundleInput, multi: MultiGraph) -> dict[str, A
     from the store's ``read_graph_as_of`` — the incarnation of each entity that
     was current then, and every edge whose system-time interval was open then,
     including ones retired since — and the shipped event log truncates to
-    ``as_of``. Analytics and semantic sections stay whole-graph/current (they
-    are already scope-independent) — ``as_of`` bounds entities, relations, and
-    the event log only. One gap remains, and it is inherent: ``"hard": true``
-    erases rather than invalidates, and nothing can reconstruct what was
-    destroyed.
+    ``as_of``. Analytics and semantic sections are never recomputed
+    historically (they are whole-graph/current passes, already
+    scope-independent) — ``as_of`` bounds entities, relations, and the event
+    log only. Rather than silently mixing two times in one bundle, an
+    ``as_of`` bundle stamps ``analytics.temporalScope`` / ``semantic.temporalScope``
+    as ``"current"`` so a view can label or suppress those sections in
+    historical mode; absent (not ``"current"``, not any other value) on a
+    current-time bundle, so every existing caller that never sets ``as_of`` is
+    byte-for-byte unaffected. One gap remains, and it is inherent: ``"hard":
+    true`` erases rather than invalidates, and nothing can reconstruct what
+    was destroyed.
     """
     target = params.graph or multi.default_graph
     if params.graph and not multi.has_graph(params.graph):
@@ -115,10 +121,18 @@ def assemble_bundle(params: ExportBundleInput, multi: MultiGraph) -> dict[str, A
     # analytics/semantic stay whole-graph/current (scope-independent in phase 1);
     # asOf bounds entities, relations, and the event log only. maxEntities bounds
     # only the entities/relations shipped in THIS bundle, not the analytics
-    # section — analytics has its own guardrails (theloom.viz.analytics).
+    # section — analytics has its own guardrails (theloom.viz.analytics). When
+    # asOf is set, both sections are stamped temporalScope="current" so a view
+    # can tell its current-state analytics/semantic apart from the historical
+    # entities/relations they're rendered alongside.
+    temporal_scope = "current" if as_of is not None else None
     analytics = assemble_analytics(target, multi) if params.include.analytics else None
+    if analytics is not None and temporal_scope is not None:
+        analytics.temporal_scope = temporal_scope
     temporal = assemble_temporal(target, multi, as_of=as_of) if params.include.temporal else None
     semantic = assemble_semantic(target, multi) if params.include.semantic else None
+    if semantic is not None and temporal_scope is not None:
+        semantic.temporal_scope = temporal_scope
 
     sections = [
         name

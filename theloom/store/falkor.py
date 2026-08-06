@@ -188,11 +188,19 @@ _RELATION_VERSION_CLAUSE = (
 )
 
 
-def _relation_version_rows(docs: Sequence[Mapping[str, Any]], now: str) -> list[dict[str, Any]]:
-    """``$rows`` for ``_RELATION_VERSION_CLAUSE``."""
+def _relation_version_rows(
+    edges: Sequence[tuple[Mapping[str, Any], str | None]], now: str
+) -> list[dict[str, Any]]:
+    """``$rows`` for ``_RELATION_VERSION_CLAUSE``: each edge's wire doc plus
+    the system time its live incarnation opened at — the edge's ``tx_from``
+    property, or the doc's own ``created_at`` for an edge never updated."""
     return [
-        {"id": doc["id"], "doc": json.dumps(dict(doc)), "txFrom": doc.get("created_at", now)}
-        for doc in docs
+        {
+            "id": doc["id"],
+            "doc": json.dumps(dict(doc)),
+            "txFrom": tx_from or doc.get("created_at", now),
+        }
+        for doc, tx_from in edges
     ]
 
 
@@ -354,19 +362,21 @@ class FalkorGraphStore(GraphSpace, GraphStore):
         """Every edge whose system-time interval was open at ``timestamp``.
 
         Two sources, because an edge's interval can be open or closed: the live
-        edges (interval ``[created_at, ∞)``) created at/before the bound, then
-        the ``:_RelationVersion`` snapshots whose closed ``[tx_from, tx_to)``
-        contains it — an edge retired since the bound was still there then, and
-        it is this second read that keeps history queryable rather than merely
-        stored. Live edges come first, each group in creation order; an id
-        appearing in both (an edge retired and later recreated under the same
-        id) is answered by the live doc, the one still in the projection.
+        edges whose open interval had begun by the bound (``tx_from``, or the
+        doc's ``created_at`` for an edge never updated), then the
+        ``:_RelationVersion`` snapshots whose closed ``[tx_from, tx_to)``
+        contains it — an edge retired or updated since the bound was there in
+        its earlier incarnation then, and it is this second read that keeps
+        history queryable rather than merely stored. Live edges come first,
+        each group in creation order; an id appearing in both (an edge whose
+        live interval covers the bound) is answered by the live doc, the one
+        still in the projection.
         """
-        rows = self._rows_paged("MATCH ()-[r]->() RETURN r._doc ORDER BY id(r)")
+        rows = self._rows_paged("MATCH ()-[r]->() RETURN r._doc, r.tx_from ORDER BY id(r)")
         docs: list[dict[str, Any]] = [
             doc
-            for doc in (json.loads(row[0]) for row in rows)
-            if doc.get("created_at", "") <= timestamp
+            for doc, tx_from in ((json.loads(row[0]), row[1]) for row in rows)
+            if (tx_from or doc.get("created_at", "")) <= timestamp
         ]
         live_ids = {doc["id"] for doc in docs}
         version_rows = self._rows_paged(
@@ -479,19 +489,28 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             [
                 (
                     "entity_retracted",
-                    {"entity": retracted, "previous": doc, "invalidatedRelations": attached},
+                    {
+                        "entity": retracted,
+                        "previous": doc,
+                        "invalidatedRelations": [edge_doc for edge_doc, _ in attached],
+                    },
                 )
             ],
         )
         return entity
 
-    def _attached_relation_docs(self, entity_id: str) -> list[dict[str, Any]]:
-        """Wire docs of every live edge touching an entity, in insertion order."""
-        rows = self._rows_paged(
-            "MATCH (n:_Entity {id: $id})-[r]-() RETURN r._doc ORDER BY id(r)", {"id": entity_id}
-        )
-        docs: list[dict[str, Any]] = [json.loads(row[0]) for row in rows]
-        return list({doc["id"]: doc for doc in docs}.values())
+    def _attached_relation_docs(self, entity_id: str) -> list[tuple[dict[str, Any], str | None]]:
+        """Every live edge touching an entity, in insertion order: its wire
+        doc plus the ``tx_from`` its current incarnation opened at (None for
+        an edge never updated, whose interval opened at ``created_at``)."""
+        edges: dict[str, tuple[dict[str, Any], str | None]] = {}
+        for row in self._rows_paged(
+            "MATCH (n:_Entity {id: $id})-[r]-() RETURN r._doc, r.tx_from ORDER BY id(r)",
+            {"id": entity_id},
+        ):
+            doc = json.loads(row[0])
+            edges.setdefault(doc["id"], (doc, row[1]))
+        return list(edges.values())
 
     def read_entity_doc(self, entity_id: str) -> dict[str, Any] | None:
         """The verbatim wire doc — key order preserved (synthesis `raw` output
@@ -562,21 +581,33 @@ class FalkorGraphStore(GraphSpace, GraphStore):
         }
         for i, doc in enumerate(redirects):
             rid, rdoc, other = f"r{i}Id", f"r{i}Doc", f"r{i}Other"
-            edge = f"[:{doc['relationType']} {{id: ${rid}, _doc: ${rdoc}}}]"
+            # A redirect rewrites the edge's endpoint — bi-temporally an
+            # update like any other, so snapshot the pre-merge incarnation as
+            # a closed ``:_RelationVersion`` (falling back to the doc's
+            # ``created_at`` for a never-updated edge) and reopen the live
+            # interval at the merge instant, exactly as ``update_relation``
+            # does. Without this the recreated edge re-covers the past and
+            # shadows the version nodes in as-of reads.
+            snapshot = (
+                f"CREATE (:_RelationVersion {{relation_id: ${rid}, _doc: r{i}._doc, "
+                f"tx_from: coalesce(r{i}.tx_from, $r{i}Tf), tx_to: $now}}) "
+            )
+            edge = f"[:{doc['relationType']} {{id: ${rid}, _doc: ${rdoc}, tx_from: $now}}]"
             if doc["from"] == primary_id:  # was outgoing from the secondary
                 params[other] = doc["to"]
                 parts.append(
                     f" WITH p, s MATCH (s)-[r{i}]->(o{i}:_Entity {{id: ${other}}}) "
-                    f"WHERE r{i}.id = ${rid} DELETE r{i} CREATE (p)-{edge}->(o{i})"
+                    f"WHERE r{i}.id = ${rid} {snapshot}DELETE r{i} CREATE (p)-{edge}->(o{i})"
                 )
             else:  # was incoming to the secondary
                 params[other] = doc["from"]
                 parts.append(
                     f" WITH p, s MATCH (o{i}:_Entity {{id: ${other}}})-[r{i}]->(s) "
-                    f"WHERE r{i}.id = ${rid} DELETE r{i} CREATE (o{i})-{edge}->(p)"
+                    f"WHERE r{i}.id = ${rid} {snapshot}DELETE r{i} CREATE (o{i})-{edge}->(p)"
                 )
             params[rid] = doc["id"]
             params[rdoc] = json.dumps(dict(doc))
+            params[f"r{i}Tf"] = str(doc.get("created_at") or now)
         if supersedes_doc is not None:
             parts.append(
                 " WITH p, s CREATE (p)-[:supersedes {id: $supersedesId, _doc: $supersedesDoc}]->(s)"
@@ -890,30 +921,45 @@ class FalkorGraphStore(GraphSpace, GraphStore):
         relation_id: str | None = None,
     ) -> Relation:
         edge_id, current = self._target_edge(from_id, to_id, relation_type, relation_id)
-        merged = {**current, **dict(updates), "updated_at": iso_now()}
+        now = iso_now()
+        merged = {**current, **dict(updates), "updated_at": now}
         for field in _IMMUTABLE_RELATION_FIELDS:
             merged[field] = current[field]
         relation = Relation.model_validate(merged)
+        # The invalidate-never-overwrite step, mirroring an entity's
+        # ``_swap_doc_step``: snapshot the current incarnation as a closed
+        # ``:_RelationVersion``, then swap in the new doc with the live
+        # interval reopened at now (``r.tx_from``). An edge that has never
+        # been updated carries no ``tx_from`` property — its interval has been
+        # open since the doc's own ``created_at``, so the snapshot falls back
+        # to that.
+        snapshot_clause = (
+            "CREATE (:_RelationVersion {relation_id: $eid, _doc: r._doc, "
+            "tx_from: coalesce(r.tx_from, $txFrom), tx_to: $now}) "
+        )
+        params: dict[str, Any] = {
+            "rid": edge_id,
+            "eid": merged["id"],
+            "doc": json.dumps(merged),
+            "txFrom": current.get("created_at", now),
+            "now": now,
+        }
         if merged["relationType"] != current["relationType"]:
             # relationType is an updatable field; the edge is
             # retyped structurally (delete + recreate, same id/doc) so Cypher
             # type-filtered traversals stay consistent with the doc.
             step = (
                 "MATCH (a:_Entity {id: $from})-[r]->(b:_Entity {id: $to}) "
-                "WHERE id(r) = $rid DELETE r "
-                f"CREATE (a)-[:{merged['relationType']} {{id: $eid, _doc: $doc}}]->(b)",
-                {
-                    "from": from_id,
-                    "to": to_id,
-                    "rid": edge_id,
-                    "eid": merged["id"],
-                    "doc": json.dumps(merged),
-                },
+                f"WHERE id(r) = $rid {snapshot_clause}DELETE r "
+                f"CREATE (a)-[:{merged['relationType']} "
+                "{id: $eid, _doc: $doc, tx_from: $now}]->(b)",
+                {**params, "from": from_id, "to": to_id},
             )
         else:
             step = (
-                "MATCH ()-[r]->() WHERE id(r) = $rid SET r._doc = $doc",
-                {"rid": edge_id, "doc": json.dumps(merged)},
+                f"MATCH ()-[r]->() WHERE id(r) = $rid {snapshot_clause}"
+                "SET r._doc = $doc, r.tx_from = $now",
+                params,
             )
         self._commit(step, [("relation_updated", {"relation": merged, "previous": current})])
         return relation
@@ -930,9 +976,10 @@ class FalkorGraphStore(GraphSpace, GraphStore):
 
         The counterpart of an entity's ``superseded`` status. A relation has no
         status field to flip, so its retirement is a closed system-time
-        interval instead: ``tx_from`` is the doc's own ``created_at`` and
-        ``tx_to`` is now. History is preserved — the edge is never erased —
-        while every read path (which matches live edges) stops seeing it.
+        interval instead: ``tx_from`` is the live incarnation's own ``tx_from``
+        (the doc's ``created_at`` for an edge never updated) and ``tx_to`` is
+        now. History is preserved — the edge is never erased — while every
+        read path (which matches live edges) stops seeing it.
 
         Raises NotFoundError when no such edge exists.
         """
@@ -941,9 +988,15 @@ class FalkorGraphStore(GraphSpace, GraphStore):
         self._commit(
             (
                 "MATCH ()-[r]->() WHERE id(r) = $rid "
-                f"WITH r UNWIND $rows AS row {_RELATION_VERSION_CLAUSE} "
-                "WITH DISTINCT r DELETE r",
-                {"rid": edge_id, "rows": _relation_version_rows([doc], now), "now": now},
+                "CREATE (:_RelationVersion {relation_id: $eid, _doc: r._doc, "
+                "tx_from: coalesce(r.tx_from, $txFrom), tx_to: $now}) "
+                "DELETE r",
+                {
+                    "rid": edge_id,
+                    "eid": doc["id"],
+                    "txFrom": doc.get("created_at", now),
+                    "now": now,
+                },
             ),
             [("relation_invalidated", {"relation": doc, "tx_to": now})],
         )

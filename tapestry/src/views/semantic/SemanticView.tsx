@@ -116,6 +116,11 @@ export function SemanticMap() {
     [bundle],
   );
   const method = bundle.semantic?.method ?? null;
+  // The embedding projection is never recomputed as-of a historical bundle;
+  // see Overview's analyticsIsCurrentOnly for the same signal on the
+  // analytics section.
+  const semanticIsCurrentOnly =
+    bundle.meta.asOf != null && bundle.semantic?.temporalScope === "current";
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hullLayerRef = useRef<SVGSVGElement | null>(null);
@@ -441,6 +446,12 @@ export function SemanticMap() {
       aria-labelledby="tab-semantic"
       tabIndex={0}
     >
+      {semanticIsCurrentOnly && (
+        <p className="temporal-note semantic__temporalnote" role="note">
+          The embedding map reflects current state, not the historical snapshot shown here.
+        </p>
+      )}
+
       <div className="semantic__canvas" ref={containerRef} />
 
       <svg className="semantic__hulls" ref={hullLayerRef} aria-hidden="true" />

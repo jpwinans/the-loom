@@ -60,8 +60,12 @@ class InMemoryGraphStore:
         # Relation wire docs in creation order; parallel edges between the same
         # pair are as first-class here as they are in the graph.
         self._relations: list[dict[str, Any]] = []
-        # Edges that have left the live projection, the `:_RelationVersion`
-        # nodes' shape: {doc, tx_from, tx_to}.
+        # relation id -> system time the current incarnation opened at,
+        # mirroring the graph edge's `tx_from`. Separate from the doc, as in
+        # the store.
+        self._relation_tx_from: dict[str, str] = {}
+        # Closed-out relation incarnations, the `:_RelationVersion` nodes'
+        # shape: {doc, tx_from, tx_to}. Appended to, never rewritten.
         self._relation_versions: list[dict[str, Any]] = []
         # entity id -> embedding, for the entities that have one.
         self._vectors: dict[str, list[float]] = {}
@@ -125,7 +129,38 @@ class InMemoryGraphStore:
                 f"Entity not found: relation endpoints must exist (missing {', '.join(missing)})"
             )
         self._relations.extend(docs)
+        for doc in docs:
+            self._relation_tx_from[str(doc["id"])] = now
         return [Relation.model_validate(doc) for doc in docs]
+
+    def update_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        updates: Mapping[str, Any],
+        relation_type: str | None = None,
+    ) -> Relation:
+        """Merge updates into an edge, snapshotting the prior incarnation as a
+        closed version interval — invalidate, never overwrite, as in the real
+        store. The oldest match wins where parallel edges exist."""
+        for i, doc in enumerate(self._relations):
+            if (
+                doc["from"] == from_id
+                and doc["to"] == to_id
+                and (relation_type is None or doc["relationType"] == relation_type)
+            ):
+                now = iso_now()
+                merged = {**doc, **dict(updates), "updated_at": now}
+                for field in ("id", "from", "to", "created_at"):
+                    merged[field] = doc[field]
+                relation = Relation.model_validate(merged)
+                self._relation_versions.append(
+                    {"doc": doc, "tx_from": self._tx_from_of(doc), "tx_to": now}
+                )
+                self._relations[i] = merged
+                self._relation_tx_from[doc["id"]] = now
+                return relation
+        raise NotFoundError("Relation not found")
 
     def invalidate_relation(
         self, from_id: str, to_id: str, relation_type: str | None = None
@@ -141,10 +176,19 @@ class InMemoryGraphStore:
             ):
                 self._relations.remove(doc)
                 self._relation_versions.append(
-                    {"doc": doc, "tx_from": doc["created_at"], "tx_to": iso_now()}
+                    {
+                        "doc": doc,
+                        "tx_from": self._tx_from_of(doc),
+                        "tx_to": iso_now(),
+                    }
                 )
                 return Relation.model_validate(doc)
         raise NotFoundError("Relation not found")
+
+    def _tx_from_of(self, doc: Mapping[str, Any]) -> str:
+        """System time an edge's current incarnation opened at — its tracked
+        ``tx_from``, or the doc's own ``created_at`` if it was never updated."""
+        return self._relation_tx_from.get(str(doc["id"])) or str(doc.get("created_at", ""))
 
     def set_entity_vector(self, entity_id: str, vector: list[float]) -> None:
         """Attach an embedding to an entity (same store, as in FalkorDB)."""
@@ -175,7 +219,7 @@ class InMemoryGraphStore:
         return GraphSnapshot(entities=entities, relations=relations)
 
     def _relations_as_of(self, timestamp: str) -> list[Relation]:
-        docs = [doc for doc in self._relations if doc.get("created_at", "") <= timestamp]
+        docs = [doc for doc in self._relations if self._tx_from_of(doc) <= timestamp]
         seen = {doc["id"] for doc in docs}
         for version in self._relation_versions:
             doc = version["doc"]

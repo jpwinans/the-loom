@@ -53,6 +53,7 @@ def test_empty_question_envelope() -> None:
         "verified": None,
         "reasoning": None,
         "error": "Empty question",
+        "errorCode": "VALIDATION_ERROR",
     }
 
 
@@ -61,6 +62,26 @@ def test_no_llm_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
     result = _run("What is 2 + 2?")
     assert result["success"] is False
     assert result["error"] == "No LLM available (Ollama offline, no API key)"
+    assert result["errorCode"] == "CONFIG_ERROR"
+
+
+def test_success_envelope_has_no_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    classify = json.dumps(
+        {
+            "category": "algebra",
+            "solvable_by_sympy": True,
+            "key_operation": "solve",
+            "equations": ["x**2 - 4"],
+            "variables": ["x"],
+            "expression": None,
+            "substitutions": None,
+            "answer_format": "list",
+        }
+    )
+    monkeypatch.setattr(solve, "create_synthesis_client", lambda: _mock_client(classify))
+    result = _run("solve x^2 - 4 = 0")
+    assert result["success"] is True
+    assert result["errorCode"] is None
 
 
 def test_pipeline_solve(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -129,3 +150,4 @@ def test_invalid_json_pipeline_error(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["success"] is False
     assert result["error"] is not None
     assert result["error"].startswith("solve_problem pipeline error")
+    assert result["errorCode"] == "OPERATION_ERROR"

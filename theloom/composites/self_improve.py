@@ -12,23 +12,29 @@ The capstone composite chains every preceding feature into a six-section cycle:
 Human-in-the-loop by default (autoApply=false), which keeps the whole cycle
 deterministic: the apply section returns an empty result and never mutates the
 graph. Every section runs through :func:`run_composite`'s
-:func:`time_section` for fault isolation. Within apply, each proposal's
-entity write is one atomic mutation, but its
-relation writes are independent per-edge attempts against an already-committed
-entity: a failing relation (e.g. a targetId retracted between propose and
-apply) is reported in ``failedWrites`` with a reason rather than swallowed —
-it never rolls back the entity or the relations that did succeed. Both writes
-go through the same gated operations path as create-entity/create-relation —
-CAUSAL_POLARITY_DEFAULTS applies to causal relation types, and a relation
-that fails the relation gate lands in ``failedWrites`` instead of the graph.
-The top-level result is
+:func:`time_section` for fault isolation. A proposal whose simulation raises
+is tagged ``simulation_failed`` and ranks with the degraders — "could not
+evaluate" never outranks "evaluated badly" — so it is filtered out before
+auto-apply.
+
+Within apply, each proposal is a short saga with no silent resting state.
+The entity write is one atomic mutation; its relations go through the same
+verification gate as create-relation (CAUSAL_POLARITY_DEFAULTS applies to
+causal types), and a relation the gate rejects (e.g. a targetId retracted
+between propose and apply) lands in ``failedWrites`` with a reason instead of
+the graph. The gate-passing relations then commit as ONE all-or-none store
+batch — and if that batch fails to write, the just-created entity is
+hard-deleted again and the proposal is reported in ``applyFailures``, so an
+applied entity whose proposed relations silently failed to land is not a
+reachable state. Credit propagation and procedure-tracking failures are
+non-fatal but never suppressed: they surface in ``creditFailures`` and
+``applyFailures``. The top-level result is
 ``{composite, reconnaissance, violations, proposals, applied, failedWrites,
-summary}``.
+creditFailures, applyFailures, summary}``.
 """
 
 from __future__ import annotations
 
-import contextlib
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -41,13 +47,13 @@ from theloom.composites.simulate_change import (
     SimulationMutation,
     simulate_change,
 )
-from theloom.model import CAUSAL_POLARITY_DEFAULTS
+from theloom.model import CAUSAL_POLARITY_DEFAULTS, RelationCreate
 from theloom.operations.common import CommandInput
 from theloom.operations.entity import CreateEntityInput
 from theloom.operations.entity import create_entity as create_entity_op
 from theloom.operations.entity_proposal import EntityProposalOptions
 from theloom.operations.epistemic import PropagateCreditInput, propagate_credit
-from theloom.operations.relations import CreateRelationInput
+from theloom.operations.relations import CreateRelationInput, gated_relation_spec
 from theloom.operations.relations import create_relation as create_relation_op
 from theloom.semantic.entity_proposer import propose_entities as propose_entities_op
 from theloom.store.multigraph import MultiGraph
@@ -121,6 +127,8 @@ def _build_summary(
     ranked_proposals: list[Doc],
     applied_proposals: list[Doc],
     failed_writes: list[Doc],
+    credit_failures: list[Doc],
+    apply_failures: list[Doc],
     auto_apply: bool,
     duration_ms: int,
 ) -> str:
@@ -175,6 +183,14 @@ def _build_summary(
                     f"  - {fw['proposalEntityName']} -> {fw['targetId']} "
                     f"({fw['relationType']}): {fw['reason']}"
                 )
+        if len(apply_failures) > 0:
+            lines.append(f"Failed {len(apply_failures)} apply step(s):")
+            for af in apply_failures:
+                lines.append(f"  - {af['proposalEntityName']} [{af['stage']}]: {af['reason']}")
+        if len(credit_failures) > 0:
+            lines.append(f"Failed {len(credit_failures)} credit propagation(s):")
+            for cf in credit_failures:
+                lines.append(f"  - {cf['proposalEntityName']}: {cf['reason']}")
     else:
         lines.append("Auto-apply disabled. Review proposals and apply manually.")
 
@@ -266,8 +282,16 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                     degrades += 1
                 else:
                     neutral += 1
-            except Exception:  # noqa: BLE001 — simulation failure is not fatal.
-                neutral += 1
+            except Exception as exc:  # noqa: BLE001 — simulation failure is not fatal,
+                # but it ranks with the degraders: "could not evaluate" must
+                # never outrank "evaluated badly", so the proposal is tagged
+                # simulation_failed and filtered out of auto-apply.
+                proposal["simulatedImpact"] = {
+                    "verdict": "simulation_failed",
+                    "reasons": [f"simulation raised: {exc}"],
+                    "blastRadius": 0,
+                }
+                degrades += 1
         return {
             "simulatedCount": len(st["proposals"]),
             "improves": improves,
@@ -291,8 +315,9 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
             sim_impact = proposal.get("simulatedImpact")
             blast_radius = sim_impact["blastRadius"] if sim_impact else 0
             simulation_verdict = sim_impact["verdict"] if sim_impact else "not_simulated"
-            # Degrading proposals are treated as increasing violations.
-            increases_violations = simulation_verdict == "degrades"
+            # Degrading proposals are treated as increasing violations, and an
+            # un-simulatable proposal ranks no better than one that degrades.
+            increases_violations = simulation_verdict in ("degrades", "simulation_failed")
             score = violations_resolved / max(blast_radius, 1)
             ranked.append(
                 {
@@ -314,20 +339,30 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
     # -- Section 6: Apply ------------------------------------------------------
     def _apply() -> Doc:
         if not auto_apply:
-            return {"applied": [], "autoApply": False, "failedWrites": []}
+            return {
+                "applied": [],
+                "autoApply": False,
+                "failedWrites": [],
+                "creditFailures": [],
+                "applyFailures": [],
+            }
 
+        store = multi.get_store(graph)
         to_apply = st["ranked"][:apply_top_n]
         applied: list[Doc] = []
         failed_writes: list[Doc] = []
+        credit_failures: list[Doc] = []
+        apply_failures: list[Doc] = []
 
         for ranked_item in to_apply:
+            proposal = ranked_item["proposal"]
+            proposal_name = proposal["entity"]["name"]
+            now = iso_now()
             try:
-                proposal = ranked_item["proposal"]
-                now = iso_now()
                 entity_doc = create_entity_op(
                     CreateEntityInput.model_validate(
                         {
-                            "name": proposal["entity"]["name"],
+                            "name": proposal_name,
                             "entityType": proposal["entity"]["entityType"],
                             "observations": proposal["entity"]["observations"],
                             "confidence": {
@@ -348,77 +383,120 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                     ),
                     multi,
                 )
-                entity_id = entity_doc["id"]
+            except Exception as exc:  # noqa: BLE001 — reported, not swallowed.
+                apply_failures.append(
+                    {
+                        "proposalEntityName": proposal_name,
+                        "stage": "createEntity",
+                        "reason": str(exc),
+                    }
+                )
+                continue
+            entity_id = entity_doc["id"]
 
-                created_relation_ids: list[str] = []
-                for rel in proposal["relations"]:
-                    if not rel.get("targetId"):
-                        continue
-                    if rel["direction"] == "outgoing":
-                        from_id, to_id = entity_id, rel["targetId"]
-                    else:
-                        from_id, to_id = rel["targetId"], entity_id
-                    try:
-                        # Same gated path as create-relation: the polarity is
-                        # left null here and _effective_polarity applies
-                        # CAUSAL_POLARITY_DEFAULTS, and the relation gate can
-                        # reject the write (e.g. a retracted endpoint) rather
-                        # than let it through.
-                        relation_doc = create_relation_op(
-                            CreateRelationInput.model_validate(
-                                {
-                                    "from": from_id,
-                                    "to": to_id,
-                                    "relationType": rel["relationType"],
-                                    "polarity": None,
-                                    "strength": "moderate",
-                                    "evidence": (
-                                        "Applied by self-improve composite: "
-                                        f"{proposal['rationale']}"
-                                    ),
-                                    "graph": graph,
-                                }
-                            ),
-                            multi,
-                        )
-                        created_relation_ids.append(relation_doc["id"])
-                    except Exception as exc:  # noqa: BLE001 — reported, not swallowed.
-                        failed_writes.append(
+            # Same gated path as create-relation: the polarity is left null
+            # here and the gate applies CAUSAL_POLARITY_DEFAULTS, and it can
+            # reject a relation (e.g. a retracted endpoint) rather than let it
+            # through — a gate rejection lands in failedWrites. The specs that
+            # pass the gate then commit as ONE all-or-none batch below.
+            specs: list[RelationCreate] = []
+            for rel in proposal["relations"]:
+                if not rel.get("targetId"):
+                    continue
+                if rel["direction"] == "outgoing":
+                    from_id, to_id = entity_id, rel["targetId"]
+                else:
+                    from_id, to_id = rel["targetId"], entity_id
+                try:
+                    spec = gated_relation_spec(
+                        CreateRelationInput.model_validate(
                             {
-                                "proposalEntityName": proposal["entity"]["name"],
-                                "targetId": rel["targetId"],
+                                "from": from_id,
+                                "to": to_id,
                                 "relationType": rel["relationType"],
-                                "direction": rel["direction"],
-                                "reason": str(exc),
-                            }
-                        )
-
-                # noqa: BLE001 — credit propagation failure is not fatal.
-                with contextlib.suppress(Exception):
-                    propagate_credit(
-                        PropagateCreditInput.model_validate(
-                            {
-                                "entityIds": [entity_id],
-                                "delta": 0.1,
-                                "dampingFactor": 0.5,
-                                "maxDepth": 2,
-                                "dryRun": False,
+                                "polarity": None,
+                                "strength": "moderate",
+                                "evidence": (
+                                    f"Applied by self-improve composite: {proposal['rationale']}"
+                                ),
                                 "graph": graph,
                             }
                         ),
                         multi,
                     )
+                    specs.append(spec)
+                except Exception as exc:  # noqa: BLE001 — reported, not swallowed.
+                    failed_writes.append(
+                        {
+                            "proposalEntityName": proposal_name,
+                            "targetId": rel["targetId"],
+                            "relationType": rel["relationType"],
+                            "direction": rel["direction"],
+                            "reason": str(exc),
+                        }
+                    )
 
+            created_relation_ids: list[str] = []
+            if specs:
+                try:
+                    created_relation_ids = [r.id for r in store.create_relations(specs)]
+                except Exception as exc:  # noqa: BLE001 — saga rollback, then report.
+                    # The batch is all-or-none, so no relation landed — and an
+                    # applied entity whose proposed relations silently failed
+                    # to write is not a resting state: take the entity back
+                    # out and report the whole proposal as failed.
+                    failure: Doc = {
+                        "proposalEntityName": proposal_name,
+                        "stage": "createRelations",
+                        "reason": str(exc),
+                        "rolledBackEntityId": entity_id,
+                    }
+                    try:
+                        store.delete_entity(entity_id, hard=True)
+                    except Exception as rollback_exc:  # noqa: BLE001 — still reported.
+                        # The compensating delete failed too: the entity is
+                        # stranded in the graph. Keep its id under its own key
+                        # (names are not unique) so an operator can clean up;
+                        # rolledBackEntityId: None keeps meaning "nothing was
+                        # rolled back".
+                        failure["rolledBackEntityId"] = None
+                        failure["strandedEntityId"] = entity_id
+                        failure["rollbackError"] = str(rollback_exc)
+                    apply_failures.append(failure)
+                    continue
+
+            try:
+                propagate_credit(
+                    PropagateCreditInput.model_validate(
+                        {
+                            "entityIds": [entity_id],
+                            "delta": 0.1,
+                            "dampingFactor": 0.5,
+                            "maxDepth": 2,
+                            "dryRun": False,
+                            "graph": graph,
+                        }
+                    ),
+                    multi,
+                )
+            except Exception as exc:  # noqa: BLE001 — non-fatal, but never silent.
+                credit_failures.append(
+                    {
+                        "proposalEntityName": proposal_name,
+                        "entityId": entity_id,
+                        "reason": str(exc),
+                    }
+                )
+
+            procedure_entity_id: str | None = None
+            try:
                 procedure_entity_doc = create_entity_op(
                     CreateEntityInput.model_validate(
                         {
-                            "name": f"Self-Improve: Applied {proposal['entity']['name']}",
+                            "name": f"Self-Improve: Applied {proposal_name}",
                             "entityType": "procedure",
                             "observations": [
-                                (
-                                    "Self-improvement loop applied proposal: "
-                                    f"{proposal['entity']['name']}"
-                                ),
+                                f"Self-improvement loop applied proposal: {proposal_name}",
                                 f"Strategy: {proposal['strategy']}",
                                 f"Rationale: {proposal['rationale']}",
                                 f"Violations addressed: {ranked_item['violationsResolved']}",
@@ -442,36 +520,45 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
                     multi,
                 )
                 procedure_entity_id = procedure_entity_doc["id"]
-
-                # noqa: BLE001 — procedure-link failure is not fatal.
-                with contextlib.suppress(Exception):
-                    create_relation_op(
-                        CreateRelationInput.model_validate(
-                            {
-                                "from": procedure_entity_id,
-                                "to": entity_id,
-                                "relationType": "sources",
-                                "polarity": None,
-                                "strength": "strong",
-                                "evidence": "Self-improvement loop procedure tracking",
-                                "graph": graph,
-                            }
-                        ),
-                        multi,
-                    )
-
-                applied.append(
+                create_relation_op(
+                    CreateRelationInput.model_validate(
+                        {
+                            "from": procedure_entity_id,
+                            "to": entity_id,
+                            "relationType": "sources",
+                            "polarity": None,
+                            "strength": "strong",
+                            "evidence": "Self-improvement loop procedure tracking",
+                            "graph": graph,
+                        }
+                    ),
+                    multi,
+                )
+            except Exception as exc:  # noqa: BLE001 — non-fatal, but never silent.
+                apply_failures.append(
                     {
-                        "ranked": ranked_item,
-                        "createdEntityId": entity_id,
-                        "createdRelationIds": created_relation_ids,
-                        "procedureEntityId": procedure_entity_id,
+                        "proposalEntityName": proposal_name,
+                        "stage": "procedureTracking",
+                        "reason": str(exc),
                     }
                 )
-            except Exception:  # noqa: BLE001 — per-proposal failure is not fatal.
-                pass
 
-        return {"applied": applied, "autoApply": True, "failedWrites": failed_writes}
+            applied.append(
+                {
+                    "ranked": ranked_item,
+                    "createdEntityId": entity_id,
+                    "createdRelationIds": created_relation_ids,
+                    "procedureEntityId": procedure_entity_id,
+                }
+            )
+
+        return {
+            "applied": applied,
+            "autoApply": True,
+            "failedWrites": failed_writes,
+            "creditFailures": credit_failures,
+            "applyFailures": apply_failures,
+        }
 
     # -- Build result ----------------------------------------------------------
     composite = run_composite(
@@ -492,8 +579,17 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
     apply_data = composite["result"]["apply"]["data"]
     applied_proposals = apply_data["applied"] if apply_data else []
     failed_writes = apply_data["failedWrites"] if apply_data else []
+    credit_failures = apply_data["creditFailures"] if apply_data else []
+    apply_failures = apply_data["applyFailures"] if apply_data else []
     summary = _build_summary(
-        violations, st["ranked"], applied_proposals, failed_writes, auto_apply, total_ms
+        violations,
+        st["ranked"],
+        applied_proposals,
+        failed_writes,
+        credit_failures,
+        apply_failures,
+        auto_apply,
+        total_ms,
     )
 
     return {
@@ -503,5 +599,7 @@ def self_improve(params: SelfImproveInput, multi: MultiGraph) -> Doc:
         "proposals": st["ranked"],
         "applied": applied_proposals,
         "failedWrites": failed_writes,
+        "creditFailures": credit_failures,
+        "applyFailures": apply_failures,
         "summary": summary,
     }

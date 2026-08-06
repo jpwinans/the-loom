@@ -102,9 +102,17 @@ function resolveSystemsColors(graph: Graph): void {
 }
 
 /** The bundle's feedback loops, typed to the analytics shape (may be absent). */
-function getLoops(bundle: ReturnType<typeof useBundle>): { loops: LoopInfo[]; hasAnalytics: boolean } {
-  const analytics = bundle.analytics as { loops?: unknown[] } | undefined;
-  return { loops: (analytics?.loops ?? []) as LoopInfo[], hasAnalytics: analytics != null };
+function getLoops(
+  bundle: ReturnType<typeof useBundle>,
+): { loops: LoopInfo[]; hasAnalytics: boolean; isCurrentOnly: boolean } {
+  const analytics = bundle.analytics as { loops?: unknown[]; temporalScope?: string } | undefined;
+  return {
+    loops: (analytics?.loops ?? []) as LoopInfo[],
+    hasAnalytics: analytics != null,
+    // See Overview's analyticsIsCurrentOnly: loops/leverage points are never
+    // recomputed as-of a historical bundle.
+    isCurrentOnly: bundle.meta.asOf != null && analytics?.temporalScope === "current",
+  };
 }
 
 function resolveLoop(loops: LoopInfo[], key: string | number | null): LoopInfo | null {
@@ -121,7 +129,7 @@ export function Systems() {
   const selectLoop = useTapestry((s) => s.selectLoop);
 
   const graph = useMemo(() => buildCausalGraph(bundle), [bundle]);
-  const { loops, hasAnalytics } = useMemo(() => getLoops(bundle), [bundle]);
+  const { loops, hasAnalytics, isCurrentOnly } = useMemo(() => getLoops(bundle), [bundle]);
   const marks = useMemo(() => leverageTargets(bundle), [bundle]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -469,6 +477,12 @@ export function Systems() {
       aria-labelledby="tab-systems"
       tabIndex={0}
     >
+      {isCurrentOnly && (
+        <p className="temporal-note systems__temporalnote" role="note">
+          Loops and leverage points reflect current state, not the historical snapshot shown here.
+        </p>
+      )}
+
       <div className="systems__canvas" ref={containerRef} />
       <div className="systems__glyphs" ref={glyphLayerRef} aria-hidden="true" />
       <div className="systems__leverages" ref={leverageLayerRef} />

@@ -16,8 +16,8 @@ Semantic dissimilarity defaults to Jaccard distance over tokenized entity names
 (the path the far-analogy composite uses); an optional embedding_manager with a
 ``generate_embedding`` method switches to average pairwise cosine distance.
 
-The WL hashing primitive (hash_at_depth) is reused from
-theloom.operations.reification, and connected components from
+The WL hashing primitive (hash_at_depth, aliasing compute_fingerprint) is
+reused from theloom.reification.fingerprint, and connected components from
 theloom.graph.analytics, to stay bit-identical with reify-patterns.
 """
 
@@ -29,7 +29,7 @@ from typing import Any
 
 from theloom.graph.analytics import connected_components
 from theloom.graph.hydrate import LoomGraph
-from theloom.operations.reification import hash_at_depth
+from theloom.reification.fingerprint import compute_fingerprint as hash_at_depth
 from theloom.semantic.embed import cosine_similarity
 
 DEFAULT_MAX_DEPTH = 2

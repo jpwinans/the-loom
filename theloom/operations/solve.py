@@ -8,8 +8,11 @@ to a native SymPy op, verify, and format. A unified LLM client
 External-service dependency: this command REQUIRES a configured LLM
 (an ``llm`` config section — provider ollama|mlx|openai|anthropic — or
 ``ANTHROPIC_API_KEY``). With none configured it returns a soft ``{success: false,
-error: "No LLM available ..."}`` envelope, never raising. The local model / prompt
-profile default is pinned and env-overridable via ``LOOM_LOCAL_MODEL``;
+error: "No LLM available ...", errorCode: "CONFIG_ERROR"}`` envelope, never
+raising. Every failure envelope carries an ``errorCode`` from
+:mod:`theloom.errors`' typed taxonomy alongside the human-readable ``error``
+prose, so callers never need to substring-match the message. The local model /
+prompt profile default is pinned and env-overridable via ``LOOM_LOCAL_MODEL``;
 no personal filesystem paths are baked in (the decision-graph engine is disabled).
 """
 
@@ -21,6 +24,7 @@ import os
 import re
 from typing import Any
 
+from theloom.errors import ErrorCode
 from theloom.operations.common import CommandInput
 from theloom.operations.prompt_loader import load_prompt
 from theloom.store.multigraph import MultiGraph
@@ -52,7 +56,11 @@ def _envelope(
     verified: bool | None = None,
     reasoning: str | None = None,
     error: str | None = None,
+    error_code: ErrorCode | None = None,
 ) -> dict[str, Any]:
+    """Build the soft-fail envelope. Never raises; ``errorCode`` (present only
+    on failure) carries theloom.errors' typed taxonomy so callers never have
+    to substring-match ``error``'s prose."""
     return {
         "success": success,
         "answer": answer,
@@ -62,6 +70,7 @@ def _envelope(
         "verified": verified,
         "reasoning": reasoning,
         "error": error,
+        "errorCode": error_code if not success else None,
     }
 
 
@@ -280,6 +289,7 @@ def _solve_fallback(
                 category=category,
                 method="llm_fallback",
                 error="No LLM available for fallback",
+                error_code="CONFIG_ERROR",
             )
         result = client.complete(load_prompt("solve-fallback", LOCAL_MODEL), question)
         text = result["text"]
@@ -292,20 +302,29 @@ def _solve_fallback(
             method="llm_fallback",
             reasoning=text,
             error=None if answer is not None else "Could not extract answer from LLM response",
+            error_code=None if answer is not None else "OPERATION_ERROR",
         )
     except Exception as err:  # noqa: BLE001 — soft-fail envelope, never raise.
         return _envelope(
-            False, category=category, method="llm_fallback", error=f"LLM fallback error: {err}"
+            False,
+            category=category,
+            method="llm_fallback",
+            error=f"LLM fallback error: {err}",
+            error_code="OPERATION_ERROR",
         )
 
 
 def solve_problem(params: SolveProblemInput, _multi: MultiGraph) -> dict[str, Any]:
     if not params.question.strip():
-        return _envelope(False, error="Empty question")
+        return _envelope(False, error="Empty question", error_code="VALIDATION_ERROR")
 
     client = create_synthesis_client()
     if client is None:
-        return _envelope(False, error="No LLM available (Ollama offline, no API key)")
+        return _envelope(
+            False,
+            error="No LLM available (Ollama offline, no API key)",
+            error_code="CONFIG_ERROR",
+        )
 
     try:
         # Step 0 (decision graph) is disabled by default (F20) — skipped.
@@ -361,4 +380,8 @@ def solve_problem(params: SolveProblemInput, _multi: MultiGraph) -> dict[str, An
             reasoning=f"Classified as {category}, solved via SymPy {key_operation}",
         )
     except Exception as err:  # noqa: BLE001 — soft-fail envelope, never raise.
-        return _envelope(False, error=f"solve_problem pipeline error: {err}")
+        return _envelope(
+            False,
+            error=f"solve_problem pipeline error: {err}",
+            error_code="OPERATION_ERROR",
+        )

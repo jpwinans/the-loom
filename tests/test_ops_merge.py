@@ -11,6 +11,7 @@ hard delete), and emits one `entities_merged` event. Output is exactly
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -23,6 +24,7 @@ from theloom.operations.merge import MergeEntitiesInput, merge_entities
 from theloom.operations.relations import CreateRelationInput, create_relation
 from theloom.store.events import EventLog
 from theloom.store.multigraph import MultiGraph
+from theloom.timeutil import iso_now
 
 MISSING = "00000000-0000-4000-8000-000000000000"
 
@@ -378,6 +380,48 @@ def test_retracted_secondary_cannot_be_merged(multi: MultiGraph) -> None:
     with pytest.raises(LoomError) as excinfo:
         merge(multi, primary["id"], secondary["id"])
     assert excinfo.value.code == "VALIDATION_ERROR"
+
+
+def test_merge_redirect_is_bi_temporally_an_update(multi: MultiGraph) -> None:
+    """A redirect rewrites a relation's endpoint — an update like any other,
+    so it must snapshot the pre-merge incarnation and reopen the live
+    interval at merge time. As-of reads in every epoch see the doc (and the
+    endpoint) that was live then; the recreated edge must not re-cover the
+    past and shadow the version nodes."""
+    store = multi.get_store()
+    a = make_entity(multi, "A")
+    secondary = make_entity(multi, "Secondary")
+    primary = make_entity(multi, "Primary")
+    edge = make_relation(multi, a["id"], secondary["id"])
+    time.sleep(0.01)
+    pivot_created = iso_now()
+    time.sleep(0.01)
+    store.update_relation(a["id"], secondary["id"], {"strength": "strong"}, "supports")
+    time.sleep(0.01)
+    pivot_updated = iso_now()
+    time.sleep(0.01)
+    merge(multi, primary["id"], secondary["id"])
+
+    as_of_created = store.read_graph_as_of(pivot_created).relations
+    assert [(r.id, r.to, str(r.strength)) for r in as_of_created] == [
+        (edge["id"], secondary["id"], "moderate")
+    ]
+    as_of_updated = store.read_graph_as_of(pivot_updated).relations
+    assert [(r.id, r.to, str(r.strength)) for r in as_of_updated] == [
+        (edge["id"], secondary["id"], "strong")
+    ]
+    current = store.read_relation(a["id"], primary["id"], "supports")
+    assert current is not None and str(current.strength) == "strong"
+
+    versions = store._rows(
+        "MATCH (v:_RelationVersion {relation_id: $id}) "
+        "RETURN v.tx_from, v.tx_to ORDER BY v.tx_from",
+        {"id": edge["id"]},
+    )
+    assert len(versions) == 2
+    assert versions[0][0] == edge["created_at"]  # first interval opens at creation
+    assert versions[0][1] == versions[1][0]  # contiguous: no gap, no overlap
+    assert versions[1][0] < versions[1][1]
 
 
 def test_merge_scoped_to_a_named_graph(multi: MultiGraph) -> None:

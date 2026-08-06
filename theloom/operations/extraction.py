@@ -170,9 +170,6 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
     call structure. After a re-extract, ``related_to`` means a semantic link and
     nothing else.
     """
-    # The tool handler wraps failures as
-    # "Error in codebase extraction: <msg>"; "does not exist" then classifies
-    # as OPERATION_ERROR (not NOT_FOUND).
     started_at = iso_now()
     try:
         extraction = treesitter.extract_codebase(
@@ -182,7 +179,7 @@ def extract_codebase(params: ExtractCodebaseInput, multi: MultiGraph) -> Doc:
             exclude=params.exclude,
         )
     except FileNotFoundError as exc:
-        raise OperationError(f"Error in codebase extraction: {exc}") from exc
+        raise NotFoundError(f"Error in codebase extraction: {exc}") from exc
 
     result: Doc = {
         "stats": extraction["stats"],

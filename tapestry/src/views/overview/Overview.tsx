@@ -129,9 +129,19 @@ export function Overview() {
   );
 
   const analytics = bundle.analytics as
-    | { components?: unknown[]; loops?: unknown[]; leveragePoints?: unknown[] }
+    | {
+        components?: unknown[];
+        loops?: unknown[];
+        leveragePoints?: unknown[];
+        temporalScope?: string;
+      }
     | undefined;
   const hasAnalytics = analytics != null;
+  // Analytics are never recomputed as-of a historical bundle; the assembler
+  // stamps `temporalScope: "current"` on the section when that mismatch
+  // applies, so a historical view can say so instead of silently mixing
+  // two times.
+  const analyticsIsCurrentOnly = bundle.meta.asOf != null && analytics?.temporalScope === "current";
   const count = (list: unknown[] | undefined): string =>
     list ? list.length.toLocaleString() : "—";
 
@@ -206,6 +216,11 @@ export function Overview() {
               The shape of {bundle.meta.title ?? bundle.meta.graph} at a glance — its
               composition, health, and most connected ideas.
             </p>
+            {analyticsIsCurrentOnly && (
+              <p className="temporal-note" role="note">
+                Analytics reflect current state, not the historical snapshot shown here.
+              </p>
+            )}
           </div>
           <button
             type="button"

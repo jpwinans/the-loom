@@ -17,17 +17,35 @@ queue's observable CLI behavior is read/dequeue only.
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any
 
 from pydantic import Field
 
-from theloom.graph.hydrate import LoomGraph, hydrate_graph
+from theloom.graph.hydrate import hydrate_graph
 from theloom.model import EntityCreate, EntityFilter, RelationCreate
 from theloom.operations.common import CommandInput
+from theloom.reification.fingerprint import (
+    compute_fingerprint as hash_at_depth,
+)
+from theloom.reification.fingerprint import (
+    describe_fingerprint as _describe,
+)
+from theloom.reification.fingerprint import (
+    neighborhood_meta as _neighborhood_meta,
+)
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
+
+__all__ = [
+    "ReifyPatternsInput",
+    "TriggerStatusInput",
+    "ProcessTriggersInput",
+    "hash_at_depth",
+    "reify_patterns",
+    "trigger_status",
+    "process_triggers",
+]
 
 Doc = dict[str, Any]
 
@@ -58,86 +76,12 @@ class ProcessTriggersInput(CommandInput):
 # =============================================================================
 # WL fingerprints
 # =============================================================================
-
-
-def _sha16(canonical: str) -> str:
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
-
-
-def _neighborhood_meta(graph: LoomGraph, node_id: str) -> dict[str, list[str]]:
-    """Depth-1 meta: per-edge relation types (duplicates kept), neighbor entity
-    types deduped by neighbor node id — all sorted."""
-    incoming: list[str] = []
-    outgoing: list[str] = []
-    neighbor_types: list[str] = []
-    seen: set[str] = set()
-    for edge_id in graph.in_edge_ids(node_id):
-        incoming.append(str(graph.edge_docs[edge_id]["relationType"]))
-        source = graph.edge_source(edge_id)
-        if source not in seen:
-            seen.add(source)
-            neighbor_types.append(str(graph.node_docs[source]["entityType"]))
-    for edge_id in graph.out_edge_ids(node_id):
-        outgoing.append(str(graph.edge_docs[edge_id]["relationType"]))
-        target = graph.edge_target(edge_id)
-        if target not in seen:
-            seen.add(target)
-            neighbor_types.append(str(graph.node_docs[target]["entityType"]))
-    return {
-        "incomingRelationTypes": sorted(incoming),
-        "outgoingRelationTypes": sorted(outgoing),
-        "neighborEntityTypes": sorted(neighbor_types),
-    }
-
-
-def hash_at_depth(graph: LoomGraph, node_id: str, depth: int, cache: dict[str, str]) -> str:
-    """Canonical WL-style fingerprint of ``node_id``'s depth-``depth``
-    neighborhood, memoized in ``cache``. Public so composites needing the
-    same structural fingerprint (e.g. simulate-change's before/after
-    entropy diff) can call it directly instead of reaching for a private
-    name."""
-    key = f"{node_id}:{depth}"
-    if key in cache:
-        return cache[key]
-    entity_type = str(graph.node_docs[node_id]["entityType"])
-    if depth == 0:
-        canonical = entity_type
-    elif depth == 1:
-        meta = _neighborhood_meta(graph, node_id)
-        canonical = "|".join(
-            [
-                entity_type,
-                f"in:{','.join(meta['incomingRelationTypes'])}",
-                f"out:{','.join(meta['outgoingRelationTypes'])}",
-                f"neighbors:{','.join(meta['neighborEntityTypes'])}",
-            ]
-        )
-    else:
-        self_hash = hash_at_depth(graph, node_id, depth - 1, cache)
-        neighbor_hashes = sorted(
-            hash_at_depth(graph, neighbor, depth - 1, cache)
-            for neighbor in graph.neighbors(node_id)
-        )
-        canonical = f"{self_hash}|{','.join(neighbor_hashes)}"
-    digest = _sha16(canonical)
-    cache[key] = digest
-    return digest
-
-
-def _describe(info: dict[str, Any]) -> str:
-    incoming = sorted(info["incomingRelationTypes"])
-    outgoing = sorted(info["outgoingRelationTypes"])
-    neighbors = sorted(info["neighborEntityTypes"])
-    if not incoming and not outgoing and not neighbors:
-        return f"isolated {info['entityType']}"
-    parts = [str(info["entityType"])]
-    if incoming:
-        parts.append(f"with incoming [{', '.join(incoming)}]")
-    if outgoing:
-        parts.append(f"{'and' if incoming else 'with'} outgoing [{', '.join(outgoing)}]")
-    if neighbors:
-        parts.append(f"connected to [{', '.join(neighbors)}]")
-    return " ".join(parts)
+#
+# hash_at_depth / _neighborhood_meta / _describe are re-exports of
+# theloom.reification.fingerprint's compute_fingerprint / neighborhood_meta /
+# describe_fingerprint (see the import block above) so reify-patterns'
+# established output and call-site names stay unchanged while there is a
+# single implementation.
 
 
 def _pattern_name(info: dict[str, Any]) -> str:

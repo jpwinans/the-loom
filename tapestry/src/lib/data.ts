@@ -25,6 +25,11 @@ export interface TapestryBundleRaw {
     loops: Record<string, unknown>[];
     leveragePoints: Record<string, unknown>[];
     bridges: Record<string, unknown>[];
+    /** Present only when `meta.asOf` is set: analytics are never recomputed
+     * historically, so this section is always the graph's *current* state even
+     * though `entities`/`relations` are bounded to `meta.asOf`. Absent on a
+     * current-time (non-asOf) bundle. */
+    temporalScope?: string;
   };
   temporal?: {
     events: { id: string; at: string; type: string; payload: Record<string, unknown> }[];
@@ -33,6 +38,10 @@ export interface TapestryBundleRaw {
     method: string;
     projection: Record<string, number[]>;
     clusters?: { id: number; label: string; entityIds: string[]; size: number }[];
+    /** Same current-time stamp as `analytics.temporalScope`, and for the same
+     * reason: the embedding projection is not recomputed as of the bundle's
+     * historical bound. */
+    temporalScope?: string;
   };
 }
 
@@ -54,18 +63,53 @@ export function parseInlineBundle(text: string): TapestryBundleRaw | null {
   }
 }
 
+/** Thrown by every `loadBundle` failure path — `source` names which of the
+ * three branches (live API, inline block, dev fixture) failed, so the app
+ * shell's error state can say something more useful than "something broke". */
+export class BundleLoadError extends Error {
+  readonly source: string;
+
+  constructor(source: string, message: string) {
+    super(message);
+    this.name = "BundleLoadError";
+    this.source = source;
+  }
+}
+
+/** Fetch + parse a bundle from `url`, raising a `BundleLoadError` naming
+ * `source` for a network failure, a non-2xx response, or malformed JSON —
+ * the three ways a bundle load can fail silently without this wrapper. */
+async function fetchBundle(url: string, source: string): Promise<TapestryBundleRaw> {
+  let response: Response;
+  try {
+    response = await fetch(url);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new BundleLoadError(source, `Could not reach ${source}: ${detail}`);
+  }
+  if (!response.ok) {
+    throw new BundleLoadError(
+      source,
+      `${source} returned ${response.status} ${response.statusText}`,
+    );
+  }
+  try {
+    return (await response.json()) as TapestryBundleRaw;
+  } catch {
+    throw new BundleLoadError(source, `${source} returned malformed JSON`);
+  }
+}
+
 export async function loadBundle(graph?: string): Promise<TapestryBundleRaw> {
   const live = detectLive();
   if (live) {
     const url = graph
       ? `${live.apiBase}/bundle?graph=${encodeURIComponent(graph)}`
       : `${live.apiBase}/bundle`;
-    const response = await fetch(url);
-    return (await response.json()) as TapestryBundleRaw;
+    return fetchBundle(url, "the live API");
   }
   const block = document.getElementById("tapestry-data");
   const inline = block ? parseInlineBundle(block.textContent ?? "") : null;
   if (inline) return inline;
-  const response = await fetch("/fixtures/dev-bundle.json");
-  return (await response.json()) as TapestryBundleRaw;
+  return fetchBundle("/fixtures/dev-bundle.json", "the dev fixture");
 }

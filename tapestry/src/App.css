@@ -378,6 +378,69 @@
   color: var(--color-text-3);
 }
 
+.app__loading--error {
+  flex-direction: column;
+  gap: var(--space-3);
+  color: var(--color-text-2);
+  text-align: center;
+  padding: 0 var(--space-5);
+}
+
+.app__loadingmsg {
+  max-width: 40em;
+}
+
+.app__loadingretry {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.app__loadingretry:hover {
+  background: var(--color-surface-hover, var(--color-surface));
+}
+
+/* Post-load failure banner: a graph switch or refresh failed while valid data
+ * is still on screen — non-blocking, above the views. */
+.app__loadbanner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  font-size: var(--text-sm);
+}
+
+.app__loadbannermsg {
+  max-width: 60em;
+}
+
+/* ---- Historical-scope note -------------------------------------------------
+ * Shared across every view that reads the analytics/semantic sections
+ * (Overview, Systems, Semantic Map): those sections are never recomputed
+ * as-of a historical bundle, so on an asOf-bounded bundle they always
+ * reflect the graph's current state, not the snapshot the rest of the view
+ * shows. `TapestryBundle.temporalScope` on those sections is the signal. */
+.temporal-note {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-3);
+  background: var(--color-surface-2, var(--color-surface));
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  width: fit-content;
+}
+
 /* ---- Narrow viewports ----------------------------------------------------- */
 @media (max-width: 720px) {
   .app__header {
