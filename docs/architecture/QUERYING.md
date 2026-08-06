@@ -6,7 +6,7 @@ breaks if you change it — ask the graph. It already has the answer, anchored t
 and a line, and it costs one command instead of a grep-and-read loop.
 
 - **Graph name:** `codebase-the-loom`
-- **Commit the graph describes:** `e4a12a1b188e5391ec431a8c5754d2fa4733b1f9`
+- **Commit the graph describes:** `5b60a8b78c90634aeb8f99639acba9549bd3f9e5`
 - **Written walkthrough:** [ARCHITECTURE-MAP.md](ARCHITECTURE-MAP.md)
 - **CLI:** `loom <command> '<json>'` — kebab-case commands, camelCase JSON fields, and a
   `graph` field on every call. If `loom` is not on `PATH`, prefix with
@@ -31,17 +31,25 @@ all accept `"compact": true` and `"limit": N` to keep responses small.
 ## Module groups
 
 Each group has one purpose record, plus its patterns, invariants and strains. The group
-id appears in every written record as `module_group: <id>`.
+id appears in every written record as `module_group: <id>`. 48 groups carry a written
+layer; the twenty re-read at this commit are marked **bold**.
 
-`docs-1` … `docs-4` · `repo-root-1` · `root-1` · `root-2` · `tapestry-1` · `tapestry-2` ·
-`tapestry-e2e` · `tapestry-src` · `tapestry-src-1` … `tapestry-src-4` ·
-`tapestry-src-lib` · `tests-1` … `tests-6` · `tests-fixtures` · `tests-fixtures-repo` ·
-`tests-fixtures-repo-src` · `theloom` · `theloom-algebra` · `theloom-analysis` ·
-`theloom-cli` · `theloom-composites-1` · `theloom-composites-2` · `theloom-documents` ·
-`theloom-exploration` · `theloom-extraction` · `theloom-graph` ·
-`theloom-operations-1` … `theloom-operations-3` · `theloom-reification` ·
-`theloom-semantic` · `theloom-store` · `theloom-symbolic` · `theloom-synthesis` ·
-`theloom-verification` · `theloom-viz`
+`docs-1` … `docs-4` · **`repo-root-1`** · `root-1` · `root-2` · `tapestry-1` ·
+**`tapestry-2`** · `tapestry-e2e` · **`tapestry-src`** · `tapestry-src-1` …
+`tapestry-src-4` · **`tapestry-src-lib`** · **`tapestry-src-views-overview`** ·
+**`tapestry-src-views-semantic`** · **`tapestry-src-views-systems`** · **`tests-1`** ·
+`tests-2` · **`tests-3`** · **`tests-4`** · **`tests-5`** · **`tests-6`** ·
+`tests-fixtures` · `tests-fixtures-repo` · `tests-fixtures-repo-src` · `theloom` ·
+`theloom-algebra` · **`theloom-analysis`** · `theloom-cli` · `theloom-composites-1` ·
+**`theloom-composites-2`** · `theloom-documents` · `theloom-exploration` ·
+`theloom-extraction` · `theloom-graph` · `theloom-operations-1` ·
+**`theloom-operations-2`** · **`theloom-operations-3`** · **`theloom-reification`** ·
+`theloom-semantic` · **`theloom-store`** · `theloom-symbolic` · `theloom-synthesis` ·
+**`theloom-verification`** · **`theloom-viz`**
+
+Note: `root-1` / `root-2` and `tapestry-src-1` … `tapestry-src-4` are labels from an
+earlier partition; they overlap `repo-root-1` and the `tapestry-src*` groups. Prefer the
+newer labels; a full re-run will collapse them.
 
 ## Recipes
 
@@ -113,7 +121,7 @@ loom list-entities '{"entityType": "tension", "query": "store", "compact": true,
 ```
 
 Each strain carries `pole_a`, `pole_b`, an `anchor` (file:line, both sides), and
-`implications`. → *typical shape:* 8 strains for a package-sized group; 241 exist in
+`implications`. → *typical shape:* 8 strains for a package-sized group; 274 exist in
 total.
 
 ### What must stay true about this area?
@@ -123,7 +131,7 @@ loom list-entities '{"entityType": "claim", "query": "bi-temporal", "compact": t
 ```
 
 Invariants, each with a `statement`, an `anchor` and a `consequence_if_broken`.
-→ *typical shape:* 9–16 invariants per package.
+→ *typical shape:* 9–20 invariants per package; 496 exist in total.
 
 ### How is this area built?
 
