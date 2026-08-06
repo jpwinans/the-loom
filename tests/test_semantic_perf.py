@@ -18,6 +18,8 @@ import numpy as np
 import pytest
 from redis.exceptions import ResponseError
 
+from tests.fakes import FakeEmbedder
+from theloom import config as config_module
 from theloom.model import EntityCreate
 from theloom.operations.semantic import (
     EmbedEntitiesInput,
@@ -33,44 +35,6 @@ from theloom.operations.semantic import (
 from theloom.semantic import embed as embed_module
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
-
-
-class _StubEmbedder:
-    """embed_query returns a fixed vector regardless of text."""
-
-    def __init__(self, vector: list[float]) -> None:
-        self._vector = vector
-        self.query_calls = 0
-
-    def embed_query(self, text: str) -> list[float]:
-        self.query_calls += 1
-        return self._vector
-
-
-class _TextKeyedEmbedder:
-    """embed_query returns a vector chosen by the query text's first token, so
-    a per-entity search (gaps/clusters) can be given a real similarity shape."""
-
-    def __init__(self, vectors: dict[str, list[float]]) -> None:
-        self._vectors = vectors
-
-    def embed_query(self, text: str) -> list[float]:
-        return self._vectors[text.split()[0]]
-
-
-class _CountingDocumentEmbedder:
-    """embed_document counts calls, so a redundant re-embed is visible."""
-
-    def __init__(self, vector: list[float]) -> None:
-        self._vector = vector
-        self.document_calls = 0
-
-    def embed_document(self, text: str) -> list[float]:
-        self.document_calls += 1
-        return self._vector
-
-    def embed_query(self, text: str) -> list[float]:
-        return self._vector
 
 
 def _seed_vectors(multi: MultiGraph, vectors: dict[str, list[float]]) -> dict[str, str]:
@@ -102,7 +66,7 @@ def test_search_similar_never_fetches_every_vector(
         },
     )
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0, 0.0])
     )
 
     def _boom(self: FalkorGraphStore) -> dict[str, list[float]]:
@@ -132,7 +96,7 @@ def test_search_similar_respects_entity_type_filter_via_overfetch(
     store.set_entity_vector(claim.id, [1.0, 0.0])
     ids["claim-c"] = claim.id
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
 
     results = semantic_search(
@@ -157,7 +121,7 @@ def test_search_similar_escalates_candidates_until_a_rare_type_is_found(
     )
     store.set_entity_vector(claim.id, [0.2, 0.98])
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
 
     results = semantic_search(
@@ -177,7 +141,7 @@ def test_search_similar_excludes_non_active_entities(
     ids = _seed_vectors(multi, {"live": [1.0, 0.0], "gone": [0.99, 0.1]})
     store.delete_entity(ids["gone"])
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
 
     results = semantic_search(SemanticSearchInput(query="q", limit=10), multi)
@@ -197,7 +161,7 @@ def test_search_similar_min_score_stops_at_first_below_threshold(
         },
     )
     monkeypatch.setattr(
-        "theloom.operations.semantic.get_embedder", lambda: _StubEmbedder([1.0, 0.0])
+        "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
     reads: list[str] = []
     read_entity = FalkorGraphStore.read_entity
@@ -336,7 +300,7 @@ def test_semantic_gaps_reports_partners_outside_the_sample(
     ids = _seed_vectors(multi, vectors)
     monkeypatch.setattr(
         "theloom.operations.semantic.get_embedder",
-        lambda: _TextKeyedEmbedder(vectors),
+        lambda: FakeEmbedder(vectors),
     )
 
     gaps = semantic_gaps(SemanticGapsInput.model_validate({"maxEntities": 2}), multi)
@@ -363,7 +327,7 @@ def test_embed_entities_skips_unchanged_content_hash(
             {"name": "stable", "entityType": "concept", "observations": ["obs"]}
         )
     )
-    embedder = _CountingDocumentEmbedder([1.0, 0.0, 0.0])
+    embedder = FakeEmbedder([1.0, 0.0, 0.0])
     monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: embedder)
 
     first = embed_entities(EmbedEntitiesInput(), multi)
@@ -386,7 +350,7 @@ def test_embed_entities_reembeds_after_force_flag(
             {"name": "stable", "entityType": "concept", "observations": ["obs"]}
         )
     )
-    embedder = _CountingDocumentEmbedder([1.0, 0.0, 0.0])
+    embedder = FakeEmbedder([1.0, 0.0, 0.0])
     monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: embedder)
 
     embed_entities(EmbedEntitiesInput(), multi)
@@ -403,7 +367,7 @@ def test_embed_entities_reembeds_after_force_flag(
 def test_warm_embedder_runs_one_query_and_reports_model(
     multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    embedder = _StubEmbedder([1.0, 0.0])
+    embedder = FakeEmbedder([1.0, 0.0])
     monkeypatch.setattr("theloom.operations.semantic.get_embedder", lambda: embedder)
     result = warm_embedder(WarmEmbedderInput(), multi)
     assert embedder.query_calls == 1
@@ -429,7 +393,10 @@ def test_warm_embedder_registered_in_cli() -> None:
 def test_get_embedder_passes_configured_cache_dir_to_fastembed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    embed_module.get_embedder.cache_clear()
+    # get_embedder() dispatches to the lru_cached real embedder builder
+    # (_default_embedder) once no override is installed; clear its cache so
+    # this test's config patch is what actually builds the next instance.
+    embed_module._default_embedder.cache_clear()
     monkeypatch.setattr(
         embed_module,
         "load_config",
@@ -452,7 +419,22 @@ def test_get_embedder_passes_configured_cache_dir_to_fastembed(
         assert captured["cache_dir"] == "/tmp/loom-model-cache-test"
         assert captured["model_name"] == embed_module.MODEL_ID
     finally:
-        embed_module.get_embedder.cache_clear()
+        embed_module._default_embedder.cache_clear()
+
+
+# =============================================================================
+# Embedder injection: one config-level override every call site defers to
+# =============================================================================
+
+
+def test_get_embedder_prefers_the_config_installed_override() -> None:
+    fake = FakeEmbedder([1.0, 0.0])
+    config_module.set_embedder_override(fake)
+    try:
+        assert embed_module.get_embedder() is fake
+    finally:
+        config_module.set_embedder_override(None)
+    assert config_module.get_embedder_override() is None
 
 
 # =============================================================================
@@ -479,7 +461,7 @@ def test_search_similar_recovers_when_the_knn_window_is_inverted(
     )
     monkeypatch.setattr(
         "theloom.operations.semantic.get_embedder",
-        lambda: _StubEmbedder([0.0, 1.0, 0.0, 0.0]),
+        lambda: FakeEmbedder([0.0, 1.0, 0.0, 0.0]),
     )
 
     # vector_knn returns (id, cosine similarity). Similarity to the query:

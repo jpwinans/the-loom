@@ -17,6 +17,7 @@ from theloom.documents.chunker import chunk_blocks
 from theloom.documents.chunkstore import ChunkStore
 from theloom.documents.parsers import ParseError, detect_format, parse_document
 from theloom.documents.ssrf import SsrfError, fetch_url
+from theloom.semantic.embed import get_embedder
 from theloom.timeutil import iso_now
 
 Doc = dict[str, Any]
@@ -54,15 +55,16 @@ def _source_id_from_string(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:32]
 
 
-def _embed_texts(texts: list[str]) -> list[list[float]] | None:
-    """Best-effort embeddings; None if the model can't load (chunks still
-    stored so ingest counts and list-documents stay correct)."""
+def _embed_texts(texts: list[str]) -> tuple[list[list[float]] | None, str | None]:
+    """Best-effort embeddings: (vectors, None) normally, or (None, reason) if
+    the model can't load or embed. Chunks are still stored either way (so
+    ingest counts and list-documents stay correct) — the reason is carried
+    back so the caller can record *why* no vector landed instead of the
+    failure vanishing silently."""
     try:
-        from theloom.semantic.embed import get_embedder
-
-        return get_embedder().embed_documents(texts)
-    except Exception:
-        return None
+        return get_embedder().embed_documents(texts), None
+    except Exception as exc:
+        return None, str(exc)
 
 
 class DocumentIngestion:
@@ -79,7 +81,7 @@ class DocumentIngestion:
         now = iso_now()
 
         texts = [c["content"] for c in chunks]
-        vectors = _embed_texts(texts) if texts else []
+        vectors, embedding_error = _embed_texts(texts) if texts else ([], None)
 
         chunks_created = 0
         for index, chunk in enumerate(chunks):
@@ -106,6 +108,8 @@ class DocumentIngestion:
                 metadata["pageNumber"] = chunk["pageNumber"]
             if options.get("sourcePath"):
                 metadata["sourcePath"] = options["sourcePath"]
+            if embedding_error is not None:
+                metadata["embeddingError"] = embedding_error
             vector = vectors[index] if vectors is not None and index < len(vectors) else None
             self._store.upsert_chunk(chunk["id"], metadata, vector)
             chunks_created += 1
@@ -329,8 +333,10 @@ class DocumentIngestion:
                 to_embed.append((prior["entityId"], metadata))
 
         if to_embed:
-            vectors = _embed_texts([m["content"] for _, m in to_embed])
+            vectors, embedding_error = _embed_texts([m["content"] for _, m in to_embed])
             for i, (chunk_id, metadata) in enumerate(to_embed):
+                if embedding_error is not None:
+                    metadata["embeddingError"] = embedding_error
                 vector = vectors[i] if vectors is not None and i < len(vectors) else None
                 self._store.upsert_chunk(chunk_id, metadata, vector)
 
