@@ -12,6 +12,7 @@ the store's server-side filtered read — never a full scan.
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated
 
 import pydantic
@@ -109,6 +110,25 @@ def resolve_entity_ref(
     A blank name counts as no name: an empty substring would match every
     entity, so it is refused as a missing argument, never run as a query.
     """
+    return resolve_entity_ref_multi(
+        [store], entity_id=entity_id, name=name, id_field=id_field, name_field=name_field
+    )
+
+
+def resolve_entity_ref_multi(
+    stores: Sequence[FalkorGraphStore],
+    *,
+    entity_id: str | None,
+    name: str | None,
+    id_field: str = "id",
+    name_field: str = "name",
+) -> str:
+    """``resolve_entity_ref`` over one or more graph stores — the form for
+    commands whose ``graph`` param accepts an array. Candidates are gathered
+    per store through the same pushed-down filter (deduped by id, first store
+    wins, mirroring the merged view), then judged by the same exact-match /
+    active-preference / ambiguity rules a single store gets.
+    """
     supplied_name = name if name is not None and name.strip() else None
     if (entity_id is None) == (supplied_name is None):
         raise ValidationError(
@@ -122,9 +142,14 @@ def resolve_entity_ref(
 
     # EntityFilter.name is a case-insensitive substring match pushed down into
     # Cypher, so the exact-match pool is always a subset of this window.
-    candidates = store.list_entities(
-        EntityFilter.model_validate({"name": name, "statusFilter": _ALL_STATUSES})
-    )
+    name_filter = EntityFilter.model_validate({"name": name, "statusFilter": _ALL_STATUSES})
+    seen: set[str] = set()
+    candidates: list[Entity] = []
+    for store in stores:
+        for entity in store.list_entities(name_filter):
+            if entity.id not in seen:
+                seen.add(entity.id)
+                candidates.append(entity)
     lowered = name.lower()
     exact = [entity for entity in candidates if entity.name.lower() == lowered]
     pool = exact or candidates

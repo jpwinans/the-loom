@@ -20,7 +20,7 @@ from theloom.graph.analytics import connected_components
 from theloom.graph.hydrate import hydrate_graph
 from theloom.graph.paths import bidirectional
 from theloom.model import EntityCreate, RelationCreate
-from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
+from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref_multi
 from theloom.semantic.embed import get_embedder
 from theloom.semantic.search import SupportsQueryEmbedding, search_by_vector
 from theloom.store.falkor import FalkorGraphStore
@@ -525,15 +525,17 @@ def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:
 def explain_path(params: ExplainPathInput, multi: MultiGraph) -> Doc:
     resolved = _resolve_graph_param(params.graph, multi)
     store = resolved["store"]
-    source_id: str = resolve_entity_ref(
-        store,
+    # Names resolve against the underlying graph stores — the doc-store view
+    # above cannot run the resolver's filtered read.
+    source_id: str = resolve_entity_ref_multi(
+        resolved["falkor_stores"],
         entity_id=params.source_id,
         name=params.source_name,
         id_field="sourceId",
         name_field="sourceName",
     )
-    target_id: str = resolve_entity_ref(
-        store,
+    target_id: str = resolve_entity_ref_multi(
+        resolved["falkor_stores"],
         entity_id=params.target_id,
         name=params.target_name,
         id_field="targetId",
