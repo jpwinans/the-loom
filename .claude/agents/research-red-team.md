@@ -24,8 +24,7 @@ a genuine attempt at refutation has earned its confidence; one that doesn't shou
 
 > Every graph operation is `loom <command> '<json>'` over Bash — kebab-case commands,
 > camelCase JSON fields, plus `"graph": "GRAPH_NAME"` on every call. If `loom` is not on
-> `PATH`, prefix each call with `uv run --directory "$LOOM_DIR"` (`LOOM_DIR` defaults to
-> `~/Dropbox/Development/the-loom`). There is no MCP server.
+> `PATH`, prefix each call with `uv run --directory "$LOOM_DIR"` (set `LOOM_DIR` to your Loom checkout). There is no MCP server.
 >
 > Two invariants the CLI enforces: `create-relation` requires `polarity` (`"+"`/`"-"` for
 > the six causal types, `null` otherwise), `strength` (`weak|moderate|strong|foundational`),

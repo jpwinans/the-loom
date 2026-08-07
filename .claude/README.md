@@ -1,7 +1,7 @@
 # .claude/ — Project Agent Assets
 
-This directory is the **single source of truth** for the autonomous research pipeline
-and the Loom skill. Run everything from the repo root so project-level skills,
+This directory is the **single source of truth** for the autonomous research pipeline,
+the `/map-codebase` pipeline, and the Loom skill. Run everything from the repo root so project-level skills,
 workflows, and agents resolve together and `uv run loom` hits this checkout.
 
 ## Layout
@@ -9,20 +9,26 @@ workflows, and agents resolve together and `uv run loom` hits this checkout.
 ```
 .claude/
 ├── skills/
-│   ├── the-loom/                  # the Loom's 156-command CLI: architecture, data model,
+│   ├── the-loom/                  # the Loom's 164-command CLI: architecture, data model,
 │   │                              #   tool catalog, workflow patterns
 │   ├── deep-research/             # /deep-research TOPIC — single-question autonomous research
-│   └── hyper-research/            # /hyper-research DOC — parallel multi-question meta-research
+│   ├── hyper-research/            # /hyper-research DOC — parallel multi-question meta-research
+│   └── map-codebase/              # /map-codebase PATH — explained architecture map of a repo
 ├── workflows/
 │   ├── deep-research.js           # deterministic orchestration: orient → quality-gated loop → finalize
-│   └── hyper-research.js          # comprehend → extract questions → parallel deep-research → synthesize
+│   ├── hyper-research.js          # comprehend → extract questions → parallel deep-research → synthesize
+│   └── map-codebase.js            # extract → enrich per module group → cartograph, incremental re-runs
 ├── agents/
-│   └── research-*.md              # the 8 pipeline agents (orientation, research, synthesis,
-│                                  #   consolidation, expedition, red-team, quality, documentation)
+│   ├── research-*.md              # the 8 research-pipeline agents (orientation, research, synthesis,
+│   │                              #   consolidation, expedition, red-team, quality, documentation)
+│   ├── codebase-enricher.md       # map-codebase: semantic layer for one module group
+│   └── codebase-cartographer.md   # map-codebase: written map + visualization + manifest
 ├── references/
-│   └── research-schemas.md        # canonical structured-output contracts for agent handoffs
-└── commands/
-    └── loom-expedition.md         # /loom-expedition GRAPH — standalone emergent-theory expedition
+│   ├── research-schemas.md        # canonical structured-output contracts for agent handoffs
+│   └── map-codebase-schemas.md    # the same, for the map-codebase pipeline
+├── commands/
+│   └── loom-expedition.md         # /loom-expedition GRAPH — standalone emergent-theory expedition
+└── settings.json                  # PreToolUse nudge: prefer the codebase graph over grepping
 ```
 
 Everything drives the Loom exclusively through its JSON-in/JSON-out CLI
