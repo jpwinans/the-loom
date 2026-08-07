@@ -15,6 +15,7 @@ import pytest
 
 from theloom.composites.entity_deep_dive import EntityDeepDiveInput, entity_deep_dive
 from theloom.errors import NotFoundError, ValidationError
+from theloom.operations import synthesis
 from theloom.operations.analysis import FindShortestPathInput, find_shortest_path
 from theloom.operations.common import resolve_entity_ref
 from theloom.operations.entity import (
@@ -290,3 +291,48 @@ def test_explain_path_accepts_names(multi: MultiGraph) -> None:
     assert params.source_name == "alpha"
     assert params.target_name == "beta"
     assert params.source_id is None
+
+
+def test_explain_path_resolves_names_end_to_end(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The name form must resolve against the graph store, not the synthesis
+    doc-store view — the id form's success must not mask a broken name path."""
+    monkeypatch.setattr(synthesis, "create_synthesis_client", lambda: None)
+    a = ent(multi, "alpha")
+    b = ent(multi, "beta")
+    rel(multi, a, b)
+    result = synthesis.explain_path(
+        ExplainPathInput.model_validate({"sourceName": "alpha", "targetName": "beta"}),
+        multi,
+    )
+    assert [(s["from"], s["to"]) for s in result["steps"]] == [("alpha", "beta")]
+
+
+def test_explain_path_resolves_names_across_graph_array(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a graph array, each endpoint name resolves across every named
+    graph's store (an explicit path skips pathfinding, isolating resolution)."""
+    monkeypatch.setattr(synthesis, "create_synthesis_client", lambda: None)
+    multi.create_graph("other")
+    a = ent(multi, "alpha")
+    b_doc: dict[str, Any] = {
+        "name": "beta",
+        "entityType": "concept",
+        "observations": ["beta"],
+        "graph": "other",
+    }
+    b = str(create_entity(CreateEntityInput.model_validate(b_doc), multi)["id"])
+    result = synthesis.explain_path(
+        ExplainPathInput.model_validate(
+            {
+                "sourceName": "alpha",
+                "targetName": "beta",
+                "path": [a, b],
+                "graph": ["default", "other"],
+            }
+        ),
+        multi,
+    )
+    assert [(s["from"], s["to"]) for s in result["steps"]] == [("alpha", "beta")]
