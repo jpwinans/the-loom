@@ -174,6 +174,17 @@ def run_document_extraction(
                         "name": entity["name"],
                         "entityType": entity["entityType"],
                         "observations": [str(o) for o in entity.get("observations", [])],
+                        "provenance": {
+                            "sourceType": "document",
+                            "sourceId": source_id_created,
+                            # The chunk this entity came from, by id — the
+                            # pointer synthesis resolves to quote the passage.
+                            # Same idiom as tree-sitter's "file.py:12".
+                            "externalRef": chunk.get("id"),
+                            "extractionDate": now,
+                            "extractor": model,
+                            "extractionMethod": "llm_prompted",
+                        },
                     }
                 )
             )
