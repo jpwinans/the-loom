@@ -28,10 +28,11 @@ outputs (`.claude/references/research-schemas.md`). Session artifacts land
 under `research/sessions/{id}/` relative to the launch directory.
 
 > **Set expectations before you launch.** This is not a chat feature. A run
-> executes dozens of subagent turns across multiple quality-gated iterations,
-> and a substantive question typically takes on the order of an hour of
-> wall-clock time, with token spend to match (thorough runs reach into the
-> millions). The question's classification sets the iteration budget, so
+> executes a dozen-plus subagent turns per quality-gated iteration; the one
+> recorded reference run took about two hours for a single iteration,
+> building roughly 100 entities and 200 relations with full provenance.
+> Token spend runs in the hundreds of thousands per iteration and scales
+> with the iteration budget, which the question's classification sets — so
 > narrow factual questions finish much faster than open synthesis questions.
 > It runs in the background and notifies on completion: launch it and go do
 > something else.
