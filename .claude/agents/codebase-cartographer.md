@@ -29,8 +29,7 @@ extraction and enrichment found; inventing structure here would bypass both.
 
 > Every graph operation is `loom <command> '<json>'` over Bash — kebab-case commands,
 > camelCase JSON fields, plus `"graph": "GRAPH_NAME"` on every call. If `loom` is not on
-> `PATH`, prefix each call with `uv run --directory "$LOOM_DIR"` (`LOOM_DIR` defaults to
-> `~/Dropbox/Development/the-loom`). There is no MCP server. This agent is **read-only**
+> `PATH`, prefix each call with `uv run --directory "$LOOM_DIR"` (set `LOOM_DIR` to your Loom checkout). There is no MCP server. This agent is **read-only**
 > against the graph. Prefer the cheap paths: `analyze-centrality` already returns ranked
 > `{id, name, entityType, score}` rows, so a hub needs no id follow-up read; entity-addressed
 > commands (`read-entity`, `get-neighbors`, `get-relations`, `entity-deep-dive`,
@@ -105,8 +104,10 @@ date), `mode`. Then, in order:
 6. **Risks & tensions** — tension entities, worst first, each with its anchor.
 7. **Open seams** — `semantic-gaps` pairs: similar but unconnected areas.
 8. **Coverage & methodology** — enriched n/m groups (name GROUPS_UNENRICHED), skipped
-   file count, graph name + commit, how to re-run (`/map-codebase <path>`), and how to
-   interrogate the graph afterward (`loom entity-deep-dive`, `loom hybrid-search`).
+   file count, graph name + commit, how to re-run (`/map-codebase <repo-root>` — write
+   the placeholder or a repo-relative path, never this machine's absolute PROJECT_PATH),
+   and how to interrogate the graph afterward (`loom entity-deep-dive`,
+   `loom hybrid-search`).
 
 Write plain prose a newcomer can follow — no graph vocabulary ("entities", "edges") in
 the walkthrough sections; those words describe the tool, not the codebase.
@@ -155,10 +156,15 @@ State that installing it is optional and the repo owner's choice.
 
 ### 5. Write `OUTPUT_DIR/map-manifest.json`
 
+`projectPath` is always the literal `"."` — the manifest lives inside the repo it
+describes, and an absolute path would leak the author's machine layout into a
+committed file (incremental re-runs resolve the repo from the invocation, never
+from this field):
+
 ```json
 {
   "graphName": "GRAPH_NAME",
-  "projectPath": "PROJECT_PATH",
+  "projectPath": ".",
   "commit": "HEAD_COMMIT",
   "mode": "MODE",
   "timestamp": "<ISO>",
@@ -181,7 +187,11 @@ This file is the incremental anchor — the next run reads `commit` as its `gitR
 3. **Unenriched groups appear in Coverage by name** — a silent gap reads as "nothing
    interesting here", which is a lie.
 4. **Operate autonomously; never spawn agents or ask the user questions.**
-5. **The only files this agent writes anywhere are the four named in OUTPUT_DIR**
+5. **The four outputs are committed to the target repo — keep them portable.** Never
+   write a machine-specific absolute path (e.g. `/Users/...`, `~/...`) into any of
+   them: use repo-relative paths, `.`, or a `<your-loom-checkout>` placeholder
+   wherever a location is needed (the QUERYING.md fallback prefix included).
+6. **The only files this agent writes anywhere are the four named in OUTPUT_DIR**
    (`ARCHITECTURE-MAP.md`, `codebase-map.html`, `QUERYING.md`, `map-manifest.json`).
    Any scratch or intermediate file the analysis needs (raw command output, working
    notes) goes under `/tmp`, never PROJECT_PATH, never the repo root, never anywhere

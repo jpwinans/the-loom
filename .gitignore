@@ -35,7 +35,7 @@ docs/agents/
 node_modules/
 vestige/
 loom-viz/
-wip-TL-332/
+wip-*/
 
 # Generated architecture visualizations
 docs/architecture/*.html

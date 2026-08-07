@@ -5,6 +5,17 @@ description = "The Loom — a knowledge-graph substrate on FalkorDB with a JSON-
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "ISC" }
+authors = [{ name = "James Winans", email = "jpwinans@gmail.com" }]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: ISC License (ISCL)",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Database :: Front-Ends",
+]
 # Runtime dependencies. Floors are conservative; uv resolves to current versions.
 # Verified library state is recorded in STACK.md.
 dependencies = [
@@ -34,6 +45,10 @@ dependencies = [
 [project.optional-dependencies]
 viz-umap = ["umap-learn>=0.5"]  # optional UMAP projection for the Semantic Map (PCA is the default)
 viz-serve = ["fastapi>=0.115", "uvicorn>=0.30"]  # optional read-only live server (loom serve)
+
+[project.urls]
+Repository = "https://github.com/jpwinans/the-loom"
+Issues = "https://github.com/jpwinans/the-loom/issues"
 
 [project.scripts]
 loom = "theloom.cli.app:main"

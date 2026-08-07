@@ -1,57 +1,62 @@
 # Querying the codebase graph
 
-**For agents:** this repository has a Loom knowledge graph of its own source. When you
-need to know where something is defined, who calls it, what a module does, or what
-breaks if you change it — ask the graph. It already has the answer, anchored to a file
-and a line, and it costs one command instead of a grep-and-read loop.
+If you are an agent working in this repository: this is the fast path. The graph already
+holds every symbol, call, import, invariant, convention and risk in the tree, anchored to
+a file and a line. Query it before you grep.
 
 - **Graph name:** `codebase-the-loom`
-- **Commit the graph describes:** `5b60a8b78c90634aeb8f99639acba9549bd3f9e5`
-- **Written walkthrough:** [ARCHITECTURE-MAP.md](ARCHITECTURE-MAP.md)
-- **CLI:** `loom <command> '<json>'` — kebab-case commands, camelCase JSON fields, and a
-  `graph` field on every call. If `loom` is not on `PATH`, prefix with
-  `uv run --directory /Users/jameswinans/Dropbox/Development/the-loom`. There is no MCP
-  server.
+- **Commit it describes:** `21466d5250d7ce760079705305a422077e36f17d`
+- **Transport:** the `loom` CLI over Bash. Every call is
+  `loom <command> '<json>'` with kebab-case commands, camelCase JSON fields, and a
+  `"graph"` field on every call. If `loom` is not on `PATH`, prefix with
+  `uv run --directory <path-to-your-loom-checkout>`. There is no MCP server.
 
-Entity-addressed reads take `name` instead of `id` (exactly one of the two).
-`list-entities`, `read-entity`, `get-neighbors`, `get-relations` and `entity-deep-dive`
-all accept `"compact": true` and `"limit": N` to keep responses small.
+## Naming conventions
 
-## Naming conventions in this graph
+Entity-addressed reads take a `name` instead of an `id` (exactly one of the two).
 
-| Thing | How it is named | Example |
-|---|---|---|
-| A file | `file:<repo-relative path>` | `file:theloom/store/falkor.py` |
-| An external package | `pkg:<import name>` | `pkg:falkordb` |
-| A function or method | `<symbol> (<module stem>)` | `assemble_bundle (bundle)` |
-| A method on a class | `<Class>.<method> (<module stem>)` | `MultiGraph.get_store (multigraph)` |
-| A class, interface or type | `<Name> (<module stem>)` | `CommandInput (common)` |
-| A module group's purpose | `<group> purpose` | `theloom/store purpose` |
+| Kind | Name form | Example |
+| --- | --- | --- |
+| File | `file:<repo-relative path>` | `file:theloom/store/falkor.py` |
+| Function / method | `<symbol> (<module stem>)` | `assemble_bundle (bundle)`, `FalkorGraphStore.update_entity (falkor)` |
+| Class / type / interface | `<Name> (<module stem>)` | `CommandInput (common)`, `TapestryBundle (schema)` |
+| Variable / constant | `<name> (<module stem>)` | `MAX_STDIN_BYTES (io)` |
+| External package | `pkg:<name>` | `pkg:falkordb`, `pkg:sigma` |
+| Module purpose | `<directory> purpose` | `theloom/store purpose`, `tapestry/src/design purpose` |
 
-## Module groups
+Ambiguous names are refused with a candidate list rather than guessed — pick one from the
+list and re-ask.
 
-Each group has one purpose record, plus its patterns, invariants and strains. The group
-id appears in every written record as `module_group: <id>`. 48 groups carry a written
-layer; the twenty re-read at this commit are marked **bold**.
+## Module group ids
 
-`docs-1` … `docs-4` · **`repo-root-1`** · `root-1` · `root-2` · `tapestry-1` ·
-**`tapestry-2`** · `tapestry-e2e` · **`tapestry-src`** · `tapestry-src-1` …
-`tapestry-src-4` · **`tapestry-src-lib`** · **`tapestry-src-views-overview`** ·
-**`tapestry-src-views-semantic`** · **`tapestry-src-views-systems`** · **`tests-1`** ·
-`tests-2` · **`tests-3`** · **`tests-4`** · **`tests-5`** · **`tests-6`** ·
-`tests-fixtures` · `tests-fixtures-repo` · `tests-fixtures-repo-src` · `theloom` ·
-`theloom-algebra` · **`theloom-analysis`** · `theloom-cli` · `theloom-composites-1` ·
-**`theloom-composites-2`** · `theloom-documents` · `theloom-exploration` ·
-`theloom-extraction` · `theloom-graph` · `theloom-operations-1` ·
-**`theloom-operations-2`** · **`theloom-operations-3`** · **`theloom-reification`** ·
-`theloom-semantic` · **`theloom-store`** · `theloom-symbolic` · `theloom-synthesis` ·
-**`theloom-verification`** · **`theloom-viz`**
+The written layer (purposes, conventions, invariants, risks) is stamped with a
+`module_group`. The 45 current groups:
 
-Note: `root-1` / `root-2` and `tapestry-src-1` … `tapestry-src-4` are labels from an
-earlier partition; they overlap `repo-root-1` and the `tapestry-src*` groups. Prefer the
-newer labels; a full re-run will collapse them.
+```
+theloom               theloom-algebra       theloom-analysis      theloom-cli
+theloom-composites-1  theloom-composites-2  theloom-documents     theloom-exploration
+theloom-extraction    theloom-graph         theloom-operations-1  theloom-operations-2
+theloom-operations-3  theloom-reification   theloom-semantic      theloom-store
+theloom-symbolic      theloom-synthesis     theloom-verification  theloom-viz
+tapestry-1            tapestry-2            tapestry-e2e          tapestry-src
+tapestry-src-design   tapestry-src-lib      tapestry-src-state
+tapestry-src-views-chronicle  tapestry-src-views-explorer
+tapestry-src-views-overview   tapestry-src-views-semantic
+tapestry-src-views-systems
+tests-1  tests-2  tests-3  tests-4  tests-5  tests-6
+tests-fixtures-multi  tests-fixtures-repo   tests-fixtures-repo-src
+repo-root-1  repo-root-2  docs  docs-architecture
+```
+
+Ten further labels survive from earlier runs and still carry records: `docs-1` … `docs-4`,
+`root-1`, `tests-fixtures`, and the coarser frontend partition `tapestry-src-1` …
+`tapestry-src-4`. Their content overlaps the current groups and names files that have since
+moved; prefer the current ids.
 
 ## Recipes
+
+One command per question. Result shapes below are what a typical call actually returns —
+not full output.
 
 ### Where is `X` defined?
 
@@ -59,130 +64,144 @@ newer labels; a full re-run will collapse them.
 loom explore '{"name": "assemble_bundle (bundle)", "graph": "codebase-the-loom"}'
 ```
 
-One call returns the definition (file + line range + signature + docstring), callers,
-callees, imports, importedBy, containment, inheritance, and the written layer attached
-to it. Budgeted, so it self-truncates and says so.
-→ *typical shape:* definition + 12 imports + 5 importedBy + 4 contained symbols +
-10 written notes.
+→ definition anchor, callers in, calls out, imports, imported-by, containment, inheritance
+and the written layer attached to it, all budgeted into one document.
+Typical: 1 definition line, 3 callers, 9 callees, 6 imports, 1 file rollup.
 
 ### Who calls `X`?
 
 ```bash
-loom find-callers '{"name": "hydrate_graph (hydrate)", "graph": "codebase-the-loom"}'
+loom find-callers '{"name": "compute_fingerprint (fingerprint)", "graph": "codebase-the-loom"}'
 ```
 
-Ranked, and each row is anchored at the call site — file and line of the call, not just
-the calling file. → *typical shape:* 6 callers, rolled up by file.
+→ ranked callers, each anchored at its call site in the caller's file.
+Typical: 3–8 rows plus a per-file rollup.
 
 ### What does `X` call?
 
 ```bash
-loom find-callees '{"name": "assemble_bundle (bundle)", "graph": "codebase-the-loom"}'
+loom find-callees '{"name": "update_codebase_diff (codebasediff)", "graph": "codebase-the-loom"}'
 ```
 
-→ *typical shape:* 8–20 callees, with unresolved calls omitted rather than guessed
-(an ambiguous callee produces no edge — `theloom/extraction/resolution.py:431-451`).
+→ ranked callees with call-site anchors. Typical: 10–30 rows, truncated with an explicit
+`shown + cut = total` block when over budget.
 
 ### What does module `Y` do?
 
 ```bash
-loom list-entities '{"query": "theloom/store", "entityType": "concept", "compact": true, "graph": "codebase-the-loom"}'
+loom list-entities '{"query": "theloom/store purpose", "entityType": "concept", "compact": true, "graph": "codebase-the-loom"}'
 ```
 
-Returns the group's purpose record: what it is for, its key files, its public surface.
-→ *typical shape:* 1 purpose record with 4–5 observations.
+→ 1 record whose observations carry `purpose` and `key_files`. Then `loom explore` the files
+it names. Typical: one ~1,500-character purpose paragraph.
 
-Then follow up on the files it names:
+Purpose records are named after the **directory**, not the group id — `theloom/store purpose`,
+not `theloom-store purpose`, which matches nothing. A handful carry a narrative title instead
+(`Tapestry build and contract toolchain purpose`); when in doubt, search by group id, which
+matches the `module_group` observation on every written record:
 
 ```bash
-loom explore '{"name": "file:theloom/store/falkor.py", "graph": "codebase-the-loom"}'
+loom list-entities '{"query": "theloom-store", "entityType": "concept", "compact": true, "graph": "codebase-the-loom"}'
 ```
 
 ### What breaks if I change `Z`?
 
 ```bash
-loom blast-radius '{"name": "MultiGraph.get_store (multigraph)", "graph": "codebase-the-loom"}'
+loom blast-radius '{"name": "file:theloom/semantic/embed.py", "graph": "codebase-the-loom"}'
 ```
 
-Reverse dependency reach, grouped by module, with hub suppression disclosed rather than
-silent. → *typical shape:* 40–120 affected symbols across 8–15 modules, plus a
-`suppressedHubs` note if a high-degree node was withheld.
+→ reverse dependency reach grouped by module, with hub suppression and truncation declared
+rather than hidden. For that file: 19 seeded members, 161 affected symbols across 10 modules,
+100 listed and 61 counted-not-listed, 1 suppressed hub. A single function is much narrower —
+`compute_fingerprint (fingerprint)` reaches 15 symbols across 4 modules with nothing cut.
+Name a file when you want the module-level answer and a symbol when you want the precise one.
 
 ### What are the risks here?
 
 ```bash
-loom list-entities '{"entityType": "tension", "compact": true, "limit": 30, "graph": "codebase-the-loom"}'
+loom list-entities '{"entityType": "tension", "compact": true, "limit": 40, "graph": "codebase-the-loom"}'
 ```
 
-Narrow to one area with a query:
+→ each record carries `pole_a`, `pole_b`, an `anchor` and `implications`. Narrow with
+`"query": "<module group id>"` to scope to one subsystem. Typical: 3–13 risks per group,
+344 in the graph.
+
+### What must stay true here?
 
 ```bash
-loom list-entities '{"entityType": "tension", "query": "store", "compact": true, "graph": "codebase-the-loom"}'
+loom list-entities '{"query": "theloom-semantic", "entityType": "claim", "compact": true, "graph": "codebase-the-loom"}'
 ```
 
-Each strain carries `pole_a`, `pole_b`, an `anchor` (file:line, both sides), and
-`implications`. → *typical shape:* 8 strains for a package-sized group; 274 exist in
-total.
+→ invariants with `statement`, `anchor` and `consequence_if_broken`.
+Typical: 5–35 per group, 630 in the graph.
 
-### What must stay true about this area?
+### What conventions does this code follow?
 
 ```bash
-loom list-entities '{"entityType": "claim", "query": "bi-temporal", "compact": true, "graph": "codebase-the-loom"}'
+loom list-entities '{"query": "theloom-operations-2", "entityType": "pattern", "compact": true, "graph": "codebase-the-loom"}'
 ```
 
-Invariants, each with a `statement`, an `anchor` and a `consequence_if_broken`.
-→ *typical shape:* 9–20 invariants per package; 496 exist in total.
+→ named conventions with `description`, `instances` and `mechanism`.
+Typical: 4–11 per group, 367 in the graph.
 
-### How is this area built?
+### I only know roughly what I am looking for
 
 ```bash
-loom list-entities '{"entityType": "pattern", "query": "theloom-cli", "compact": true, "graph": "codebase-the-loom"}'
+loom hybrid-search '{"query": "how are events committed atomically", "graph": "codebase-the-loom"}'
 ```
 
-→ *typical shape:* 6–10 recurring construction patterns per group, each with a
-`description`, `instances` (file:line list), `mechanism` and `variation`.
+→ semantic plus graph-expansion ranking over the whole graph. Typical: 10 rows spanning
+code, invariants and risks.
 
-### I only have a concept, not a symbol name
+### How do these two things connect?
 
 ```bash
-loom hybrid-search '{"query": "how are relation updates persisted", "graph": "codebase-the-loom"}'
+loom find-shortest-path '{"sourceName": "file:theloom/cli/registry.py", "targetName": "file:theloom/store/falkor.py", "graph": "codebase-the-loom"}'
 ```
 
-Vector plus keyword retrieval over everything — code symbols and written notes alike.
-→ *typical shape:* 10 ranked hits with scores and anchors.
+→ the hop sequence as an id list. Typical: 2–4 hops. Endpoints take exactly one of
+`sourceId`/`sourceName` and one of `targetId`/`targetName`; mixing them returns a typed
+`VALIDATION_ERROR`.
 
-### Everything about one thing, in one call
+`loom explain-path` gives a prose reading of the same hops, but at this commit only its
+**id** form works — passing `sourceName`/`targetName` fails with
+`OPERATION_ERROR: FalkorDocStore.list_entities() takes 1 positional argument but 2 were
+given` (`theloom/operations/synthesis.py:525-541` resolves names against a document-store
+view that the shared resolver cannot query). Feed it the ids that `find-shortest-path`
+returned:
 
 ```bash
-loom entity-deep-dive '{"name": "file:theloom/cli/registry.py", "compact": true, "graph": "codebase-the-loom"}'
+loom explain-path '{"sourceId": "<id>", "targetId": "<id>", "graph": "codebase-the-loom"}'
 ```
 
-→ *typical shape:* a multi-section envelope — record, neighbors, relations, provenance,
-centrality — each section independently fault-isolated.
+→ a narrative walk of the path. Requires an LLM to be configured; without one it returns a
+typed `OPERATION_ERROR` from the provider rather than a partial answer.
 
-### How do two things connect?
+### Everything about one symbol, at length
 
 ```bash
-loom find-shortest-path '{"fromName": "file:theloom/cli/app.py", "toName": "file:theloom/store/falkor.py", "graph": "codebase-the-loom"}'
-loom explain-path '{"name": "file:theloom/viz/bundle.py", "graph": "codebase-the-loom"}'
+loom entity-deep-dive '{"name": "run_composite (framework)", "compact": true, "graph": "codebase-the-loom"}'
 ```
 
-### Structure of the whole thing
+→ a multi-section bundle: neighbourhood, relations, semantic neighbours, provenance.
+Typical: 5 sections, each with its own timing and error field.
+
+### What shape is the graph in?
 
 ```bash
 loom graph-stats '{"graph": "codebase-the-loom"}'
 loom analyze-centrality '{"algorithm": "degree", "limit": 15, "graph": "codebase-the-loom"}'
-loom detect-cycles '{"includePaths": true, "graph": "codebase-the-loom"}'
 ```
 
----
+→ counts by record and relation type; a ranked `{id, name, entityType, score}` array.
+Typical: one stats document; 15 ranked rows.
 
 ## Make agents use this graph
 
-Optional, and the repository owner's choice. A Claude Code hook can nudge agents toward
-the graph whenever they reach for `Grep` or `Glob`. It emits `additionalContext` only —
-it never blocks a tool call, never returns a permission decision, and ends in `|| true`
-so it cannot fail the call. Add to `.claude/settings.json`:
+Optional, and the repository owner's choice. This `PreToolUse` hook nudges agents toward the
+graph whenever they reach for `Grep` or `Glob`. It only ever injects context — it never
+blocks a tool call, never returns a permission decision, and ends in `|| true` so it cannot
+fail the call. Drop it into `.claude/settings.json`:
 
 ```json
 {
@@ -204,11 +223,10 @@ so it cannot fail the call. Add to `.claude/settings.json`:
 }
 ```
 
-The guard on `docs/architecture/map-manifest.json` means the nudge disappears
-automatically in a checkout that has no map.
+The guard on `map-manifest.json` makes it self-disabling: in a checkout without a map, the
+hook emits nothing.
 
 ---
 
-**Query the graph before grepping the repo.** The graph already has the answer, anchored
-to a file and a line — including the parts of the answer that are not in the source text
-at all: why a module exists, what must stay true about it, and where it strains.
+Query the graph before grepping the repository. The graph already has the answer, and it
+comes back anchored to a file and a line.
