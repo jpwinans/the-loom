@@ -29,6 +29,32 @@ report is written to `research/reports/{slug}-{date}.md` *and ingested back
 into the Loom's document store*, so the next hyper-research run can read this
 one's conclusions.
 
+> **Set expectations before you launch.** This multiplies everything about
+> [deep-research](../deep-research/README.md) by the question count. A rich
+> context document that yields several substantive questions is a
+> most-of-the-day background run with token spend to match, and the shared
+> agent-concurrency cap makes the speedup sub-linear (parallel questions
+> queue rather than all running at once). Launch it, walk away, and let the
+> completion notification find you.
+
+## Why not just several chat sessions?
+
+Running N separate research chats gets you N reports that have never met.
+The fan-out here writes every question's research into **one graph**, which
+buys what independent sessions structurally cannot produce:
+
+- **Cross-question contradictions surface.** Two questions' findings that
+  disagree get caught by the consolidation pass, not discovered months later.
+- **Convergences become first-class.** Independent lines of work arriving at
+  the same conclusion are recorded as evidence of strength, with the lineage
+  to prove the independence.
+- **Overlap merges instead of duplicating.** Concurrent writers may create
+  near-duplicates; consolidation folds them with full history rather than
+  leaving N copies of the same claim.
+- **The next round starts smarter.** The synthesis is ingested back into the
+  store, so a future run reads this run's conclusions before extracting its
+  questions.
+
 ## How it uses The Loom
 
 Everything deep-research demonstrates, plus the multi-writer patterns:
