@@ -1,6 +1,6 @@
 ---
 repo: the-loom
-commit: 8866c267f2de896bcaadfa452ef7e2ac275fa494
+commit: 0343de03f15efbb6ce1d329e8f8703e18bad4900
 graph: codebase-the-loom
 generated: 2026-08-07
 mode: incremental
@@ -30,17 +30,17 @@ a committed dev fixture.
 
 | Measure | Value |
 | --- | --- |
-| Files recorded | 375 source files (every one present in the tree at this commit) and 65 external package records |
-| Language mix | Python 257, TypeScript 74, Markdown 16, JSON 14, CSS 9, JavaScript 2, YAML/TOML/lockfile 3 |
-| Files tree-sitter could not parse | 0 this run — extraction touched only the two re-enriched groups and the one carried group; §8 accounts for the running total across the whole graph |
-| Symbols in the current projection | 6,526 records — 2,783 functions and methods, 1,478 variables and constants, 451 classes/interfaces/type aliases, 440 file and package records |
-| Written layer | 52 subsystem purposes, 351 conventions, 626 invariants, 345 risks |
-| Records including superseded versions | 9,331 |
+| Files recorded | 379 source files (every one present in the tree at this commit) and 65 external package records |
+| Language mix | Python 257, TypeScript 74, Markdown 20, JSON 14, CSS 9, JavaScript 2, YAML/TOML/lockfile 3 |
+| Files tree-sitter could not parse | 0 this run — extraction touched only the two re-enriched groups (`repo-root-1`, `examples`) and the one carried group (`docs-architecture`); §8 accounts for the running total across the whole graph |
+| Symbols in the current projection | 6,530 records — 2,783 functions and methods, 1,478 variables and constants, 451 classes/interfaces/type aliases, 444 file and package records (up 4 for the new `examples` guide files) |
+| Written layer | 53 subsystem purposes, 355 conventions, 629 invariants, 347 risks |
+| Records including superseded versions | 9,350 |
 | Relationships in the current projection | 13,868 — last independently measured at commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`; this refresh's cheap re-run (graph-stats, cycles, centrality, components) does not isolate a current-only relation count, so the figure is carried forward rather than restated as fresh (§8) |
-| Relationships including closed-out versions | 19,272 |
+| Relationships including closed-out versions | 19,315 |
 | Working tree at extraction | clean |
 
-The gap between 9,331 stored records and 6,526 in the current projection is not code
+The gap between 9,350 stored records and 6,530 in the current projection is not code
 churn: it is mostly the written layer being re-authored, plus a handful of structural
 records a file rename supersedes rather than updates in place. Every superseded record is
 either a purpose, convention, invariant or risk note that an earlier mapping run wrote and a
@@ -49,28 +49,26 @@ mapping design working as specified — a re-run supersedes only what actually c
 leaves the rest of the structural layer to incremental re-extraction
 (`docs/design/2026-08-03-map-codebase-design.md:146-155`).
 
-Since the previous edition (commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`) the
-structural layer has moved only slightly: 5,152 code records, one more than before, and
-eight file/package records superseded rather than updated in place — consistent with the
-renamed-file handling `tests-3` now pins directly: a git rename lands as delete-old-path
-plus add-new-path, so the old path's entities are superseded rather than left live under a
-path that no longer exists (`tests/test_incremental_update.py:421-441`, and §2.35 below).
-Two module groups were freshly re-enriched this run. `docs-architecture` — as every edition
-of this document has to disclose — is always describing the commit before this one, because
-it cannot know its own hash while it is being written (§2.45). `tests-3`'s write-up below is
-substantially larger than the previous edition's: five key files named instead of three, and
-eleven invariants instead of three, reflecting real growth in that slice of the suite. One
-further group, `theloom-extraction`, carried a diff too small to trigger re-enrichment — the
-same rename fix — so §2.13 is unchanged from the previous edition. Component structure was
-re-verified this run: still exactly two connected components, the larger holding 6,525 of
-6,526 records (§5). Community clustering and the open-seams scan were not re-run this
-refresh; §5 and §7 are carried forward from commit `e9d4b425` and say so where it matters.
+Since the previous edition (commit `8866c267f2de896bcaadfa452ef7e2ac275fa494`) two module
+groups were freshly re-enriched. `examples` is new to the graph entirely — a four-file guide
+layer for the repository's three shipped Claude Code skills (§2.46). `repo root part 1 of 7`
+(module group `repo-root-1`) was re-enriched alongside it, because the same change that added
+`examples/` also rewrote how `README.md` points at it — the eleven-file declaration surface
+now delegates the skills description it used to carry inline (§2.42). One group,
+`docs/architecture` (module group `docs-architecture`), carried a diff too small to trigger
+re-enrichment this run, so §2.45 is unchanged from the previous edition — as every edition of
+this document has to disclose, that section is always describing the commit before this one
+anyway, because it cannot know its own hash while it is being written (§2.45). Component
+structure was re-verified this run: still exactly two connected components, the larger now
+holding 6,539 of 6,540 records (§5). Community clustering and the open-seams scan were not
+re-run this refresh; §5 and §7 are carried forward from commit `e9d4b425` and say so where it
+matters.
 
 ---
 
 ## 2. Subsystem walkthrough
 
-Forty-five module groups have been read and written up. They fall into five areas: the
+Forty-six module groups have been read and written up. They fall into five areas: the
 Python package (`theloom/`), the frontend workspace (`tapestry/`), the test suite, the
 fixtures, and the repository's own declaration and design documents.
 
@@ -1350,47 +1348,57 @@ Invariants worth knowing:
 
 ### 2.E Declarations and design record
 
-#### 2.42 Declaration surface — repo root part 1 (group `repo-root-1`)
+#### 2.42 Declaration surface — repo root part 1 of 7 (group `repo-root-1`)
 
-The eleven root files that state what The Loom is, what it is built from, how it is run and
-gated, what its words mean, and how to report a hole in it. None is imported by the package.
-`pyproject.toml` is the single manifest: the runtime dependency set with conservative
-floors, two console entry points bound to the same callable, and the configuration for all
-three quality tools. `docker-compose.yml` declares the one FalkorDB service the store
-depends on, with a persistence path and a result-set cap that two past incidents produced.
-`CLAUDE.md`, `CONTRIBUTING.md`, `README.md` and `STACK.md` are four audience-specific
-statements of the same project, and `COMMANDS.md` is the machine-generated catalog.
-`CONTEXT.md` is the ubiquitous-language glossary, most terms carrying an explicit avoid-list.
-`SECURITY.md` draws the only trust boundary the repo states. The two files under `scripts/`
-are the only executable code here — local-only graph fabricators for the live-mode demo and
-a synthetic benchmark graph.
+Eleven root files that state what The Loom is, what it is built from, how it is run and
+gated, what its words mean, and how to report a hole in it, plus the two executable scripts
+under `scripts/`. None of the eleven is imported by the package. `pyproject.toml` is the
+single manifest: the runtime dependency set with conservative floors (`falkordb` carries
+none at all), two console entry points bound to the same callable, and the configuration for
+all three quality gates. `docker-compose.yml` declares the one FalkorDB service architecture
+invariant 1 depends on, its persistence path and result-set cap each commented with the
+incident that produced it. `CLAUDE.md`, `CONTRIBUTING.md`, `README.md` and `STACK.md` restate
+the same six architecture invariants for four different audiences; `COMMANDS.md` is the
+machine-generated catalog; `CONTEXT.md` is the ubiquitous-language glossary, most terms
+carrying an explicit avoid-list; `SECURITY.md` draws the repo's only stated trust boundary —
+a local-first CLI against a trusted FalkorDB, `loom serve` read-only on localhost with no
+authentication. The two `scripts/` files are the only executable code here, reaching past the
+CLI into `MultiGraph` to seed live-mode demo graphs and a synthetic benchmark graph. Since the
+previous edition, `README.md` stopped inlining a description of the three shipped Claude Code
+skills and now delegates it to a three-row table pointing at `examples/` (§2.46).
 
 Key files: `pyproject.toml`, `docker-compose.yml`, `CONTRIBUTING.md`, `CONTEXT.md`,
-`scripts/gen_bench_graph.py`.
+`SECURITY.md`, `scripts/gen_bench_graph.py`.
 
 Conventions: a generated artifact committed and pinned by a drift test; architecture
-promises restated per audience instead of linked to one copy; optional dependency extras
+invariants restated per audience instead of linked to one copy; optional dependency extras
 keeping the core install thin; destructive dev scripts binding their target graph at compile
 time; ubiquitous language recorded as a term plus an explicit avoid-list; configuration
-comments recording the incident that produced the setting.
+comments recording the incident that produced the setting; local seed scripts driving the
+store through `MultiGraph` rather than the CLI; skill documentation delegated from the README
+to a per-skill guide outside this group's files.
 
 Invariants worth knowing:
 - `COMMANDS.md` is generated from the registry and a test fails when it drifts
   (`COMMANDS.md:3`, enforced at `tests/test_generate_docs.py:34-40`).
-- The green-main gate is four commands, and `ruff format --check` is one of them
-  (`CONTRIBUTING.md:36-44`).
-- FalkorDB persists to `/var/lib/falkordb/data` and runs with `RESULTSET_SIZE` uncapped
-  (`docker-compose.yml:13-19`).
-- `scripts/` is linted but sits outside the type gate and the test suite
-  (`pyproject.toml:76`, `:84`, `:92`).
-- The live-mode seed refuses to delete the caller's default graph
-  (`scripts/seed_live_dev.py:25`).
-- The benchmark generator seeds no embeddings and deliberately bypasses bulk import
-  (`scripts/gen_bench_graph.py:16-18`, `:36-43`).
-- Dependency floors are conservative and `uv.lock` is the reproducibility artifact
-  (`pyproject.toml:19-43`).
-- `mypy --strict` covers `theloom` only and treats nine libraries as untyped
-  (`pyproject.toml:81-88`).
+- The green-main gate is four commands, and `ruff format --check` — not just `ruff check` —
+  is one of them (`CONTRIBUTING.md:36-44`).
+- FalkorDB persists to `/var/lib/falkordb/data` (not `/data`) and runs with
+  `RESULTSET_SIZE` uncapped, each a comment naming the incident that forced it
+  (`docker-compose.yml:10-19`).
+- `scripts/` is linted but sits outside the type gate and the test suite, and nothing in the
+  package imports it (`pyproject.toml:76`, `:84`, `:92`).
+- The live-mode seed refuses to delete a graph matching the caller's configured default even
+  if it collides with a demo name; the benchmark generator's delete of `tapestry-bench`
+  carries no such guard (`scripts/seed_live_dev.py:25` vs
+  `scripts/gen_bench_graph.py:162-164`).
+- The benchmark generator seeds no embeddings and writes relations through batched
+  `store.create_relations` rather than `bulk_import`, avoiding `bulk_import`'s per-relation
+  dedup read at 100k-relation scale (`scripts/gen_bench_graph.py:16-18`, `:36-43`).
+- Dependency floors are conservative and unpinned; `uv.lock` alone is the reproducibility
+  artifact (`pyproject.toml:19-20`, `:22`).
+- `mypy --strict` covers `theloom` only and treats nine libraries, including the FalkorDB
+  client itself, as untyped (`pyproject.toml:81-88`).
 
 #### 2.43 Dependency closure — repo root part 2 (group `repo-root-2`)
 
@@ -1531,6 +1539,41 @@ previous edition adopted the practice: this run replaces the line numbers the gr
 were anchored against. See §6, item 21 for the self-reference this practice exists to
 manage.
 
+#### 2.46 The guide layer — `examples` (group `examples`)
+
+New this edition: four Markdown files with no runnable code, schemas or agent prompts. It is
+the public-facing documentation for the three Claude Code agent skills the repository ships —
+`deep-research`, `hyper-research` and `map-codebase` — and doubles as the worked-example layer
+for the Loom CLI itself: each guide states, concretely, how its skill drives Loom to build,
+query and maintain a knowledge graph. The split is deliberate and stated in the index —
+explanation lives here, everything executable lives under `.claude/`, because that is the only
+place Claude Code resolves skills, workflows, agents and references from.
+
+Key files: `examples/README.md` (index, shared prerequisites, the two CLI invariants),
+`examples/deep-research/README.md`, `examples/hyper-research/README.md`,
+`examples/map-codebase/README.md`.
+
+Conventions: guides here, runnable assets under `.claude/`; one four-part template across all
+three guides (framing, usage, pipeline shape, "how it uses The Loom", "after a run"); each
+run's output documented as the next run's input, by a different Loom mechanism per skill — an
+accumulating `--graph` target for deep-research, the document store for hyper-research, and
+the commit-anchored manifest for map-codebase.
+
+Invariants worth knowing:
+- `examples/README.md` is the single place stating the two CLI invariants every example
+  respects — `create-relation` requires `polarity`/`strength`/`evidence`, and embedding is a
+  deliberate follow-up step, never a side effect of a write — and no per-skill guide restates
+  them (`examples/README.md:36-44`).
+- All 22 distinct `loom` commands the four guides name resolve to a real registered command;
+  none cited does not exist, checked against `theloom/cli/registry.py`.
+- Every repo-relative link the guides follow — into `.claude/README.md`, the three workflow
+  scripts, the eight `research-*.md` agents, `docs/architecture/` — resolves to a file that
+  is actually checked in.
+- The fifteen `loom <command> '<json>'` invocations in this group sit outside
+  `tests/test_claude_examples_contract.py`'s harvest, which is scoped to `.claude/` only
+  (`tests/test_claude_examples_contract.py:32`, `:116`) — nothing reddens if one of them
+  drifts out of contract with the CLI.
+
 ---
 
 ## 3. Load-bearing modules
@@ -1646,7 +1689,7 @@ The four that cross a file boundary are the ones worth reading:
   shared helper.
 
 Structurally, the graph is now one connected mass with a single outlier: **two components**
-(re-verified this run), of which the larger holds 6,525 of 6,526 records. The lone singleton
+(re-verified this run), of which the larger holds 6,539 of 6,540 records. The lone singleton
 is `tapestry/src/views/explorer/Explorer.css`, unchanged from the previous edition and still
 the only record no import link reaches. The edition before last reported 79 components; the
 other 77 singletons were orphaned written-layer notes, and they were retired (§6, resolved).
@@ -1760,8 +1803,9 @@ report — two things the code wants that cannot both be fully true.
 20. **The command count is hand-copied into two documents while the catalog is generated**
     (`COMMANDS.md:5` versus `README.md:12` versus `CLAUDE.md:8-9`), the repository layout is
     described three times with two copies already drifted (`CLAUDE.md:57-74`,
-    `README.md:356-369`, `CONTRIBUTING.md:111-118`), and the glossary that declares itself
-    the project's ubiquitous language is linked from none of them (`CONTEXT.md:1-6`).
+    `README.md:340-353`, `CONTRIBUTING.md:111-118` — corrected this run, the README anchor
+    had drifted to a stale line range), and the glossary that declares itself the project's
+    ubiquitous language is linked from none of them (`CONTEXT.md:1-6`).
 21. **This directory has the same defect it reports elsewhere, and its own numbers show the
     feedback loop is not shrinking.** Every number in §1, §3, §4, §5 and §7 is prose
     transcribed by the run that wrote it: nothing regenerates it, nothing asserts it, and
@@ -1780,6 +1824,21 @@ report — two things the code wants that cannot both be fully true.
     The feedback is disclosed, but it is real, it is measurably growing, and it distorts
     betweenness more than degree for exactly the reason predicted: a document that names two
     distant subsystems creates a short path between them that no import or call justifies.
+
+22. **The project's license is ISC; its only supported store's server is SSPL.**
+    `pyproject.toml` declares and classifies the distribution as ISC (`pyproject.toml:7`,
+    `:13`), but FalkorDB — the single, non-optional substrate architecture invariant 1
+    requires — ships an SSPLv1 server; only the Python client is MIT (`STACK.md:22`,
+    `:24-26`). STACK.md scopes the exposure correctly (SSPL only bites a resold managed
+    service), but the constraint is recorded nowhere else, and invariant 1 forbids the escape
+    hatch of a second store by design.
+23. **The public-facing guides are the CLI examples nobody checks.**
+    `tests/test_claude_examples_contract.py` already harvests every `loom <command> '<json>'`
+    invocation out of Markdown and validates it against the command's registered input model
+    — but only under `.claude/` (`tests/test_claude_examples_contract.py:32`, `:116`). The
+    fifteen invocations across `examples/README.md` and the three skill guides (new this
+    edition, §2.46) are the more public surface and are validated by nothing; a renamed
+    command or a changed required field reddens no test.
 
 Resolved since the previous edition: the seventy-seven orphaned written-layer notes that
 opened the previous risk register are gone. Every note in the graph now connects to the file
@@ -1833,7 +1892,7 @@ duplicate-invariant pairs that topped that list were among the notes retired in 
 
 ## 8. Coverage & methodology
 
-**Coverage.** 45 of 45 module groups are described above; none was skipped. The groups are,
+**Coverage.** 46 of 46 module groups are described above; none was skipped. The groups are,
 by their identifiers in the graph:
 
 ```
@@ -1849,28 +1908,31 @@ tapestry-src-views-overview   tapestry-src-views-semantic
 tapestry-src-views-systems
 tests-1  tests-2  tests-3  tests-4  tests-5  tests-6
 tests-fixtures-multi  tests-fixtures-repo   tests-fixtures-repo-src
-repo-root-1  repo-root-2  docs  docs-architecture
+repo-root-1  repo-root-2  docs  docs-architecture  examples
 ```
 
 **Re-written this run.** This is a refresh: it patches specific sections rather than
 re-deriving every one. Two groups had a real diff and were freshly re-enriched from source
-— `docs-architecture` (§2.45, which as always describes the commit before this one, not this
-one; see the provenance note there) and `tests-3` (§2.35, substantially expanded — five key
-files named instead of three, eleven invariants instead of three). One group,
-`theloom-extraction`, had a diff too small to trigger re-enrichment — the same renamed-file
-handling fix `tests-3` pins — so its semantic layer (§2.13) is carried forward unchanged from
-commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`. No group was attempted and left
-unenriched. The other 42 sections describe records written by earlier runs against files
-that have not moved since; their anchors were valid when written and their files are
-unchanged. The load-bearing-modules ranking (§3), the cycle table (§4) and the component
+this run — `examples` (§2.46, new to the graph — a four-file guide layer for the repository's
+three shipped Claude Code skills) and `repo-root-1` (§2.42, re-enriched alongside it because
+the same change added the `examples/README.md` cross-link this group's `README.md` now
+carries). One group, `docs-architecture`, had a diff too small to trigger re-enrichment — so
+its semantic layer (§2.45) is carried forward unchanged from whichever earlier run last wrote
+it, and, as that section's own provenance note explains, it always describes the commit
+before the one it is read at regardless. No group was attempted and left unenriched. The
+other 43 sections describe records written by earlier runs against files that have not moved
+since; their anchors were valid when written and their files are unchanged (one exception
+corrected this run: §6 item 20's `README.md` anchor had drifted to a stale line range and is
+now fixed). The load-bearing-modules ranking (§3), the cycle table (§4) and the component
 count (§5) were recomputed fresh this run from cheap, non-embedding analyses (`graph-stats`,
-`detect-cycles`, `analyze-centrality`, `detect-components`); community clustering (§5) and
-the open-seams scan (§7) were not — both call `find-clusters` or `semantic-gaps`, which
-re-embed the whole sample and are too costly for a refresh — so those two readings are
-carried forward from commit `e9d4b425` and say so in place. That is the standing limitation
-of incremental (and especially refresh) mode: the front matter presents one commit, but the
-reading of any given subsystem or analysis is as old as the last time it was actually
-recomputed.
+`detect-cycles`, `analyze-centrality`, `detect-components`) and came back structurally
+unchanged from the previous edition (same 13 cycles, same top-15 hubs by degree and by
+betweenness); community clustering (§5) and the open-seams scan (§7) were not re-run — both
+call `find-clusters` or `semantic-gaps`, which re-embed the whole sample and are too costly
+for a refresh — so those two readings are carried forward from commit `e9d4b425` and say so
+in place. That is the standing limitation of incremental (and especially refresh) mode: the
+front matter presents one commit, but the reading of any given subsystem or analysis is as
+old as the last time it was actually recomputed.
 
 **Legacy identifiers.** Seven labels survive from earlier runs and still carry 130 records
 between them: `docs-1`, `root-1`, `tests-fixtures`, and the coarser frontend partition
@@ -1881,16 +1943,16 @@ exists (§5, §6).
 
 **Not parsed.** Zero files failed to parse this run, because extraction touched only the
 files behind the two re-enriched groups, the one carried group, and any renamed paths.
-Across the whole graph, 65 of the 375 recorded files carry no symbols, and all of them are
-accounted for: 42 are formats with no symbol grammar in this pipeline (16 Markdown, 14 JSON,
-9 CSS, 1 YAML, 1 TOML, 1 lockfile), 18 are Python `__init__.py` package markers that declare
-nothing, and 5 are TypeScript entry and config files whose contents are a single default
-export or top-level call (`tapestry/src/main.tsx`, `src/vite-env.d.ts`, `vite.config.ts`,
-`playwright.config.ts`, `src/lib/roving.test.ts`). All 65 still participate in documentation
-links and containment.
+Across the whole graph, 69 of the 379 recorded files carry no symbols, and all of them are
+accounted for: 46 are formats with no symbol grammar in this pipeline (20 Markdown — up 4 for
+the new `examples/` guides, 14 JSON, 9 CSS, 1 YAML, 1 TOML, 1 lockfile), 18 are Python
+`__init__.py` package markers that declare nothing, and 5 are TypeScript entry and config
+files whose contents are a single default export or top-level call (`tapestry/src/main.tsx`,
+`src/vite-env.d.ts`, `vite.config.ts`, `playwright.config.ts`, `src/lib/roving.test.ts`). All
+69 still participate in documentation links and containment.
 
 **Graph and commit.** Graph `codebase-the-loom`, commit
-`43ae9b012576ee43bb47f7c2ee9089e21555e138`, mode `incremental`. The working tree was
+`0343de03f15efbb6ce1d329e8f8703e18bad4900`, mode `incremental`. The working tree was
 **clean** at extraction.
 
 **How to re-run.** `/map-codebase <repo-root>`. The run reads the commit recorded in
@@ -1909,6 +1971,6 @@ when you only know roughly what you want. `loom explore`, `loom find-callers`,
 and what-breaks-if-I-change-this in one call each.
 
 **The visualization.** `docs/architecture/codebase-map.html` is a self-contained page holding
-the 400 highest-degree records and the 1,868 relationships among them, with analytics and
+the 400 highest-degree records and the 1,873 relationships among them, with analytics and
 event-replay sections attached but the semantic-clustering bundle excluded (kept cheap for a
 refresh). It is generated and gitignored; regenerate it by re-running the map.
