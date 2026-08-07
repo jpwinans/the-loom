@@ -1,5 +1,7 @@
 # The Loom
 
+*Weaving knowledge into understanding.*
+
 A knowledge-graph substrate with a single JSON-in/JSON-out CLI, built on
 **[FalkorDB](https://www.falkordb.com/)**. Entities, relations, entity vectors,
 document chunks, and full-text all live in one transactional store. Every
