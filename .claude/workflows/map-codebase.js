@@ -98,6 +98,7 @@ phase('Cartograph')
 const map = await agent(`Write the architecture map deliverables. Loom access: ${LOOM}. ${CONSUMPTION_HINT} ${SCRATCH_GUARD}
 GRAPH_NAME: ${setup.graphName}
 PROJECT_PATH: ${setup.projectPath}
+PORTABILITY (hard requirement): PROJECT_PATH and OUTPUT_DIR are for your own file access ONLY — the deliverables are committed to the repo and must contain no machine-specific absolute path (no /Users/..., no ~/...). In map-manifest.json write "projectPath": "." exactly; in ARCHITECTURE-MAP.md write the re-run instruction as \`/map-codebase <repo-root>\`; in QUERYING.md write the loom fallback prefix with a <path-to-your-loom-checkout> placeholder. Before returning, grep your four written outputs for the PROJECT_PATH string and rewrite any hit.
 OUTPUT_DIR: ${OUTPUT || `${setup.projectPath}/docs/architecture/`}
 HEAD_COMMIT: ${setup.headCommit}
 MODE: ${setup.mode}${NO_ENRICH ? ' (structural-only: --no-enrich skipped the Enrich phase, so there is no semantic layer this run)' : ''}
