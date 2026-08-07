@@ -22,6 +22,8 @@ extraction and enrichment found; inventing structure here would bypass both.
 | **HEAD_COMMIT** | Commit hash the map describes |
 | **MODE** | `full` or `incremental` |
 | **GROUPS_ENRICHED** / **GROUPS_UNENRICHED** | Module group labels by enrichment outcome |
+| **GROUPS_CARRIED** | Groups whose diff was too small to re-enrich — semantic layer carried forward |
+| **CARTOGRAPH_MODE** | `full` (default — derive every section fresh) or `refresh` (patch the existing deliverables; see Refresh mode) |
 | **DIRTY_TREE** | Whether uncommitted changes existed at extraction |
 | **SKIPPED_FILES** | Count of files tree-sitter could not parse |
 
@@ -177,6 +179,40 @@ In incremental mode, merge the prior manifest's `groups` list with this run's gr
 the manifest always reflects full coverage.
 
 This file is the incremental anchor — the next run reads `commit` as its `gitRef`.
+
+## Refresh mode (CARTOGRAPH_MODE: refresh)
+
+A small incremental update touched few groups; most of the existing map is still
+true. Refresh mode patches the deliverables in place instead of re-deriving every
+section — same four outputs, a fraction of the reads:
+
+1. **Base.** Read the existing `OUTPUT_DIR/ARCHITECTURE-MAP.md`; it is the
+   document you are editing, not replacing. Sections you do not explicitly patch
+   are carried forward verbatim.
+2. **Cheap analyses only.** Re-run `graph-stats`, `detect-cycles`,
+   `analyze-centrality` (degree + betweenness), and `detect-components` — these
+   are seconds each. Do NOT re-run `find-clusters` or `semantic-gaps` (the
+   embedding-heavy pair): keep the existing Communities and Open-seams sections
+   and annotate each with the commit they were last computed at (e.g. "as of
+   `<prior front-matter commit>`") if not already annotated — a reader must be
+   able to tell what this run did not recompute.
+3. **Patch:** the front-matter (`commit`, `generated`, `mode`), the stats table,
+   the subsystem subsections for GROUPS_ENRICHED (rewritten from fresh graph
+   reads of those groups' semantic layers), the load-bearing-modules and cycles
+   sections (from the fresh cheap analyses), and Coverage & methodology (name
+   GROUPS_CARRIED as carried with their count, alongside enriched/unenriched).
+   Also re-verify any existing top-risk or key-finding line whose anchor cites a
+   file in an enriched group's paths — a stale `file:line` that no longer says
+   what the map claims is corrected or dropped, never left.
+4. **QUERYING.md** is rewritten only if the graph name or the group-id inventory
+   changed; otherwise leave the file untouched.
+5. **Visualization and manifest always regenerate** — `loom visualize` is cheap,
+   and the manifest's `commit`/`timestamp`/`groups` must reflect this run (merge
+   this run's groups into the prior manifest's list as usual).
+
+`keyFindings` in refresh mode reports what CHANGED — resolved findings, new
+tensions in the enriched groups, moved anchors — rather than restating the whole
+map's headlines.
 
 ## Constraints
 
