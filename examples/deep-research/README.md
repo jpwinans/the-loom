@@ -27,6 +27,34 @@ documentation → finalize. Eight specialized subagents
 outputs (`.claude/references/research-schemas.md`). Session artifacts land
 under `research/sessions/{id}/` relative to the launch directory.
 
+> **Set expectations before you launch.** This is not a chat feature. A run
+> executes dozens of subagent turns across multiple quality-gated iterations,
+> and a substantive question typically takes on the order of an hour of
+> wall-clock time, with token spend to match (thorough runs reach into the
+> millions). The question's classification sets the iteration budget, so
+> narrow factual questions finish much faster than open synthesis questions.
+> It runs in the background and notifies on completion: launch it and go do
+> something else.
+
+## Why not just an agent with web search?
+
+Most "deep research" agents search, read, and hand you a report. The report
+is the end of the line: the reasoning lives in prose, the sources live in
+footnotes, and the next question starts from zero. Here the report is a
+byproduct and the graph is the asset:
+
+- **Every claim is auditable after the run.** "Which claims are contested?"
+  and "what rests on a single source?" are queries, not a re-read of the
+  report.
+- **Beliefs update; they don't just accumulate.** The red-team pass attacks
+  exactly what the graph exposes as weak, and when a source fails scrutiny,
+  credit propagation weakens every conclusion built on it.
+- **Sessions compound.** Re-run with `--graph` onto the same graph and new
+  research lands beside the old with session provenance;
+  `cross-session-contradictions` catches the disagreements nobody noticed.
+- **Follow-ups don't re-research.** `synthesize`, `hybrid-search`, and
+  `provenance-audit` answer from the graph in seconds, long after the run.
+
 ## How it uses The Loom
 
 This pipeline is a worked example of the Loom's **epistemic layer** doing real
