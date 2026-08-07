@@ -186,9 +186,15 @@ A small incremental update touched few groups; most of the existing map is still
 true. Refresh mode patches the deliverables in place instead of re-deriving every
 section — same four outputs, a fraction of the reads:
 
-1. **Base.** Read the existing `OUTPUT_DIR/ARCHITECTURE-MAP.md`; it is the
+1. **Base.** Read the existing `OUTPUT_DIR/ARCHITECTURE-MAP.md` ONCE; it is the
    document you are editing, not replacing. Sections you do not explicitly patch
-   are carried forward verbatim.
+   are carried forward verbatim. Patch with targeted in-place edits (search and
+   replace on the exact lines that change) — never re-emit the whole document,
+   and never re-read a section you are not patching. Budget discipline: a
+   refresh should need roughly one graph read per enriched group's semantic
+   layer plus the fixed cheap analyses — if you find yourself issuing dozens of
+   exploratory reads, stop exploring and patch what the enriched groups and the
+   fresh analyses justify.
 2. **Cheap analyses only.** Re-run `graph-stats`, `detect-cycles`,
    `analyze-centrality` (degree + betweenness), and `detect-components` — these
    are seconds each. Do NOT re-run `find-clusters` or `semantic-gaps` (the

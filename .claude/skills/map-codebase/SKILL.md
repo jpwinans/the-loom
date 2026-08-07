@@ -31,9 +31,12 @@ exist (`update-codebase` from the last mapped commit), and they scale to the dif
 each changed group is classified **carried** (tiny diff — semantic layer stands,
 nothing re-read), **delta** (a minority of files changed — only the notes citing
 those files are superseded and rewritten, on a cheaper model), or **rewrite**
-(substantial change — whole-group re-enrichment as before). When few groups were
-touched, the cartographer likewise **patches** the existing map in place instead of
-re-deriving every section. A routine post-merge update therefore costs minutes, not
+(substantial change — whole-group re-enrichment as before). The map's own
+deliverables under `docs/architecture/` never trigger re-enrichment — they change
+every run by definition. When few groups were touched, the cartographer likewise
+**patches** the existing map in place instead of re-deriving every section, and
+when *nothing* was enriched a haiku-sized agent merely re-stamps the manifest,
+stats and visualization. A routine post-merge update therefore costs minutes, not
 a re-map. `--thorough` forces whole-group re-enrichment plus a full cartograph pass
 for every changed group; `--full` forces fresh extraction of everything. The graph persists for follow-up queries — `QUERYING.md`
 is the cheat sheet for them (`loom explore`, `loom find-callers`/`find-callees`,

@@ -70,7 +70,7 @@ const setup = await agent(`Initialize a map-codebase run. Loom access: ${LOOM}. 
 2. Fail fast: \`loom graph-stats '{}'\` must succeed — if it errors on connection, throw with the remediation line "docker compose up -d falkordb".
 3. Mode: if OUTPUT_DIR/map-manifest.json exists AND its graphName equals GRAPH_NAME AND that graph exists AND ${FULL} is false → mode "incremental" (on a graphName mismatch, fall back to mode "full"): run loom update-codebase '{"projectPath": "<abs>", "graphName": "<GRAPH_NAME>", "gitRef": "<manifest.commit>"${NO_TESTS ? ', "includeTests": false' : ''}}'. Otherwise mode "full": loom create-graph '{"name": "<GRAPH_NAME>"}' (ignore already-exists), then loom extract-codebase '{"projectPath": "<abs>", "graph": "<GRAPH_NAME>"${NO_TESTS ? ', "includeTests": false' : ''}}'. After extraction, compute skippedFiles = (\`git -C <path> ls-files | wc -l\`) minus stats.totalFiles — the repo files not parsed (unsupported types, config, docs). Do NOT embed here — embedding happens once, later in this run.
 4. Module groups: loom list-entities '{"entityType": "system", "compact": true, "limit": 5000, "graph": "<GRAPH_NAME>"}' → group file paths by top-level directory, then balance each directory's files into groups by cumulative file size (\`wc -c\` or stat), capping each group at ~150KB AND 25 files, whichever binds first (split an oversized directory into multiple size-capped groups, in path order, rather than one lopsided group — a single group running 10x the median wall-clock time defeats the point of parallel enrichment). Fold directories with <3 files into their parent, EXCEPT give \`theloom/reification\` and \`theloom/symbolic\` (or their nearest equivalents in this repo) their own group whenever they have >=2 files, even under the fold-in threshold — they carry enough conceptual weight to deserve a dedicated read. Group id = kebab slug of the dir path (with a numeric suffix when a directory splits into more than one group, e.g. \`theloom-store-1\`, \`theloom-store-2\`). Each group's \`paths\` are FILE paths (relative to the project root), not directories. In incremental mode, keep ONLY groups containing files changed in the update-codebase diff.
-5. Incremental mode only — per kept group, also record the change magnitude: \`changedFiles\` = the group's paths that appear in the update-codebase diff (relative paths); \`changedLines\` = the sum of added+deleted lines for those files from \`git -C <path> diff --numstat <manifest.commit> -- <the changed files>\` (a binary file's "-" counts as 100); \`addedOrDeleted\` = how many of the group's changedFiles were added, deleted, or renamed rather than modified (from the diff's status letters). In full mode omit these three fields.
+5. Incremental mode only — per kept group, also record the change magnitude: \`changedFiles\` = the group's paths that appear in the update-codebase diff (relative paths), EXCLUDING the map's own deliverables under OUTPUT_DIR (ARCHITECTURE-MAP.md, QUERYING.md, map-manifest.json, codebase-map.html — they change every run by definition and must never trigger re-enrichment); \`changedLines\` = the sum of added+deleted lines for those files from \`git -C <path> diff --numstat <manifest.commit> -- <the changed files>\` (a binary file's "-" counts as 100); \`addedOrDeleted\` = how many of the group's changedFiles were added, deleted, or renamed rather than modified (from the diff's status letters). A group whose only diffed files were deliverables gets changedFiles [], changedLines 0, addedOrDeleted 0. In full mode omit these three fields.
 Return the Setup contract object.`,
   { label: 'setup', phase: 'Setup', schema: SETUP })
 log(`map-codebase ${setup.mode} → graph ${setup.graphName}, ${setup.moduleGroups.length} groups @ ${setup.headCommit.slice(0, 8)}`)
@@ -78,9 +78,17 @@ log(`map-codebase ${setup.mode} → graph ${setup.graphName}, ${setup.moduleGrou
 // ===== Phase 1: Enrich (parallel per module group; skipped entirely with --no-enrich) =====
 // Incremental classification: skip (carried) / delta (changed files only, cheaper model) /
 // rewrite (whole group, today's behavior). Full runs and --thorough classify everything rewrite.
+// The map's own deliverables change every run by definition; they must never
+// count as a reason to re-enrich (the setup prompt excludes them too — this
+// filter is the deterministic backstop).
+const relOut = (OUTPUT || `${setup.projectPath}/docs/architecture/`)
+  .replace(`${setup.projectPath}/`, '').replace(/\/?$/, '/')
+const effectiveChanged = (g) =>
+  (Array.isArray(g.changedFiles) ? g.changedFiles : g.paths).filter((p) => !p.startsWith(relOut))
 const classify = (g) => {
   if (setup.mode !== 'incremental' || THOROUGH) return 'rewrite'
-  const files = Array.isArray(g.changedFiles) ? g.changedFiles : g.paths
+  const files = effectiveChanged(g)
+  if (Array.isArray(g.changedFiles) && files.length === 0) return 'skip'
   const lines = typeof g.changedLines === 'number' ? g.changedLines : Infinity
   const churn = typeof g.addedOrDeleted === 'number' ? g.addedOrDeleted : 1
   if (lines <= SKIP_MAX_LINES && churn === 0) return 'skip'
@@ -89,7 +97,7 @@ const classify = (g) => {
   if (churn <= 2 && g.fileCount > 0 && files.length / g.fileCount <= DELTA_MAX_FRACTION) return 'delta'
   return 'rewrite'
 }
-const plan = setup.moduleGroups.map((g) => ({ g, tier: classify(g) }))
+const plan = setup.moduleGroups.map((g) => ({ g, tier: classify(g), files: effectiveChanged(g) }))
 const carried = plan.filter((p) => p.tier === 'skip').map((p) => p.g)
 const toEnrich = plan.filter((p) => p.tier !== 'skip')
 if (setup.mode === 'incremental')
@@ -99,14 +107,14 @@ let enriched = []
 let unenriched = setup.moduleGroups
 if (!NO_ENRICH) {
   phase('Enrich')
-  const enrichResults = await pipeline(toEnrich, ({ g, tier }) =>
+  const enrichResults = await pipeline(toEnrich, ({ g, tier, files }) =>
     agent(`Enrich one module group of the codebase graph. Loom access: ${LOOM}. ${CONSUMPTION_HINT} ${SCRATCH_GUARD}
 GRAPH_NAME: ${setup.graphName}
 PROJECT_PATH: ${setup.projectPath}
 GROUP: ${JSON.stringify(g)}
 MODE: ${setup.mode}
 ENRICH_MODE: ${tier}${tier === 'delta' ? `
-CHANGED_FILES: ${JSON.stringify(g.changedFiles || [])}
+CHANGED_FILES: ${JSON.stringify(files)}
 Delta mode: follow your agent definition's "Delta mode" section — supersede and rewrite ONLY the semantic notes citing CHANGED_FILES; notes grounded solely in unchanged files stand.` : ''}
 Execute exactly per your agent definition. Emit ONLY your Structured Output Contract object as your final message.`,
       tier === 'delta'
@@ -132,9 +140,33 @@ never the default. Report nothing else; return an empty object.`,
   { label: 'embed', phase: 'Embed', schema: { type: 'object', additionalProperties: true }, model: 'haiku', effort: 'low' })
 
 // ===== Phase 2: Cartograph =====
-// Refresh mode (incremental, few groups touched): patch the existing map in place
-// on a cheaper model instead of re-deriving every section from a whole-graph read.
+// Three tiers: manifest-only (nothing enriched — the narrative is still true, so a
+// tiny agent just re-stamps commit/date/stats and regenerates the viz), refresh
+// (few groups touched — patch the existing map in place on a cheaper model), and
+// full (the original derive-everything pass).
 phase('Cartograph')
+const OUT_DIR = OUTPUT || `${setup.projectPath}/docs/architecture/`
+const MANIFEST_ONLY = setup.mode === 'incremental' && !THOROUGH && !NO_ENRICH
+  && enriched.length === 0 && unenriched.length === 0
+if (MANIFEST_ONLY) {
+  const stamp = await agent(`Re-stamp the architecture map after a structural-only update — no semantic layer changed, so the map's narrative is still true and must NOT be rewritten. Loom access: ${LOOM}. ${SCRATCH_GUARD}
+Working dir: ${OUT_DIR} (deliverables), graph: ${setup.graphName}.
+Do exactly four things, via targeted edits only (never rewrite a whole file):
+1. map-manifest.json: set "commit" to "${setup.headCommit}", refresh "timestamp" to now (ISO), set "mode" to "incremental". Keep "projectPath" as "." and every other field byte-identical.
+2. ARCHITECTURE-MAP.md front-matter: set \`commit:\` to ${setup.headCommit} and \`generated:\` to today's date; touch nothing else in the file except step 3.
+3. Run \`loom graph-stats '{"graph": "${setup.graphName}"}'\` and update ONLY the numbers in the §1 stats table that changed (entity/relation/file counts). If none changed, change nothing.
+4. Regenerate the visualization: \`loom visualize '{"graph": "${setup.graphName}", "scope": {"mode": "full"}, "include": {"semantic": false}, "maxEntities": 400, "title": "the-loom architecture map", "output": "${OUT_DIR}codebase-map.html"}'\` (on failure halve maxEntities once, then give up and set vizPath "").
+PORTABILITY: no machine-specific absolute path may appear in any edited file.
+Return {"mapPath": "<abs>", "vizPath": "<abs or empty>", "queryingDoc": "<abs>", "stats": {"entities": <n>, "relations": <n>, "cycles": 0, "hubs": 0}, "keyFindings": ["No semantic changes — manifest, stats and visualization re-stamped only."]}`,
+    { label: 'cartograph (manifest-only)', phase: 'Cartograph', schema: MAP, model: 'haiku', effort: 'low' })
+  log('manifest-only cartograph: nothing was enriched, map narrative carried forward')
+  return {
+    graphName: setup.graphName, mapPath: stamp.mapPath, vizPath: stamp.vizPath, queryingDoc: stamp.queryingDoc,
+    mode: setup.mode, groupsTotal: setup.moduleGroups.length, groupsEnriched: 0,
+    groupsCarried: carried.length, cartographMode: 'manifest-only',
+    keyFindings: stamp.keyFindings,
+  }
+}
 const REFRESH = setup.mode === 'incremental' && !THOROUGH && !NO_ENRICH && enriched.length <= REFRESH_MAX_GROUPS
 const map = await agent(`Write the architecture map deliverables. Loom access: ${LOOM}. ${CONSUMPTION_HINT} ${SCRATCH_GUARD}
 GRAPH_NAME: ${setup.graphName}
@@ -151,7 +183,7 @@ DIRTY_TREE: ${!!setup.dirtyTree}
 SKIPPED_FILES: ${setup.skippedFiles || 0}
 Execute exactly per your agent definition. Emit ONLY your Structured Output Contract object as your final message.`,
   REFRESH
-    ? { label: 'cartograph (refresh)', agentType: 'codebase-cartographer', phase: 'Cartograph', schema: MAP, model: 'sonnet' }
+    ? { label: 'cartograph (refresh)', agentType: 'codebase-cartographer', phase: 'Cartograph', schema: MAP, model: 'sonnet', effort: 'medium' }
     : { label: 'cartograph', agentType: 'codebase-cartographer', phase: 'Cartograph', schema: MAP })
 
 return {
