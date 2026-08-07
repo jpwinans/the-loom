@@ -20,7 +20,7 @@ module group via the `codebase-enricher` agent, one `embed-entities` pass, then 
    Workflow({ name: "map-codebase", args: { path: <PATH>, graph: <NAME or omit>, output: <DIR or omit>, full: <true if --full>, noTests: <true if --no-tests>, noEnrich: <true if --no-enrich> } })
    ```
    `--no-enrich` skips the Enrich phase entirely — a structural-only run (extraction +
-   embed + cartograph, no semantic layer) that produces the graphify-equivalent map in
+   embed + cartograph, no semantic layer) that produces a structure-only map in
    about 2 minutes instead of running the full semantic enrichment pass.
 3. It runs in the background and notifies on completion. Report: `graphName`, `mode`,
    `groupsEnriched`/`groupsTotal`, `mapPath`, `vizPath`, `queryingDoc`, and the

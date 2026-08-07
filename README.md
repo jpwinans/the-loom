@@ -292,19 +292,18 @@ running, and the Chronicle's event list virtualizes its rows above 200
 events — only the visible window (plus overscan) is ever mounted, however
 many events the graph has.
 
-Measured once on a synthetic 50,000-entity / 100,000-relation graph
-(`scripts/gen_bench_graph.py`, local-only — never committed, never built in
-CI): bundle assembly with analytics on (guardrails active) took 23.7 s, or
+Measured once on a synthetic 50,000-entity / 100,000-relation graph built by
+`scripts/gen_bench_graph.py` (the benchmark runs locally, never in CI):
+bundle assembly with analytics on (guardrails active) took 23.7 s, or
 6.6 s with `{"include": {"analytics": false}}`; the bundle JSON is ~46.8 MB;
 the SPA's initial render (parse → build graph → first paint) on that bundle
 took 31.75 s, after which interaction ran at a steady 120 fps with the
-layout frozen. Both numbers exceed the plan's original aspirational
+layout frozen. Both numbers exceed their original aspirational
 targets at this scale — centrality dominates assembly, inline-bundle
 parsing and Louvain clustering dominate first paint — so the practical
 fast-load path at 50k+ is the `maxEntities` cap above. Full methodology and
 the measured-vs-target table are recorded in
-[`docs/superpowers/plans/2026-07-11-tapestry-phase-5.md`](docs/superpowers/plans/2026-07-11-tapestry-phase-5.md)
-(Task 8).
+[`docs/benchmarks/tapestry-scale.md`](docs/benchmarks/tapestry-scale.md).
 
 ### Live mode: `loom serve`
 

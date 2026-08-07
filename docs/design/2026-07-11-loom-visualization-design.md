@@ -6,8 +6,8 @@
 ## Purpose
 
 Give The Loom a first-class visualization surface: visually stunning, clean,
-professional, and strictly more useful and fully featured than graphify
-(`~/Development/AI/graphify`). The Loom has no visualization code today, yet its
+professional, and strictly more useful and fully featured than the
+in-house prototype visualizer that preceded it ("the predecessor" below). The Loom has no visualization code today, yet its
 data is unusually visualizable — typed entities and relations with polarity and
 strength, epistemic metadata (confidence, provenance, status), bi-temporal
 history, feedback loops, leverage points, semantic embeddings, and composite
@@ -23,7 +23,7 @@ analytics. Tapestry renders all of it in one unified application.
    built bundle is committed into the Python package so end users never need
    Node; only frontend contributors do.
 3. **Shape: unified workbench (Approach A).** One SPA with five linked views
-   sharing selection, filter, and theme state — rejecting graphify's
+   sharing selection, filter, and theme state — rejecting the predecessor's
    fragmented per-artifact model (Approach B) and the FalkorDB-browser-only
    minimal option (Approach C).
 
@@ -56,8 +56,8 @@ injected into a self-contained HTML file (static mode) or served over REST
 behind a single data-source interface, so views are mode-agnostic.
 
 The frontend builds via `vite-plugin-singlefile` into **one HTML template with
-zero CDN dependencies** (graphify's HTML requires internet for vis-network/D3/
-Mermaid; Tapestry works fully offline). The built template (~1 MB before data)
+zero CDN dependencies** (the predecessor's HTML required internet for
+vis-network/D3/Mermaid; Tapestry works fully offline). The built template (~1 MB before data)
 is committed at `theloom/viz/static/tapestry.html` and shipped as package data
 via hatchling. CI rebuilds the frontend and fails if the committed artifact
 drifts from source.
@@ -144,7 +144,7 @@ the same SPA with the live data source active. Input: `{graph?, host?, port?}`.
 ### Graph Explorer (core)
 
 - **Rendering:** sigma.js v3 (WebGL) + graphology. Target: 50k nodes
-  interactive (10x graphify's 5k canvas ceiling).
+  interactive (10x the predecessor's 5k canvas ceiling).
 - **Layouts:** ForceAtlas2 in a Web Worker with live physics controls
   (gravity, repulsion, re-heat); DAG/layered for causal scopes; radial;
   circular.
@@ -237,7 +237,7 @@ Never classify errors by substring-matching prose.
 
 1. **Foundation + Explorer** — `theloom/viz/` bundle assembler, `visualize` +
    `export-bundle` commands, `tapestry/` workspace with design system, Graph
-   Explorer, Overview. Ships a product already better than graphify.
+   Explorer, Overview. Ships a product already better than the predecessor.
 2. **Systems + Chronicle** — the Loom-unique causal and temporal views.
 3. **Semantic Map** — projection pipeline + cross-view brushing.
 4. **Live mode** — `serve` command (optional `viz-serve` extra), live
@@ -245,9 +245,9 @@ Never classify errors by substring-matching prose.
 5. **Polish** — saved views, full accessibility/keyboard pass, export
    refinements, performance hardening at 50k nodes.
 
-## Competitive scorecard vs graphify
+## Competitive scorecard vs the predecessor
 
-| Capability | graphify | Tapestry |
+| Capability | Predecessor | Tapestry |
 |---|---|---|
 | Interactive node ceiling | 5k (canvas), then detail lost | 50k target (WebGL) + progressive load |
 | Path highlighting in UI | none (CLI text only) | path mode with dimming |

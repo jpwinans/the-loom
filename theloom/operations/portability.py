@@ -1,8 +1,8 @@
 """export-graph — a compact, zero-infrastructure JSON artifact.
 
-Mirrors the portability graphify already gives every agent: a plain JSON file
-readable with nothing but a text editor, no FalkorDB or Loom CLI required to
-consume it. Unlike ``export-bundle``/``visualize`` (theloom/viz/bundle.py,
+The whole point is portability: a plain JSON file readable with nothing but a
+text editor, no FalkorDB or Loom CLI required to consume it.
+Unlike ``export-bundle``/``visualize`` (theloom/viz/bundle.py,
 theloom/viz/html.py) this ships no TapestryBundle sections — no analytics, no
 temporal or semantic layers, no HTML — because it is a data export, not a
 visualization. It reuses the same store read paths those two use
