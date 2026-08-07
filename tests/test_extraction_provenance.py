@@ -116,3 +116,24 @@ def test_llm_extracted_entities_do_not_surface_as_unprovenanced(
     results = unprovenanced(TypedEpistemicInput.model_validate({"graph": GRAPH}), multi)
     names = {r["name"] for r in results}
     assert "Provenance Chain" not in names
+
+
+def test_total_links_created_counts_entities_with_chunk_provenance(
+    multi: MultiGraph, seeded_chunk: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`totalLinksCreated` must report the number of entities whose
+    `provenance.externalRef` was actually set to a chunk id — the real
+    entity->chunk pointer created by this run — not a hardcoded 0.
+    """
+    from theloom.extraction import pipeline
+
+    monkeypatch.setattr(pipeline, "create_synthesis_client", _mock_client)
+
+    result = pipeline.run_document_extraction(
+        ExtractFromDocumentsInput.model_validate({"category": "notes", "graph": GRAPH}),
+        multi,
+        dry_run=False,
+    )
+
+    assert result["totalEntitiesCreated"] == 1
+    assert result["totalLinksCreated"] == 1
