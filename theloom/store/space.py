@@ -186,6 +186,37 @@ class GraphSpace:
             f"{self._VECTOR_LABEL} vector index did not become operational within {timeout}s"
         )
 
+    # -- exact-match / range indexes ---------------------------------------------
+
+    def range_index_exists(self, label: str, property: str) -> bool:
+        """Whether a RANGE (exact-match) index already covers ``label.property``."""
+        rows = self._rows("CALL db.indexes() YIELD label, types RETURN label, types")
+        for row_label, types in rows:
+            if row_label != label:
+                continue
+            if "RANGE" in (dict(types or {}).get(property) or []):
+                return True
+        return False
+
+    def ensure_range_index(self, label: str, property: str) -> None:
+        """Create an exact-match/range index on ``label.property`` if none exists.
+
+        Idempotent the same way ``ensure_vector_index`` is: FalkorDB rejects a
+        second ``CREATE INDEX`` on an already-indexed property, so this checks
+        first and, if it still loses a race to a concurrent create, treats the
+        index now existing as success rather than propagating the error — any
+        other failure surfaces. Unlike the vector index, a RANGE index is
+        queryable the instant ``CREATE`` returns, so there is no OPERATIONAL
+        barrier to wait behind here.
+        """
+        if self.range_index_exists(label, property):
+            return
+        try:
+            self._query(f"CREATE INDEX FOR (n:{label}) ON (n.{property})")
+        except Exception:
+            if not self.range_index_exists(label, property):
+                raise
+
     def _stored_vector_dimension(self) -> int | None:
         """The width of the vectors actually stored, or ``None`` if none are."""
         rows = self._rows(
