@@ -98,5 +98,5 @@ uv run loom visualize '{"graph": "<graphName>", "theme": "dark"}'
 ```
 
 Run `/deep-research` again with `--graph <graphName>` to deepen the same
-graph, or hand it to `/loom-expedition` to hunt for emergent theories in the
-accumulated structure.
+graph, or hand it to [`/loom-expedition`](../loom-expedition/README.md) to
+hunt for emergent theories in the accumulated structure.

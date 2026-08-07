@@ -11,6 +11,7 @@ a knowledge graph.
 | **deep-research** | Autonomous multi-iteration research on one question, built into a graph of sources, evidence, and claims with calibrated confidence | [deep-research/README.md](deep-research/README.md) |
 | **hyper-research** | The meta-orchestrator: independent questions extracted from a document, deep-research run per question in parallel onto one shared graph, then a cross-cutting synthesis | [hyper-research/README.md](hyper-research/README.md) |
 | **map-codebase** | An explained architecture map of any repository — structure from tree-sitter, meaning from an LLM enrichment pass, kept current by diff-scaled incremental updates | [map-codebase/README.md](map-codebase/README.md) |
+| **loom-expedition** | A read-only discovery pass over an existing graph — surfacing the emergent theories and surprising long-range connections the accumulated structure implies | [loom-expedition/README.md](loom-expedition/README.md) |
 
 ## Where the implementation lives
 
@@ -31,10 +32,11 @@ docker compose up -d falkordb    # the single store — nothing works without it
 uv run loom graph-stats '{}'     # verify: a connection error means FalkorDB is down
 ```
 
-All three run as background multi-agent Workflows launched by their slash
-command, drive the Loom exclusively through `loom <command> '<json>'` over
-Bash (there is no MCP server), and notify on completion. Two CLI invariants
-every example respects — and yours should too:
+The research and mapping examples run as background multi-agent Workflows
+launched by their slash command and notify on completion; the expedition runs
+inline and synchronously, since it only reads. All of them drive the Loom
+exclusively through `loom <command> '<json>'` over Bash (there is no MCP
+server). Two CLI invariants every example respects — and yours should too:
 
 1. `create-relation` **requires** `polarity` (`"+"`/`"-"` for causal types,
    `null` otherwise), `strength` (`weak|moderate|strong|foundational`), and

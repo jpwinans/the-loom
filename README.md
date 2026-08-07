@@ -75,7 +75,7 @@ uv run loom hybrid-search '{"query": "early computing", "limit": 5}'
 
 ### Example skills built on the Loom
 
-The repository ships three [Claude Code](https://claude.com/claude-code) agent
+The repository ships four [Claude Code](https://claude.com/claude-code) agent
 skills that use the Loom as their substrate — worked examples of what the CLI
 is for. The runnable assets live in `.claude/` (skills, workflows, agents,
 schemas); the guides live in **[examples/](examples/README.md)**, one folder
@@ -86,6 +86,7 @@ per skill, each explaining how to use it and exactly how it drives the Loom:
 | `/deep-research TOPIC` | Autonomous multi-iteration research building a graph of sources, evidence, and claims with calibrated confidence and provenance | [examples/deep-research](examples/deep-research/README.md) |
 | `/hyper-research DOC` | Extracts independent questions from a document and runs deep-research per question in parallel onto one shared graph, then synthesizes across them | [examples/hyper-research](examples/hyper-research/README.md) |
 | `/map-codebase PATH` | Explained architecture map of a repository — tree-sitter structure plus an LLM semantic layer, kept current by diff-scaled incremental updates | [examples/map-codebase](examples/map-codebase/README.md) |
+| `/loom-expedition GRAPH` | Read-only discovery pass surfacing the emergent theories an accumulated graph implies — fast, synchronous, writes nothing | [examples/loom-expedition](examples/loom-expedition/README.md) |
 
 Each skill launches its multi-agent workflow in the background and reports on
 completion; the graph persists for follow-up queries. The map-codebase guide
