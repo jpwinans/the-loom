@@ -2,12 +2,28 @@
 
 *Weaving knowledge into understanding.*
 
+[![ci](https://github.com/jpwinans/the-loom/actions/workflows/ci.yml/badge.svg)](https://github.com/jpwinans/the-loom/actions/workflows/ci.yml)
+[![license: ISC](https://img.shields.io/badge/license-ISC-blue.svg)](LICENSE)
+[![python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+
 A knowledge-graph substrate with a single JSON-in/JSON-out CLI, built on
 **[FalkorDB](https://www.falkordb.com/)**. Entities, relations, entity vectors,
 document chunks, and full-text all live in one transactional store. Every
 mutation is an append-only event, so the current graph is a projection you can
 query at any point in its history — *state as of time T* is a first-class
 operation, not a reconstruction.
+
+![The Loom's Graph Explorer visualizing a research knowledge graph: typed entities joined by supporting and contradicting relations, with the inspector showing a hypothesis's confidence and evidence](docs/images/tapestry-explorer.png)
+
+## Why The Loom
+
+Agent memory systems solve recall: store what happened, retrieve what's
+relevant. The Loom starts where recall stops. Every fact carries its evidence
+(a confidence score, the basis for it, and where it came from), and when a
+source weakens, everything built on it weakens too. The graph is something an
+agent can *reason* over (causal chains, what-if simulation, weakest-link
+analysis), and text generated from it is graded back against it. Recall is
+the floor; a memory that can defend what it believes is the product.
 
 ## What it does
 
