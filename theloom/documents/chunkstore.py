@@ -124,6 +124,36 @@ class ChunkStore(GraphSpace):
             chunk.to_doc() for chunk in chunks if category is None or chunk.category == category
         ]
 
+    def ensure_id_index(self) -> None:
+        """Create the exact-match index on chunk id if none exists yet.
+
+        Idempotent — see ``GraphSpace.ensure_range_index``. Nothing provisions
+        this eagerly at construction time; it is ensured lazily from
+        ``get_chunk``, the same lazy-on-first-use shape as the chunk vector
+        index (see ``vector_knn``), so that something actually calls it. A
+        hand-rolled index statement here once swallowed every error and never
+        created the index at all — see the module docstring — so this instead
+        delegates entirely to the store's own idempotent index machinery.
+        """
+        self.ensure_range_index(self._VECTOR_LABEL, "id")
+
+    def get_chunk(self, chunk_id: str) -> Doc | None:
+        """One chunk's metadata doc by id, or ``None`` if it is not stored.
+
+        The point lookup behind a *pointer* to a chunk — an entity's
+        ``provenance.externalRef`` names the chunk it was extracted from, and
+        synthesis resolves it here to quote the originating passage. A chunk
+        deleted after extraction simply reads back as ``None``.
+
+        Ensures the ``:_Chunk(id)`` index exists before matching on it, so
+        this is a point lookup rather than a label+property scan.
+        """
+        self.ensure_id_index()
+        rows = self._rows("MATCH (c:_Chunk {id: $id}) RETURN c._doc LIMIT 1", {"id": chunk_id})
+        if not rows:
+            return None
+        return ChunkMetadata.from_json(rows[0][0]).to_doc()
+
     def query_chunks_with_vectors(
         self, *, category: str | None = None, limit: int = 100000
     ) -> list[tuple[Doc, list[float] | None]]:

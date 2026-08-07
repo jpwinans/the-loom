@@ -17,6 +17,7 @@ from typing import Any
 
 from theloom.graph.metadata import coerce_observation
 from theloom.synthesis.linearizer import linearize_graph
+from theloom.synthesis.links import ChunkLookup
 from theloom.synthesis.llm import SynthesisLlmClient
 from theloom.synthesis.prompts import FORMAT_PROMPTS, sanitize_for_prompt
 
@@ -249,6 +250,7 @@ def synthesize(
     core_numbers: dict[str, int],
     format: str,
     llm_client: SynthesisLlmClient | None,
+    chunk_lookup: ChunkLookup,
 ) -> Doc:
     timings: list[Doc] = []
     llm_usages: list[Doc] = []
@@ -272,7 +274,9 @@ def synthesize(
         region_rel_ids = {r["id"] for eu in region_evidence for r in eu["relations"]}
         region_relations = [r for r in unique_relations if r["id"] in region_rel_ids]
         linearized_graphs.append(
-            linearize_graph(region_entities, region_relations, core_numbers, format, region_id)
+            linearize_graph(
+                region_entities, region_relations, core_numbers, format, region_id, chunk_lookup
+            )
         )
     timings.append(
         {"phase": "linearize", "durationMs": int((time.time() - linearize_start) * 1000)}

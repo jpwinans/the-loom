@@ -28,6 +28,7 @@ from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import fidelity as fidelity_mod
 from theloom.synthesis import realizer
 from theloom.synthesis.decomposer import decompose_query as decompose_query_core
+from theloom.synthesis.links import ChunkLookup
 from theloom.synthesis.llm import SynthesisLlmClient, create_synthesis_client
 from theloom.synthesis.orderer import compute_core_numbers
 from theloom.synthesis.planner import plan_synthesis as plan_synthesis_core
@@ -280,6 +281,13 @@ class DecomposeQueryInput(CommandInput):
 # =============================================================================
 
 
+def _chunk_lookup(multi: MultiGraph) -> ChunkLookup:
+    """How synthesis resolves an entity's ``provenance.externalRef`` back to
+    the passage it was extracted from. Chunks are global across graphs, so
+    this is the one chunk store, not a graph-scoped one."""
+    return multi.chunk_store().get_chunk
+
+
 def _run_pipeline(
     params: SynthesizeInput, multi: MultiGraph
 ) -> tuple[Doc, Doc, dict[str, int], str, SynthesisLlmClient | None, Doc]:
@@ -300,7 +308,9 @@ def _run_pipeline(
         entity_graph_origin=resolved["entityGraphOrigin"],
         graph_count=len(graph_names) if graph_names else None,
     )
-    traversal_output = traverse_synthesis_core(plan, resolved["store"], mode=params.mode)
+    traversal_output = traverse_synthesis_core(
+        plan, resolved["store"], _chunk_lookup(multi), mode=params.mode
+    )
     all_entities = resolved["store"].list_entities()
     all_relations = resolved["store"].list_relations()
     core_numbers = compute_core_numbers(all_entities, all_relations)
@@ -327,7 +337,9 @@ def _plan_output(plan: Doc) -> Doc:
 
 def synthesize(params: SynthesizeInput, multi: MultiGraph) -> Doc:
     plan, traversal_output, core_numbers, format, llm_client, _ = _run_pipeline(params, multi)
-    return realizer.synthesize(plan, traversal_output, core_numbers, format, llm_client)
+    return realizer.synthesize(
+        plan, traversal_output, core_numbers, format, llm_client, _chunk_lookup(multi)
+    )
 
 
 def synthesize_and_ingest(params: SynthesizeInput, multi: MultiGraph) -> Doc:
@@ -341,7 +353,9 @@ def synthesize_and_ingest(params: SynthesizeInput, multi: MultiGraph) -> Doc:
     plan, traversal_output, core_numbers, format, llm_client, resolved = _run_pipeline(
         params, multi
     )
-    synthesis_output = realizer.synthesize(plan, traversal_output, core_numbers, format, llm_client)
+    synthesis_output = realizer.synthesize(
+        plan, traversal_output, core_numbers, format, llm_client, _chunk_lookup(multi)
+    )
     store: FalkorGraphStore = resolved["falkor"]
 
     model_name = "template"
@@ -505,7 +519,7 @@ def traverse_synthesis(params: TraverseSynthesisInput, multi: MultiGraph) -> Doc
         llm_client=llm_client,
         hybrid_search=anchor_search_for(resolved["falkor_stores"]),
     )
-    return traverse_synthesis_core(plan, resolved["store"], mode=params.mode)
+    return traverse_synthesis_core(plan, resolved["store"], _chunk_lookup(multi), mode=params.mode)
 
 
 def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:

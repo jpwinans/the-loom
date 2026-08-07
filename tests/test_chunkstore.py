@@ -88,3 +88,54 @@ def test_a_chunk_stored_from_the_declared_model_carries_the_chunk_conventions(
             "content": "hello",
         }
     ]
+
+
+# =============================================================================
+# Point lookup by chunk id
+# =============================================================================
+
+
+def test_get_chunk_returns_the_stored_doc(chunks: ChunkStore) -> None:
+    """An entity's ``provenance.externalRef`` names the chunk it came from, so
+    synthesis needs to resolve one chunk by id — same doc ``query_chunks``
+    returns, no scan of the whole document."""
+    _seed(chunks, 3)
+
+    assert chunks.get_chunk("chunk-001") == chunks.query_chunks(limit=10)[1]
+
+
+def test_get_chunk_is_none_for_an_unknown_id(chunks: ChunkStore) -> None:
+    """A chunk deleted after extraction degrades to nothing, not an error."""
+    _seed(chunks, 1)
+    chunks.delete_chunk("chunk-000")
+
+    assert chunks.get_chunk("chunk-000") is None
+    assert chunks.get_chunk("never-existed") is None
+
+
+# =============================================================================
+# The id index: get_chunk must not be a label+property scan
+# =============================================================================
+
+
+def test_get_chunk_ensures_an_id_index(chunks: ChunkStore) -> None:
+    """``get_chunk`` used to run ``MATCH (c:_Chunk {id: $id})`` with nothing
+    indexing ``id`` — a label+property scan on every lookup. The point lookup
+    must leave a RANGE index on ``:_Chunk(id)`` behind, the same way a k-NN
+    search leaves the chunk vector index behind (see ``vector_knn``)."""
+    _seed(chunks, 1)
+    assert not chunks.range_index_exists("_Chunk", "id")
+
+    chunks.get_chunk("chunk-000")
+
+    assert chunks.range_index_exists("_Chunk", "id")
+
+
+def test_ensure_id_index_is_idempotent(chunks: ChunkStore) -> None:
+    """Calling twice must not raise — FalkorDB rejects a second CREATE INDEX
+    on an already-indexed property, so the second call has to recognize the
+    index is already there and treat that as success."""
+    chunks.ensure_id_index()
+    chunks.ensure_id_index()
+
+    assert chunks.range_index_exists("_Chunk", "id")

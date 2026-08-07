@@ -140,6 +140,7 @@ def run_document_extraction(
     source_entity_ids: list[str] = []
     entities_created = 0
     relations_created = 0
+    links_created = 0
 
     source_id_created: str | None = None
     if not dry_run:
@@ -168,18 +169,32 @@ def run_document_extraction(
             entities_created += len(parsed["entities"])
             continue
         for entity in parsed["entities"]:
+            chunk_ref = chunk.get("id")
             created = store.create_entity(
                 EntityCreate.model_validate(
                     {
                         "name": entity["name"],
                         "entityType": entity["entityType"],
                         "observations": [str(o) for o in entity.get("observations", [])],
+                        "provenance": {
+                            "sourceType": "document",
+                            "sourceId": source_id_created,
+                            # The chunk this entity came from, by id — the
+                            # pointer synthesis resolves to quote the passage.
+                            # Same idiom as tree-sitter's "file.py:12".
+                            "externalRef": chunk_ref,
+                            "extractionDate": now,
+                            "extractor": model,
+                            "extractionMethod": "llm_prompted",
+                        },
                     }
                 )
             )
             name_to_id[entity["name"]] = created.id
             created_entity_ids.append(created.id)
             entities_created += 1
+            if chunk_ref is not None:
+                links_created += 1
             if source_id_created is not None:
                 rel = store.create_relation(
                     RelationCreate.model_validate(
@@ -243,7 +258,7 @@ def run_document_extraction(
         "totalEntitiesMerged": 0,
         "totalRelationsCreated": relations_created,
         "totalErrors": 0,
-        "totalLinksCreated": 0,
+        "totalLinksCreated": links_created,
         "totalLinksSkipped": 0,
         "totalLinkErrors": 0,
         "documents": [],
