@@ -75,9 +75,9 @@ of the findings, not private deliberation.
 ### 3. Influence mapping
 
 ```bash
-loom semiring-distances '{"source": "THREAD_SEED", "semiring": "viterbi", "graph": "GRAPH_NAME"}'
-loom get-neighbors '{"entityId": "THREAD_SEED", "graph": "GRAPH_NAME"}'
-loom read-entity '{"id": "THREAD_SEED", "graph": "GRAPH_NAME"}'
+loom semiring-distances '{"source": "<THREAD_SEED>", "semiring": "viterbi", "graph": "GRAPH_NAME"}'
+loom get-neighbors '{"entityId": "<THREAD_SEED>", "graph": "GRAPH_NAME"}'
+loom read-entity '{"id": "<THREAD_SEED>", "graph": "GRAPH_NAME"}'
 ```
 
 The Viterbi semiring gives confidence-weighted causal reach: how far belief
@@ -93,9 +93,9 @@ Record THEORY_SOURCE and THEORY_TARGET.
 For the surprising connection, characterize the chain three ways:
 
 ```bash
-loom semiring-bottleneck '{"source": "THEORY_SOURCE", "target": "THEORY_TARGET", "semiring": "capacity", "graph": "GRAPH_NAME"}'
-loom semiring-traverse '{"source": "THEORY_SOURCE", "target": "THEORY_TARGET", "semiring": "counting", "graph": "GRAPH_NAME"}'
-loom find-shortest-path '{"source": "THEORY_SOURCE", "target": "THEORY_TARGET", "graph": "GRAPH_NAME"}'
+loom semiring-bottleneck '{"source": "<THEORY_SOURCE>", "target": "<THEORY_TARGET>", "semiring": "capacity", "graph": "GRAPH_NAME"}'
+loom semiring-traverse '{"source": "<THEORY_SOURCE>", "target": "<THEORY_TARGET>", "semiring": "counting", "graph": "GRAPH_NAME"}'
+loom find-shortest-path '{"source": "<THEORY_SOURCE>", "target": "<THEORY_TARGET>", "graph": "GRAPH_NAME"}'
 ```
 
 Bottleneck names the weakest link (where the theory would break), counting
@@ -107,8 +107,8 @@ topology.
 ### 5. Context check
 
 ```bash
-loom cross-type-query '{"source": "THREAD_SEED", "relationTypes": ["causes", "enables", "inhibits", "amplifies", "dampens", "requires"], "graph": "GRAPH_NAME"}'
-loom semantic-neighbors '{"entityId": "THEORY_TARGET", "limit": 5, "graph": "GRAPH_NAME"}'
+loom cross-type-query '{"source": "<THREAD_SEED>", "relationTypes": ["causes", "enables", "inhibits", "amplifies", "dampens", "requires"], "graph": "GRAPH_NAME"}'
+loom semantic-neighbors '{"entityId": "<THEORY_TARGET>", "limit": 5, "graph": "GRAPH_NAME"}'
 ```
 
 The pure causal network guards against a theory built on structural filler
