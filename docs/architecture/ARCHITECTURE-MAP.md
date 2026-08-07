@@ -1,6 +1,6 @@
 ---
 repo: the-loom
-commit: e9d4b425bba8c47b96922b5acfe0fdca3fe9481c
+commit: 43ae9b012576ee43bb47f7c2ee9089e21555e138
 graph: codebase-the-loom
 generated: 2026-08-07
 mode: incremental
@@ -32,35 +32,39 @@ a committed dev fixture.
 | --- | --- |
 | Files recorded | 375 source files (every one present in the tree at this commit) and 65 external package records |
 | Language mix | Python 257, TypeScript 74, Markdown 16, JSON 14, CSS 9, JavaScript 2, YAML/TOML/lockfile 3 |
-| Files tree-sitter could not parse | 0 this run — nothing was re-extracted. 65 recorded files carry no symbols; §8 accounts for all of them |
-| Symbols in the current projection | 6,521 records — 2,782 functions and methods, 1,478 variables and constants, 451 classes/interfaces/type aliases, 440 file and package records |
-| Written layer | 52 subsystem purposes, 350 conventions, 624 invariants, 344 risks |
-| Records including superseded versions | 9,302 |
-| Relationships in the current projection | 13,868 — 5,384 containment, 3,645 calls, 2,834 associations, 1,700 imports, 199 type instantiations, 106 documentation links |
-| Relationships including closed-out versions | 19,209 |
-| Working tree at extraction | **dirty** — see the warning below |
+| Files tree-sitter could not parse | 0 this run — extraction touched only the two re-enriched groups and the one carried group; §8 accounts for the running total across the whole graph |
+| Symbols in the current projection | 6,526 records — 2,783 functions and methods, 1,478 variables and constants, 451 classes/interfaces/type aliases, 440 file and package records |
+| Written layer | 52 subsystem purposes, 351 conventions, 626 invariants, 345 risks |
+| Records including superseded versions | 9,331 |
+| Relationships in the current projection | 13,868 — last independently measured at commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`; this refresh's cheap re-run (graph-stats, cycles, centrality, components) does not isolate a current-only relation count, so the figure is carried forward rather than restated as fresh (§8) |
+| Relationships including closed-out versions | 19,272 |
+| Working tree at extraction | clean |
 
-**The working tree was not clean.** Ten files differ from commit `e9d4b425`: the five
-`/map-codebase` pipeline files under `.claude/`, the three deliverables in this directory,
-`tests/test_incremental_update.py` and `theloom/extraction/codebasediff.py`. The front
-matter pins the commit, but the one group re-read this run (`docs/architecture`) was read
-from the working tree, so §2.45 describes files that are modified relative to the commit
-named above. Every other section describes committed state.
-
-The gap between 9,302 stored records and 6,521 in the current projection is not code
-churn: it is the written layer being re-authored. Every superseded record is a purpose,
-convention, invariant or risk note that an earlier mapping run wrote and a later one
-replaced; file, symbol and variable records are the same in both counts. That is the
-mapping design working as specified — a re-run supersedes only the written layer and
-leaves structural facts to incremental re-extraction
+The gap between 9,331 stored records and 6,526 in the current projection is not code
+churn: it is mostly the written layer being re-authored, plus a handful of structural
+records a file rename supersedes rather than updates in place. Every superseded record is
+either a purpose, convention, invariant or risk note that an earlier mapping run wrote and a
+later one replaced, or a file/package record whose path no longer exists. That is the
+mapping design working as specified — a re-run supersedes only what actually changed and
+leaves the rest of the structural layer to incremental re-extraction
 (`docs/design/2026-08-03-map-codebase-design.md:146-155`).
 
-Since the previous edition the structural layer has not moved at all — the same 375 files,
-5,151 code records and 13,868 live relationships — while the written layer has shrunk by 75
-notes. Those 75 are the orphans the previous edition ranked as its first risk: notes whose
-anchor files had moved out of `docs/superpowers/` and which no longer connected to
-anything. They have been retired. The graph now has exactly two connected components, one
-of them holding 6,520 of 6,521 records (§5), and no written-layer note is unreachable.
+Since the previous edition (commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`) the
+structural layer has moved only slightly: 5,152 code records, one more than before, and
+eight file/package records superseded rather than updated in place — consistent with the
+renamed-file handling `tests-3` now pins directly: a git rename lands as delete-old-path
+plus add-new-path, so the old path's entities are superseded rather than left live under a
+path that no longer exists (`tests/test_incremental_update.py:421-441`, and §2.35 below).
+Two module groups were freshly re-enriched this run. `docs-architecture` — as every edition
+of this document has to disclose — is always describing the commit before this one, because
+it cannot know its own hash while it is being written (§2.45). `tests-3`'s write-up below is
+substantially larger than the previous edition's: five key files named instead of three, and
+eleven invariants instead of three, reflecting real growth in that slice of the suite. One
+further group, `theloom-extraction`, carried a diff too small to trigger re-enrichment — the
+same rename fix — so §2.13 is unchanged from the previous edition. Component structure was
+re-verified this run: still exactly two connected components, the larger holding 6,525 of
+6,526 records (§5). Community clustering and the open-seams scan were not re-run this
+refresh; §5 and §7 are carried forward from commit `e9d4b425` and say so where it matters.
 
 ---
 
@@ -1083,24 +1087,71 @@ Invariants worth knowing:
 
 #### 2.35 Extraction and store — `tests` part 3 (group `tests-3`)
 
-Eight of the twelve files tell one continuous story: how source text becomes a graph, what
-the resolvers refuse to guess, how a re-run retires what an older extractor got wrong, and
-what the store guarantees underneath. The recurring subject is refusal under uncertainty.
+The executable specification for the codebase-extraction pipeline and the FalkorDB store
+beneath it. Eight of the twelve files — six `test_extraction_*` modules plus
+`test_extraction_filters.py` and `test_falkor_store.py` — tell one continuous story: how
+source text becomes a graph, what the resolvers refuse to guess, how a re-run retires what
+an older extractor got wrong, and what the store guarantees underneath. The recurring
+subject is refusal under uncertainty: an ambiguous call resolves to no edge rather than a
+wrong one, a bare word in prose is never a doc link, a term the project writes as a string
+value is vocabulary rather than a symbol reference, a legacy `related_to` twin left over
+from before call edges were typed is closed out bi-temporally rather than erased, and a
+self-model refresh aborts unless the repository really is The Loom. The remaining four files
+pin narrow contracts the fixed-repo golden tests cannot isolate on their own: graph-algorithm
+details (cycle rotation, loop polarity, path ordering), the generated command catalog's
+byte-equality with the registry, the gap-fill composite's commit gate, and the string-format
+encoders every reader parses.
 
-Key files: `tests/test_falkor_store.py` (793 lines),
-`tests/test_extraction_units.py` (553), `tests/test_extraction_resolution.py` (521).
+Key files: `tests/test_falkor_store.py` (793 lines — store CRUD, status lifecycle, the event
+log, bi-temporal version intervals, vector-index readiness),
+`tests/test_extraction_units.py` (553 — tree-sitter internals, signatures, docstrings,
+rationale comments, git visibility, the golden fixed-repo stats),
+`tests/test_extraction_resolution.py` (521 — cross-file import/call/inheritance resolution
+and its refusal guards), `tests/test_extraction_doclinks.py` (382 — Markdown-to-code linking
+and the vocabulary guard), `tests/test_extraction_rollback.py` (253 — codebase run records
+and scoped rollback).
 
-Conventions: parametrized truth tables that spend most rows on negatives; the regression
-that motivated a test written into its docstring; golden fixed-repo assertions with the
-arithmetic in comments; faked at the seam, never at the server.
+Conventions: parametrized truth tables that spend most of their rows on the negative case;
+the regression that motivated a test written into its docstring, magnitude included; golden
+fixed-repo assertions with the arithmetic spelled out in comments; round-trip plus
+copied-literal pinning for the string-format module; dry-run claims proven by re-reading the
+store rather than trusting the response; production dependencies faked at their narrowest
+seam rather than replaced with a stand-in service; a throwaway git work tree as the
+extraction fixture wherever visibility or diffing matters.
 
 Invariants worth knowing:
-- Structural extraction never emits a generic association link
-  (`tests/test_extraction_resolution.py:451-463`).
-- No extracted link points at a record the extraction did not create
-  (`tests/test_extraction_resolution.py:481-499`).
-- An ambiguous name produces no link at all
-  (`tests/test_extraction_resolution.py:205-241`).
+- Structural extraction never emits a generic `related_to` edge — the fixture repo's relation
+  types are exactly `part_of`, `requires`, `calls` and `references`
+  (`tests/test_extraction_resolution.py:451-463`, `tests/test_extraction_units.py:61`).
+- No extracted edge points at an entity the extraction did not create, and the check also
+  proves the positive types are actually emitted so a silently-dropped type cannot pass
+  vacuously (`tests/test_extraction_resolution.py:481-499`,
+  `tests/test_extraction_doclinks.py:371-376`).
+- An ambiguous name produces no edge at all; an import that names the target overrides the
+  ambiguity (`tests/test_extraction_resolution.py:205-241`, `:243-264`).
+- The unique-name resolver is guarded by builtin, language and callable kind — the guard that
+  exists because 288 Python `len()` calls once resolved to a lone TypeScript `len` constant
+  (`tests/test_extraction_resolution.py:339-359`, `:301-307`).
+- A term the project writes as a string value is vocabulary, never a doc link — code-shaped,
+  backticked and unambiguous is still refused if the spelling collides with a file's own
+  string literals (`tests/test_extraction_units.py:146-162`,
+  `tests/test_extraction_doclinks.py:231-247`).
+- Re-extraction retires the legacy `related_to` call twin bi-temporally: closed out once,
+  reported once, zero on the next run, and still readable through an as-of query before the
+  retirement (`tests/test_extraction_legacy_calls.py:89-122`, `:142-168`).
+- A codebase run's record scopes rollback to exactly the entities that run created — merged-
+  into and pre-existing entities survive it, and a dry run writes no record at all
+  (`tests/test_extraction_rollback.py:72-103`, `:115-153`).
+- A git rename lands as delete-old-path plus add-new-path rather than the new path simply
+  appearing, so the old path's file and symbol records are superseded instead of left live
+  forever under a path that no longer exists (`tests/test_incremental_update.py:421-441`).
+- Version intervals partition system time with no gap and no overlap, so an as-of read always
+  returns exactly the document that was live at that instant
+  (`tests/test_falkor_store.py:602-636`).
+- Full-scan store reads stay complete above FalkorDB's server-side result-set cap
+  (`tests/test_falkor_store.py:468-490`).
+- `COMMANDS.md` is byte-equal to the registry-generated catalog
+  (`tests/test_generate_docs.py:34-40`).
 
 #### 2.36 Write path and model — `tests` part 4 (group `tests-4`)
 
@@ -1413,64 +1464,80 @@ plus one machine-readable run record. Nothing in the Python package or the front
 these files and no test or CI job references them; they exist for human reviewers, for
 coding agents, and for the next mapping run. `ARCHITECTURE-MAP.md` is this walkthrough —
 front matter pinning repo, commit, graph and mode; an executive overview with a stats
-table; forty-five subsystem sections written to one fixed template; load-bearing modules
-ranked by degree with a per-row justification and by betweenness in prose; a
+table; one subsection per module group written to a fixed three-slot template; load-bearing
+modules ranked by degree with a per-row justification and by betweenness in prose; a
 verdict-annotated cycle table; a communities-versus-directories reading that treats its own
 null result as the finding; a ranked risk register; open seams; and a coverage section that
 declares what was not covered as loudly as what was. `QUERYING.md` is the agent-facing
-recipe sheet: graph name, commit, the naming conventions needed to address records by name
-instead of id, the module-group identifiers, one runnable `loom` invocation per question
-class with its typical result shape declared, and a copy-pasteable agent hook.
+recipe sheet: graph name and commit, the naming conventions needed to address records by
+name instead of id, the module-group identifiers, one runnable `loom` invocation per
+question class with its typical result shape declared, and a copy-pasteable agent hook.
 `map-manifest.json` is the run record the next invocation reads as its incremental
 baseline. A fourth output, `codebase-map.html`, is generated beside them and deliberately
-left untracked.
+left untracked. No program consumes any of the three tracked files except the pipeline that
+writes them and, for the manifest specifically, the next run itself.
 
 Key files: `docs/architecture/ARCHITECTURE-MAP.md`, `docs/architecture/QUERYING.md`,
 `docs/architecture/map-manifest.json`.
 
-Conventions: a fixed subsystem slot template mirroring the four written-layer record types;
-every architectural statement carrying a file-and-line anchor; algorithmic output
-adjudicated with a human verdict rather than reported raw; risks written as two-sided
+Conventions: a generated map plus manifest as a re-run contract, with every open question
+routed back to whichever of the two files actually answers it; a fixed three-slot subsystem
+template that mirrors the four written-layer record types, with risks deliberately promoted
+out of the per-section template into one ranked global register; the section heading doing
+double duty as the literal query key a reader pastes into `list-entities`; algorithmic
+output adjudicated with a human verdict rather than reported raw; risks written as two-sided
 tensions, not bug reports; a runnable recipe plus a declared typical result shape; failure
 modes published with their fallback rather than omitted; a self-disabling, non-blocking
-agent nudge hook; corrections reported across editions rather than silently dropped.
+agent-nudge hook; cross-edition delta reporting, so a regression is visible rather than
+silently overwritten.
 
 Invariants worth knowing:
-- `map-manifest.json` is input, not a report: the next run reads its `commit` field
-  (`docs/architecture/map-manifest.json:4`) and its `mode` (`:5`), re-extracts only what
-  changed since, and re-enriches only the groups owning a changed file (§8). A hand-edited
-  commit field silently changes what the next run sees as changed.
-- All three deliverables independently pin the same graph and the same commit — front
-  matter above, the header of `QUERYING.md`, and `map-manifest.json:2` and `:4`. The
-  redundancy is deliberate: disagreement between them is the detectable signature of a
-  partial or hand-edited run.
-- The deliverables are generated; the only supported edit is a re-run (§8). A hand edit is
-  a write the next run overwrites without noticing.
-- Coverage is stated negatively as well as positively: how many groups were written up,
-  which were re-read this run, which describe an earlier run's reading, and which
-  identifiers are legacy (§8).
-- Only the prose and the manifest are tracked. `codebase-map.html` is declared in the
-  manifest's `outputs` block but is gitignored and regenerated, never committed (§8).
+- `map-manifest.json` is input to the next run, not a report of the last one: its `commit`
+  field is the baseline the next diff runs against and its `mode` field is the run mode
+  (`docs/architecture/map-manifest.json:4-5`; the read is documented at §8 below).
+- The manifest necessarily records the commit *before* the one that lands the deliverables
+  — a run cannot know the hash of a commit that will contain its own output — which is why
+  this group's files always differ from their own recorded baseline and this group
+  re-enriches on every incremental run without ever converging (§1; confirmed again this
+  run, whose changed-file set for this group was exactly the three deliverables).
+- All three deliverables independently pin the same graph and commit — front matter here,
+  `QUERYING.md`'s header, and `map-manifest.json`'s `graphName`/`commit` keys — so
+  disagreement among them is the detectable signature of a partial or hand-edited run.
+- The manifest's group list and this document's numbered sections are the same set,
+  one-to-one; a group in one without the other is either an unenriched blank page the
+  coverage section would wrongly count as covered, or a section the next incremental run can
+  never select for re-enrichment.
 - No machine-specific absolute path appears in any deliverable: the manifest records the
-  project location as the literal `"."` (`docs/architecture/map-manifest.json:3`) and
-  `QUERYING.md` uses a bracketed placeholder for the Loom checkout.
-- Every group in the manifest has a numbered section here, and every section heading ends
-  with the graph identifier that addresses its records — the heading is the query key, not
-  just a title (§8, and the addressing conventions in `QUERYING.md`).
+  project location as the literal `"."` and this guide refers to the Loom checkout by a
+  bracketed placeholder rather than a real directory (`docs/architecture/map-manifest.json:3`;
+  the fallback prefix in `QUERYING.md`'s header).
+- The deliverables are generated; the only supported edit is a re-run (§8) — a hand edit
+  survives only until the next refresh and leaves no trace when it is overwritten.
+- `codebase-map.html` is declared in the manifest's `outputs` block but is gitignored and
+  regenerated, never committed (`docs/architecture/map-manifest.json`, `outputs` key).
+- Coverage is stated negatively as well as positively: which groups were re-read this run,
+  which are inherited, which identifiers are legacy, and what the standing limitation of
+  incremental mode actually means for the age of any given section's prose (§8).
 
-One note on provenance. This is the only group whose subject is the file you are reading,
-so the anchors above were written against the *previous* edition of these same three files
-and this run replaces them. Intra-document references are therefore given as section
-numbers rather than line numbers; the two literal line citations point at the manifest,
-whose key order this run preserves. The self-reference is recorded rather than hidden — see
-§6, item 21.
+One note on provenance. This is the only group whose subject is the file you are reading. The
+graph read for this section describes the *previous* edition of these same three files —
+commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c` — because extraction necessarily runs
+before this run's own write lands; that lag is structural, not an error, and it is why this
+group is a permanent member of every incremental run's re-enrichment set (§1). The invariants
+above and the corrected load-bearing-modules entry at §3 are what actually changed this
+edition; the rest of this section's shape is stable across editions by design. Intra-document
+references are given as section numbers rather than line numbers for the same reason the
+previous edition adopted the practice: this run replaces the line numbers the graph's notes
+were anchored against. See §6, item 21 for the self-reference this practice exists to
+manage.
 
 ---
 
 ## 3. Load-bearing modules
 
 Ranked by degree (how many things touch it) and by betweenness (how often the shortest route
-between two parts of the system runs through it).
+between two parts of the system runs through it). Both rankings were recomputed fresh this
+run.
 
 ### By degree
 
@@ -1484,10 +1551,10 @@ between two parts of the system runs through it).
 | 6 | `theloom/store/multigraph.py` | Imported by 106 modules — the facade every operation takes as its second argument to resolve which named graph to talk to. |
 | 7–9 | `Chronicle.tsx` (98 symbols), `SystemsView.tsx` (77), `SemanticView.tsx` (77) | The other three canvas views; each is a single large component owning a renderer instance, its reducers and its overlays. |
 | 10 | `tests/test_entity_proposer_foundation.py` | 71 symbols — the largest single test module by symbol count, carrying its own in-memory fakes. |
-| 11 | `theloom/operations/semantic.py` | 43 symbols, 16 imports — the widest operations module, spanning the embedding lifecycle and five retrieval commands. |
-| 12 | `theloom/extraction/treesitter.py` | 65 symbols in one file: the parsers, the per-language walkers and the public extraction API. |
-| 13 | `docs/architecture/ARCHITECTURE-MAP.md` | This file. It is in the graph twice over: 50 documentation links out into the code it names, and 32 written-layer notes anchored back to it. |
-| 14 | `tests/test_falkor_store.py` | 55 symbols pinning store CRUD, lifecycle, event log and version intervals. |
+| 11 | `docs/architecture/ARCHITECTURE-MAP.md` | This file. Up from rank 13 last edition: 50 outbound documentation links out into the code it names (a per-document cap the extraction pipeline enforces, not an organic count — §6 item 21), and 66 written-layer notes now anchored back to it, up from 32. |
+| 12 | `theloom/operations/semantic.py` | 43 symbols, 16 imports — the widest operations module, spanning the embedding lifecycle and five retrieval commands. |
+| 13 | `theloom/extraction/treesitter.py` | 65 symbols in one file: the parsers, the per-language walkers and the public extraction API. |
+| 14 | `tests/test_falkor_store.py` | 55 symbols pinning store CRUD, lifecycle, event log and version intervals — see §2.35 for the invariants it pins. |
 | 15 | `theloom/cli/registry.py` | 31 contained symbols, 13 imports, imported by 12 — every command in the system is declared exactly once here. |
 
 ### By betweenness
@@ -1495,20 +1562,24 @@ between two parts of the system runs through it).
 `theloom/store/multigraph.py` and `theloom/store/falkor.py` top this ranking for the same
 reason they top degree: they are the only route from any command to any stored fact.
 `theloom/cli/registry.py` is next — the single door between the Typer surface and every
-handler. `theloom/viz/bundle.py`, `theloom/operations/semantic.py`,
-`theloom/operations/analysis.py`, `theloom/config.py`, `theloom/semantic/embed.py`,
-`theloom/model.py`, `theloom/operations/common.py`, `theloom/store/space.py`,
-`theloom/viz/semantic.py`, `theloom/documents/chunkstore.py` and
-`theloom/operations/synthesis.py` follow: each is the sole connector between an upper layer
-and a lower one (payload assembly, retrieval, analytics, configuration, embedding, domain
-shapes, input machinery, the store chassis, projection, chunk persistence, synthesis).
+handler. `theloom/viz/bundle.py`, `theloom/operations/semantic.py` and
+`theloom/operations/analysis.py` follow, then — at rank 7 —
+`docs/architecture/ARCHITECTURE-MAP.md`, ahead of `theloom/config.py`,
+`theloom/semantic/embed.py`, `theloom/model.py`, `theloom/operations/common.py`,
+`theloom/viz/semantic.py`, `theloom/store/space.py`, `theloom/documents/chunkstore.py` and
+`theloom/operations/synthesis.py`. Each of the code modules is the sole connector between an
+upper layer and a lower one (payload assembly, retrieval, analytics, configuration,
+embedding, domain shapes, input machinery, projection, the store chassis, chunk persistence,
+synthesis).
 
-One of the top fifteen in both rankings is a document, not code —
-`docs/architecture/ARCHITECTURE-MAP.md` brokers because the documentation-link pass connects
-prose to the code it names, and because the written layer anchors its notes to it. Its rank
-has slipped slightly since the previous edition (50 outgoing links rather than 52, 32
-inbound notes rather than 46) as this group's notes were re-authored. That drift is the
-measurement's own footprint, and §6 item 21 says so.
+The map's own climb is the sharper signal here than in the degree ranking. It entered the
+named list only near the bottom two editions ago and this run places it seventh — a bigger
+jump than its move from thirteenth to eleventh by degree, confirming what §6 item 21
+predicts: prose that names two distant subsystems manufactures a short path between them
+that no import or call justifies, and that effect compounds on betweenness faster than on
+degree, because betweenness rewards being *between* things, which is exactly what a document
+surveying the whole codebase is built to do. The distortion is disclosed, not corrected — no
+deliverable excludes documentation edges from either centrality pass.
 
 ---
 
@@ -1544,13 +1615,18 @@ bounded by input caps rather than by the recursion itself.
 
 ## 5. Communities vs. directories
 
-Semantic clustering over a 500-record sample of the 6,521-record current projection returns
-thirteen groups, all of size two or three. That is itself the finding: at this scale,
-embedding-space proximity tracks *file locality*, not cross-cutting communities. Nine of the
-thirteen are same-file neighbourhoods — the local variables of `Minimap`, `Chronicle`,
-`EventList`, `Explorer`, `FilterPanel`, `SemanticView` and `buildGraph`, and two pairs
-inside single test modules. Directory structure and community structure agree, which for a
-codebase organized one concern per package is the expected answer.
+*Clustering below is carried forward from commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`
+— this refresh re-ran the structural analyses (cycles, centrality, components) but not
+`find-clusters`, which is embedding-heavy; see §8.*
+
+Semantic clustering over a 500-record sample of the 6,521-record current projection (as
+measured at that commit) returns thirteen groups, all of size two or three. That is itself
+the finding: at this scale, embedding-space proximity tracks *file locality*, not
+cross-cutting communities. Nine of the thirteen are same-file neighbourhoods — the local
+variables of `Minimap`, `Chronicle`, `EventList`, `Explorer`, `FilterPanel`, `SemanticView`
+and `buildGraph`, and two pairs inside single test modules. Directory structure and
+community structure agree, which for a codebase organized one concern per package is the
+expected answer.
 
 The four that cross a file boundary are the ones worth reading:
 
@@ -1569,18 +1645,18 @@ The four that cross a file boundary are the ones worth reading:
   `ent` in `test_ops_relations` (0.71) — two local fixtures doing the same job with no
   shared helper.
 
-Structurally, the graph is now one connected mass with a single outlier: **two components**,
-of which the largest holds 6,520 of 6,521 records. The lone singleton is
-`tapestry/src/views/explorer/Explorer.css`, which no import link reaches. The previous
-edition reported 79 components; the other 77 singletons were orphaned written-layer notes,
-and they have been retired (§6, resolved). Every note in the graph is now reachable from the
-file it describes.
+Structurally, the graph is now one connected mass with a single outlier: **two components**
+(re-verified this run), of which the larger holds 6,525 of 6,526 records. The lone singleton
+is `tapestry/src/views/explorer/Explorer.css`, unchanged from the previous edition and still
+the only record no import link reaches. The edition before last reported 79 components; the
+other 77 singletons were orphaned written-layer notes, and they were retired (§6, resolved).
+Every note in the graph remains reachable from the file it describes.
 
 ---
 
 ## 6. Risks & tensions
 
-344 recorded risks; these are the ones to read first. Each is a real tension, not a bug
+345 recorded risks; these are the ones to read first. Each is a real tension, not a bug
 report — two things the code wants that cannot both be fully true.
 
 1. **Hard-delete escape hatches inside an event-sourced, bi-temporal store.** Several
@@ -1686,18 +1762,24 @@ report — two things the code wants that cannot both be fully true.
     described three times with two copies already drifted (`CLAUDE.md:57-74`,
     `README.md:356-369`, `CONTRIBUTING.md:111-118`), and the glossary that declares itself
     the project's ubiquitous language is linked from none of them (`CONTEXT.md:1-6`).
-21. **This directory has the same defect it reports elsewhere.** Every number in §1, §3, §4,
-    §5 and §7 is prose transcribed by the run that wrote it: nothing regenerates it, nothing
-    asserts it, and nothing fails when it drifts — unlike `COMMANDS.md`, which §2.42 records
-    as byte-pinned to its generator by a drift test. The forty-five-group vocabulary is
-    written out three times in this directory in two spellings (the manifest lists labels
-    such as `theloom/composites (part 1/2)`; both prose files list ids such as
+21. **This directory has the same defect it reports elsewhere, and its own numbers show the
+    feedback loop is not shrinking.** Every number in §1, §3, §4, §5 and §7 is prose
+    transcribed by the run that wrote it: nothing regenerates it, nothing asserts it, and
+    nothing fails when it drifts — unlike `COMMANDS.md`, which §2.42 records as byte-pinned
+    to its generator by a drift test. The forty-five-group vocabulary is written out three
+    times in this directory in two spellings (the manifest lists labels such as
+    `theloom/composites (part 1/2)`; both prose files list ids such as
     `theloom-composites-1`), with no rule stated anywhere for converting one to the other.
-    And the map is a node in the graph it measures — it ranks thirteenth by degree in its own
-    table (§3) — so writing it changes the ranking it reports. The feedback is small and
-    disclosed, but it is real, and it distorts betweenness more than degree: a document that
-    names two distant subsystems creates a short path between them that no import or call
-    justifies.
+    The map is also a node in the graph it measures — it climbed from thirteenth to
+    eleventh by degree this edition and from outside the named list two editions ago to
+    seventh by betweenness (§3) — so writing it changes the ranking it reports, and the
+    growth compounds rather than settles: 50 outbound documentation links (a per-document cap
+    the extraction pipeline enforces, not an organic count) against 66 inbound written-layer
+    notes now anchored back to it, up from 32 two editions ago, because superseded notes keep
+    their grounding edge to this file rather than losing it when a later run replaces them.
+    The feedback is disclosed, but it is real, it is measurably growing, and it distorts
+    betweenness more than degree for exactly the reason predicted: a document that names two
+    distant subsystems creates a short path between them that no import or call justifies.
 
 Resolved since the previous edition: the seventy-seven orphaned written-layer notes that
 opened the previous risk register are gone. Every note in the graph now connects to the file
@@ -1709,11 +1791,13 @@ caused the orphaning; they are attached to live files and answer queries correct
 
 ## 7. Open seams
 
+*Carried forward from commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c` — `semantic-gaps` is
+embedding-heavy and was not re-run this refresh; see §8.*
+
 Pairs the graph finds semantically close but structurally unconnected — places where two
 parts of the system are talking about the same thing without a link between them. The
-strongest pair in the current projection scores 0.78, down from 0.86 in the previous
-edition: the duplicate-invariant pairs that topped that list were among the notes retired
-this run.
+strongest pair, as last measured, scores 0.78, down from 0.86 the edition before that: the
+duplicate-invariant pairs that topped that list were among the notes retired in that run.
 
 - **Singular/plural and near-name method pairs with no shared implementation.**
   `InMemoryGraphStore.read_entities` / `read_entity` (0.78),
@@ -1768,40 +1852,52 @@ tests-fixtures-multi  tests-fixtures-repo   tests-fixtures-repo-src
 repo-root-1  repo-root-2  docs  docs-architecture
 ```
 
-**Re-written this run.** This was an incremental run against the same commit as the previous
-edition. One group had a file change and was re-read from source: `docs-architecture` — the
-three deliverables in this directory, which the previous run had just written. No group was
-attempted and left unenriched. The other forty-four sections describe records written by
-earlier runs against files that have not moved since; their anchors were valid when written
-and their files are unchanged. That is the standing limitation of the incremental mode: the
-front matter presents one commit, but the reading of any given subsystem is as old as the
-last time one of its files changed.
+**Re-written this run.** This is a refresh: it patches specific sections rather than
+re-deriving every one. Two groups had a real diff and were freshly re-enriched from source
+— `docs-architecture` (§2.45, which as always describes the commit before this one, not this
+one; see the provenance note there) and `tests-3` (§2.35, substantially expanded — five key
+files named instead of three, eleven invariants instead of three). One group,
+`theloom-extraction`, had a diff too small to trigger re-enrichment — the same renamed-file
+handling fix `tests-3` pins — so its semantic layer (§2.13) is carried forward unchanged from
+commit `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`. No group was attempted and left
+unenriched. The other 42 sections describe records written by earlier runs against files
+that have not moved since; their anchors were valid when written and their files are
+unchanged. The load-bearing-modules ranking (§3), the cycle table (§4) and the component
+count (§5) were recomputed fresh this run from cheap, non-embedding analyses (`graph-stats`,
+`detect-cycles`, `analyze-centrality`, `detect-components`); community clustering (§5) and
+the open-seams scan (§7) were not — both call `find-clusters` or `semantic-gaps`, which
+re-embed the whole sample and are too costly for a refresh — so those two readings are
+carried forward from commit `e9d4b425` and say so in place. That is the standing limitation
+of incremental (and especially refresh) mode: the front matter presents one commit, but the
+reading of any given subsystem or analysis is as old as the last time it was actually
+recomputed.
 
 **Legacy identifiers.** Seven labels survive from earlier runs and still carry 130 records
 between them: `docs-1`, `root-1`, `tests-fixtures`, and the coarser frontend partition
 `tapestry-src-1` … `tapestry-src-4`. Their content overlaps the current groups; prefer the
-identifiers listed above. Unlike the previous edition, none of them is orphaned — every one
-of the 130 is anchored to a file that exists (§5, §6). The `docs-2` … `docs-4` labels the
-previous edition named no longer carry any record.
+identifiers listed above. This population was not re-audited this refresh; as of the
+previous edition none of it was orphaned — every one of the 130 was anchored to a file that
+exists (§5, §6).
 
-**Not parsed.** Zero files failed to parse this run, because only one group's files were
-re-read and nothing needed re-extraction. Across the whole graph, 65 of the 375 recorded
-files carry no symbols, and all of them are accounted for: 42 are formats with no symbol
-grammar in this pipeline (16 Markdown, 14 JSON, 9 CSS, 1 YAML, 1 TOML, 1 lockfile), 18 are
-Python `__init__.py` package markers that declare nothing, and 5 are TypeScript entry and
-config files whose contents are a single default export or top-level call
-(`tapestry/src/main.tsx`, `src/vite-env.d.ts`, `vite.config.ts`, `playwright.config.ts`,
-`src/lib/roving.test.ts`). All 65 still participate in documentation links and containment.
+**Not parsed.** Zero files failed to parse this run, because extraction touched only the
+files behind the two re-enriched groups, the one carried group, and any renamed paths.
+Across the whole graph, 65 of the 375 recorded files carry no symbols, and all of them are
+accounted for: 42 are formats with no symbol grammar in this pipeline (16 Markdown, 14 JSON,
+9 CSS, 1 YAML, 1 TOML, 1 lockfile), 18 are Python `__init__.py` package markers that declare
+nothing, and 5 are TypeScript entry and config files whose contents are a single default
+export or top-level call (`tapestry/src/main.tsx`, `src/vite-env.d.ts`, `vite.config.ts`,
+`playwright.config.ts`, `src/lib/roving.test.ts`). All 65 still participate in documentation
+links and containment.
 
 **Graph and commit.** Graph `codebase-the-loom`, commit
-`e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`, mode `incremental`. The working tree was
-**dirty** at extraction — ten modified files, listed in §1 — so §2.45 describes files that
-differ from the commit named in the front matter.
+`43ae9b012576ee43bb47f7c2ee9089e21555e138`, mode `incremental`. The working tree was
+**clean** at extraction.
 
 **How to re-run.** `/map-codebase <repo-root>`. The run reads the commit recorded in
 `docs/architecture/map-manifest.json` and re-extracts only what changed since; a group is
-re-written only when one of its files changed. Re-running is the only supported way to edit
-any file in `docs/architecture/`.
+re-enriched only when its diff crosses the size threshold, carried forward (semantic layer
+unchanged) when it does not, and left alone when nothing in it changed. Re-running is the
+only supported way to edit any file in `docs/architecture/`.
 
 **How to interrogate the graph afterwards.** Start with
 `docs/architecture/QUERYING.md`, which carries a runnable recipe per question. The two
@@ -1813,6 +1909,6 @@ when you only know roughly what you want. `loom explore`, `loom find-callers`,
 and what-breaks-if-I-change-this in one call each.
 
 **The visualization.** `docs/architecture/codebase-map.html` is a self-contained page holding
-the 400 highest-degree records and the 1,873 relationships among them, with analytics and
-event-replay sections attached. It is generated and gitignored; regenerate it by re-running
-the map.
+the 400 highest-degree records and the 1,868 relationships among them, with analytics and
+event-replay sections attached but the semantic-clustering bundle excluded (kept cheap for a
+refresh). It is generated and gitignored; regenerate it by re-running the map.
