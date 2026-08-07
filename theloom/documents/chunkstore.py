@@ -124,6 +124,19 @@ class ChunkStore(GraphSpace):
             chunk.to_doc() for chunk in chunks if category is None or chunk.category == category
         ]
 
+    def get_chunk(self, chunk_id: str) -> Doc | None:
+        """One chunk's metadata doc by id, or ``None`` if it is not stored.
+
+        The point lookup behind a *pointer* to a chunk — an entity's
+        ``provenance.externalRef`` names the chunk it was extracted from, and
+        synthesis resolves it here to quote the originating passage. A chunk
+        deleted after extraction simply reads back as ``None``.
+        """
+        rows = self._rows("MATCH (c:_Chunk {id: $id}) RETURN c._doc LIMIT 1", {"id": chunk_id})
+        if not rows:
+            return None
+        return ChunkMetadata.from_json(rows[0][0]).to_doc()
+
     def query_chunks_with_vectors(
         self, *, category: str | None = None, limit: int = 100000
     ) -> list[tuple[Doc, list[float] | None]]:

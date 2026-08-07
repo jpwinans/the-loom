@@ -88,3 +88,26 @@ def test_a_chunk_stored_from_the_declared_model_carries_the_chunk_conventions(
             "content": "hello",
         }
     ]
+
+
+# =============================================================================
+# Point lookup by chunk id
+# =============================================================================
+
+
+def test_get_chunk_returns_the_stored_doc(chunks: ChunkStore) -> None:
+    """An entity's ``provenance.externalRef`` names the chunk it came from, so
+    synthesis needs to resolve one chunk by id — same doc ``query_chunks``
+    returns, no scan of the whole document."""
+    _seed(chunks, 3)
+
+    assert chunks.get_chunk("chunk-001") == chunks.query_chunks(limit=10)[1]
+
+
+def test_get_chunk_is_none_for_an_unknown_id(chunks: ChunkStore) -> None:
+    """A chunk deleted after extraction degrades to nothing, not an error."""
+    _seed(chunks, 1)
+    chunks.delete_chunk("chunk-000")
+
+    assert chunks.get_chunk("chunk-000") is None
+    assert chunks.get_chunk("never-existed") is None

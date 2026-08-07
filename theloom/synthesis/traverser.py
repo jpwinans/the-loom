@@ -12,7 +12,7 @@ from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from theloom.synthesis.links import get_source_passages
+from theloom.synthesis.links import ChunkLookup, get_source_passages
 from theloom.synthesis.selector import DocStore
 from theloom.timeutil import iso_now
 
@@ -101,6 +101,7 @@ def _systematic(
     entity_map: dict[str, Doc],
     relation_map: dict[str, Doc],
     provenance: ProvenanceCollector,
+    chunk_lookup: ChunkLookup,
 ) -> list[Doc]:
     evidence_units: list[Doc] = []
     for region in plan["regions"]:
@@ -126,7 +127,7 @@ def _systematic(
                     "entity": entity,
                     "relations": entity_relations,
                     "viterbiConfidence": compute_viterbi_confidence(entity, entity_relations),
-                    "sourcePassages": get_source_passages(entity_id),
+                    "sourcePassages": get_source_passages(entity, chunk_lookup),
                     "regionId": region["id"],
                 }
             )
@@ -138,6 +139,7 @@ def _adaptive(
     entity_map: dict[str, Doc],
     relation_map: dict[str, Doc],
     provenance: ProvenanceCollector,
+    chunk_lookup: ChunkLookup,
 ) -> list[Doc]:
     evidence_units: list[Doc] = []
     visited: set[str] = set()
@@ -181,7 +183,7 @@ def _adaptive(
                     "entity": entity,
                     "relations": entity_relations,
                     "viterbiConfidence": compute_viterbi_confidence(entity, entity_relations),
-                    "sourcePassages": get_source_passages(entity_id),
+                    "sourcePassages": get_source_passages(entity, chunk_lookup),
                     "regionId": region["id"],
                 }
             )
@@ -211,7 +213,9 @@ def _deduplicate(units: list[Doc]) -> list[Doc]:
     return list(seen.values())
 
 
-def traverse_synthesis(plan: Doc, store: DocStore, mode: str | None = None) -> Doc:
+def traverse_synthesis(
+    plan: Doc, store: DocStore, chunk_lookup: ChunkLookup, mode: str | None = None
+) -> Doc:
     mode = mode or "systematic"
     provenance = ProvenanceCollector(mode)
 
@@ -223,9 +227,9 @@ def traverse_synthesis(plan: Doc, store: DocStore, mode: str | None = None) -> D
     relation_map = {r["id"]: r for r in all_relations if r["id"] in planned_relation_ids}
 
     if mode == "systematic":
-        evidence_units = _systematic(plan, entity_map, relation_map, provenance)
+        evidence_units = _systematic(plan, entity_map, relation_map, provenance, chunk_lookup)
     else:
-        evidence_units = _adaptive(plan, entity_map, relation_map, provenance)
+        evidence_units = _adaptive(plan, entity_map, relation_map, provenance, chunk_lookup)
 
     return {
         "evidenceUnits": _deduplicate(evidence_units),
