@@ -59,36 +59,20 @@ uv run loom hybrid-search '{"query": "early computing", "limit": 5}'
 
 The repository ships three [Claude Code](https://claude.com/claude-code) agent
 skills that use the Loom as their substrate — worked examples of what the CLI
-is for. They live in `.claude/` (skills, workflows, agents, schemas) and run
-from the repo root with FalkorDB up:
+is for. The runnable assets live in `.claude/` (skills, workflows, agents,
+schemas); the guides live in **[examples/](examples/README.md)**, one folder
+per skill, each explaining how to use it and exactly how it drives the Loom:
 
-```
-/deep-research TOPIC     # autonomous research that builds a knowledge graph
-/hyper-research DOC      # parallel deep-research per question from a document
-/map-codebase PATH       # explained architecture map of a codebase
-```
-
-- **`/deep-research`** — autonomous multi-iteration research on one question:
-  orientation → a quality-gated loop (research → synthesis → verify →
-  consolidate, with red-team and expedition passes in parallel) →
-  documentation. Builds source/evidence/claim entities with calibrated
-  confidence and provenance into a Loom graph; session artifacts land under
-  `research/sessions/{id}/`.
-- **`/hyper-research`** — the meta-orchestrator: reads a context document,
-  extracts independent questions, runs deep-research per question *in
-  parallel* onto one shared graph, then consolidates and synthesizes a
-  cross-cutting report into `research/reports/`.
-- **`/map-codebase`** — extracts a repository (tree-sitter: Python, TS/JS, Go,
-  Rust) into a graph of typed call/import/containment edges anchored to
-  file:line, layers on an LLM-written semantic pass (module purposes,
-  patterns, invariant claims, risks), and emits `ARCHITECTURE-MAP.md`, an
-  interactive `codebase-map.html`, and a `QUERYING.md` cheat sheet. Re-runs
-  are incremental. Afterwards agents answer "who calls X?" or "what breaks if
-  I change Z?" from the graph — `loom explore`, `loom find-callers`,
-  `loom blast-radius` — instead of grepping.
+| Command | What it does | Guide |
+| --- | --- | --- |
+| `/deep-research TOPIC` | Autonomous multi-iteration research building a graph of sources, evidence, and claims with calibrated confidence and provenance | [examples/deep-research](examples/deep-research/README.md) |
+| `/hyper-research DOC` | Extracts independent questions from a document and runs deep-research per question in parallel onto one shared graph, then synthesizes across them | [examples/hyper-research](examples/hyper-research/README.md) |
+| `/map-codebase PATH` | Explained architecture map of a repository — tree-sitter structure plus an LLM semantic layer, kept current by diff-scaled incremental updates | [examples/map-codebase](examples/map-codebase/README.md) |
 
 Each skill launches its multi-agent workflow in the background and reports on
-completion; the graph persists for follow-up queries.
+completion; the graph persists for follow-up queries. The map-codebase guide
+doubles as this repo's own story: the committed `docs/architecture/` map is
+the skill's output, run against The Loom itself.
 
 ## CLI contract
 
