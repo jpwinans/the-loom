@@ -5,15 +5,13 @@ holds every symbol, call, import, invariant, convention and risk in the tree, an
 a file and a line. Query it before you grep.
 
 - **Graph name:** `codebase-the-loom`
-- **Commit it describes:** `e9d4b425bba8c47b96922b5acfe0fdca3fe9481c`
+- **Commit it describes:** `0343de03f15efbb6ce1d329e8f8703e18bad4900`
 - **Transport:** the `loom` CLI over Bash. Every call is
   `loom <command> '<json>'` with kebab-case commands, camelCase JSON fields, and a
   `"graph"` field on every call. If `loom` is not on `PATH`, prefix with
   `uv run --directory <path-to-your-loom-checkout>`. There is no MCP server.
 
-The working tree was dirty when this edition was built. Ten files differ from the commit
-above, including the three deliverables in this directory; their records describe the
-working tree rather than the commit. Everything else describes committed state.
+The working tree was clean when this edition was built.
 
 ## Naming conventions
 
@@ -34,7 +32,7 @@ list and re-ask.
 ## Module group ids
 
 The written layer (purposes, conventions, invariants, risks) is stamped with a
-`module_group`. The 45 current groups:
+`module_group`. The 46 current groups:
 
 ```
 theloom               theloom-algebra       theloom-analysis      theloom-cli
@@ -49,7 +47,7 @@ tapestry-src-views-overview   tapestry-src-views-semantic
 tapestry-src-views-systems
 tests-1  tests-2  tests-3  tests-4  tests-5  tests-6
 tests-fixtures-multi  tests-fixtures-repo   tests-fixtures-repo-src
-repo-root-1  repo-root-2  docs  docs-architecture
+repo-root-1  repo-root-2  docs  docs-architecture  examples
 ```
 
 Seven further labels survive from earlier runs and still carry 130 records between them:
@@ -133,7 +131,7 @@ loom list-entities '{"entityType": "tension", "compact": true, "limit": 40, "gra
 
 → each record carries `pole_a`, `pole_b`, an `anchor` and `implications`. Narrow with
 `"query": "<module group id>"` to scope to one subsystem. Typical: 2–13 risks per group,
-median 7; 344 in the graph.
+median 7; 347 in the graph.
 
 ### What must stay true here?
 
@@ -142,7 +140,7 @@ loom list-entities '{"query": "theloom-semantic", "entityType": "claim", "compac
 ```
 
 → invariants with `statement`, `anchor` and `consequence_if_broken`.
-Typical: 5–32 per group, median 10; 624 in the graph.
+Typical: 5–32 per group, median 10; 629 in the graph.
 
 ### What conventions does this code follow?
 
@@ -151,7 +149,7 @@ loom list-entities '{"query": "theloom-operations-2", "entityType": "pattern", "
 ```
 
 → named conventions with `description`, `instances` and `mechanism`.
-Typical: 3–12 per group, median 7; 350 in the graph.
+Typical: 3–12 per group, median 7; 355 in the graph.
 
 ### I only know roughly what I am looking for
 
@@ -199,8 +197,9 @@ loom analyze-centrality '{"algorithm": "degree", "limit": 15, "graph": "codebase
 ```
 
 → counts by record and relation type; a ranked `{id, name, entityType, score}` array.
-Typical: one stats document (9,302 records and 19,209 relationships including superseded
-versions; 6,521 and 13,868 live); 15 ranked rows.
+Typical: one stats document (9,350 records and 19,315 relationships including superseded
+versions; 6,530 and 13,868 live — the live relation figure is carried forward from an
+earlier commit, see `docs/architecture/ARCHITECTURE-MAP.md` §1); 15 ranked rows.
 
 ## Make agents use this graph
 

@@ -1,13 +1,14 @@
 {
   "graphName": "codebase-the-loom",
   "projectPath": ".",
-  "commit": "8866c267f2de896bcaadfa452ef7e2ac275fa494",
+  "commit": "0343de03f15efbb6ce1d329e8f8703e18bad4900",
   "mode": "incremental",
-  "timestamp": "2026-08-07T17:15:00.000Z",
+  "timestamp": "2026-08-07T18:30:00.000Z",
   "groups": [
     "docs",
     "docs/architecture",
-    "repo root (part 1/2)",
+    "examples",
+    "repo root (part 1/7)",
     "repo root (part 2/2)",
     "tapestry (part 1/2)",
     "tapestry (part 2/2)",
