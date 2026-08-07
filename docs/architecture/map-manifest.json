@@ -1,9 +1,9 @@
 {
   "graphName": "codebase-the-loom",
   "projectPath": ".",
-  "commit": "21466d5250d7ce760079705305a422077e36f17d",
-  "mode": "full",
-  "timestamp": "2026-08-06T21:52:00.000Z",
+  "commit": "e9d4b425bba8c47b96922b5acfe0fdca3fe9481c",
+  "mode": "incremental",
+  "timestamp": "2026-08-07T00:00:00.000Z",
   "groups": [
     "docs",
     "docs/architecture",
