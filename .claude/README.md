@@ -15,7 +15,8 @@ workflows, and agents resolve together and `uv run loom` hits this checkout.
 │   │                              #   tool catalog, workflow patterns
 │   ├── deep-research/             # /deep-research TOPIC — single-question autonomous research
 │   ├── hyper-research/            # /hyper-research DOC — parallel multi-question meta-research
-│   └── map-codebase/              # /map-codebase PATH — explained architecture map of a repo
+│   ├── map-codebase/              # /map-codebase PATH — explained architecture map of a repo
+│   └── loom-expedition/           # /loom-expedition GRAPH — standalone emergent-theory expedition
 ├── workflows/
 │   ├── deep-research.js           # deterministic orchestration: orient → quality-gated loop → finalize
 │   ├── hyper-research.js          # comprehend → extract questions → parallel deep-research → synthesize
@@ -28,8 +29,6 @@ workflows, and agents resolve together and `uv run loom` hits this checkout.
 ├── references/
 │   ├── research-schemas.md        # canonical structured-output contracts for agent handoffs
 │   └── map-codebase-schemas.md    # the same, for the map-codebase pipeline
-├── commands/
-│   └── loom-expedition.md         # /loom-expedition GRAPH — standalone emergent-theory expedition
 └── settings.json                  # PreToolUse nudge: prefer the codebase graph over grepping
 ```
 
