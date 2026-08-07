@@ -4,9 +4,10 @@ reify-patterns: Weisfeiler-Leman ego fingerprints — every non-pattern entity
 gets a hash of its rooted neighborhood (depth default 2); entities sharing a
 hash form a pattern when >= minOccurrences (default 3); dry-run by default.
 Hashes are the first 16 hex chars of SHA-256 over a canonical string; relation
-type lists keep per-edge duplicates and are sorted; instance_of edges and
-pattern entities are excluded from fingerprinting for idempotency (an existing
-pattern is recognized by its exact `fingerprint: <hash>` observation line).
+type lists keep per-edge duplicates and are sorted; crystallized_from edges
+(reification lineage) and pattern entities are excluded from fingerprinting
+for idempotency (an existing pattern is recognized by its exact
+`fingerprint: <hash>` observation line).
 
 trigger-status / process-triggers are exposed as CLI commands returning the
 standard JSON envelope. Queue state lives in graph metadata under 'trigger_queue'.
@@ -113,7 +114,9 @@ def reify_patterns(params: ReifyPatternsInput, multi: MultiGraph) -> Doc:
     fingerprint_relations = [
         r
         for r in all_relations
-        if r["relationType"] != "instance_of" and r["from"] in entity_ids and r["to"] in entity_ids
+        if r["relationType"] != "crystallized_from"
+        and r["from"] in entity_ids
+        and r["to"] in entity_ids
     ]
     graph = hydrate_graph(fingerprint_entities, fingerprint_relations)
 
@@ -201,7 +204,7 @@ def reify_patterns(params: ReifyPatternsInput, multi: MultiGraph) -> Doc:
                         {
                             "from": member_id,
                             "to": pattern_entity.id,
-                            "relationType": "instance_of",
+                            "relationType": "crystallized_from",
                             "polarity": None,
                             "strength": "moderate",
                             "evidence": (
