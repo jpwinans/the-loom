@@ -5,8 +5,12 @@ AC-3 propagation. verify-graph runs Tier-1 guards then Tier-2 invariants
 (fail-fast); check-consistency is Tier-1 only; check-invariants/validate-spec
 wrap invariants/properties through the spec (so per-property `checked` is 1);
 list-guard-violations groups guard hits per element. constrained-generate and
-cegis-synthesize are implemented but non-deterministic by construction
-(random seed / wall-clock durationMs), so their outputs are not fixed.
+cegis-synthesize both delegate to the seeded ``mulberry32`` generator in
+theloom.synthesis.generator, so both are deterministic given a fixed seed
+(constrained-generate defaults to a fixed seed; cegis-synthesize derives its
+per-iteration seed from an explicit base seed) -- never a wall-clock seed.
+cegis-synthesize's ``durationMs`` is the one field that is inherently
+wall-clock and not fixed.
 """
 
 from __future__ import annotations
@@ -20,7 +24,6 @@ from pydantic import Field
 from theloom.errors import OperationError
 from theloom.model import (
     ALL_ENTITY_STATUSES,
-    ALL_ENTITY_TYPES,
     EntityCreate,
     EntityFilter,
     EntityType,
@@ -30,6 +33,11 @@ from theloom.model import (
 from theloom.operations.common import CommandInput
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
+from theloom.synthesis.generator import (
+    GenerationSpec,
+    TypeCompatibilityGraph,
+    TypeConstrainedGenerator,
+)
 from theloom.verification import checks, propagation
 from theloom.verification.metrics import capability_result as _capability_result
 from theloom.verification.metrics import coupling as _coupling
@@ -110,6 +118,10 @@ class ConstrainedGenerateInput(CommandInput):
     required_types: list[EntityType] | None = Field(default=None, alias="requiredTypes")
     commit: bool | None = None
     graph: str | None = None
+    # Optional: fixes the mulberry32 seed driving the fill-to-maxEntities /
+    # fill-to-maxRelations passes. Absent means the fixed default seed (same
+    # output as before this field existed) -- additive, never required.
+    seed: int | None = None
 
 
 # =============================================================================
@@ -489,51 +501,59 @@ def check_capabilities(params: CheckCapabilitiesInput, multi: MultiGraph) -> Doc
 
 
 # =============================================================================
-# constrained-generate (non-deterministic seed; implemented, output not fixed)
+# constrained-generate (deterministic: fixed default seed unless overridden)
 # =============================================================================
+
+# Fixed default seed for the mulberry32-backed generator -- never wall-clock,
+# matching the same "explicit seed only" discipline cegis-synthesize uses.
+_DEFAULT_SEED = 42
 
 
 def constrained_generate(params: ConstrainedGenerateInput, multi: MultiGraph) -> Doc:
     required = [t.value for t in (params.required_types or [])]
-    if params.max_entities == 0:
-        if required:
-            return {
-                "success": False,
-                "entities": [],
-                "relations": [],
-                "failureReason": ("Cannot satisfy required types with maxEntities=0"),
-            }
-        return {"success": True, "entities": [], "relations": []}
-    if len(required) > params.max_entities:
+    generator = TypeConstrainedGenerator(TypeCompatibilityGraph.create_default())
+    spec = GenerationSpec(
+        max_entities=params.max_entities,
+        max_relations=params.max_relations,
+        required_types=tuple(required),
+    )
+    seed = params.seed if params.seed is not None else _DEFAULT_SEED
+    candidate = generator.generate(spec, seed)
+
+    if not candidate.success:
         return {
             "success": False,
             "entities": [],
             "relations": [],
-            "failureReason": (
-                f"Required {len(required)} types but maxEntities is {params.max_entities}"
-            ),
+            "failureReason": candidate.failure_reason,
         }
-    # Deterministic subset: emit the required-type entities (filling
-    # remaining slots with a time-seeded PRNG would be non-deterministic;
-    # we stop at the required types so output is stable and useful).
+
     entities = [
         {
-            "name": f"Generated {t}",
-            "entityType": t,
-            "observations": [f"Auto-generated {t} entity"],
+            "name": e.name,
+            "entityType": e.entity_type,
+            "observations": list(e.observations),
         }
-        for t in required
+        for e in candidate.entities
     ]
-    result: Doc = {"success": True, "entities": entities, "relations": []}
+    relations = [
+        {
+            "fromIndex": r.from_index,
+            "toIndex": r.to_index,
+            "relationType": r.relation_type,
+            "polarity": r.polarity,
+            "strength": r.strength,
+        }
+        for r in candidate.relations
+    ]
+
+    result: Doc = {"success": True, "entities": entities, "relations": relations}
     if params.commit:
         store = multi.get_store(params.graph)
         committed = [store.create_entity(EntityCreate.model_validate(e)).id for e in entities]
         result["committedEntityIds"] = committed
         result["skippedRelations"] = 0
     return result
-
-
-_ = ALL_ENTITY_TYPES  # referenced by generator notes
 
 
 # =============================================================================
