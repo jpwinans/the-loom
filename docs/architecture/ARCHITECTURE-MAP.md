@@ -1,6 +1,6 @@
 ---
 repo: the-loom
-commit: 43ae9b012576ee43bb47f7c2ee9089e21555e138
+commit: 8866c267f2de896bcaadfa452ef7e2ac275fa494
 graph: codebase-the-loom
 generated: 2026-08-07
 mode: incremental
