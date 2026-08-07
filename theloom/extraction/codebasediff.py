@@ -139,13 +139,24 @@ def _parse_git_diff(
     exclude: Sequence[str] | None = None,
 ) -> list[Doc]:
     changes: list[Doc] = []
-    status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "added", "C": "added"}
+    status_map = {"A": "added", "M": "modified", "D": "deleted", "C": "added"}
     for line in output.splitlines():
         parts = line.split("\t")
         if len(parts) < 2:
             continue
         status = parts[0][0]
-        path = parts[2] if status in ("R", "C") and len(parts) >= 3 else parts[1]
+        if status == "R" and len(parts) >= 3:
+            # A rename is a delete of the old path plus an add of the new one.
+            # Replaying only the new path would leave the old path's records
+            # live forever with no file behind them. A copy (C) differs: the
+            # old path still exists, so only the new path lands.
+            old, new = parts[1], parts[2]
+            if _is_extractable_shape(old, include=include, exclude=exclude):
+                changes.append({"path": old, "change": "deleted"})
+            if is_extractable(new):
+                changes.append({"path": new, "change": "added"})
+            continue
+        path = parts[2] if status == "C" and len(parts) >= 3 else parts[1]
         in_scope = (
             _is_extractable_shape(path, include=include, exclude=exclude)
             if status == "D"
