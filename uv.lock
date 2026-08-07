@@ -4253,7 +4253,6 @@ dev = [
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
-    { name = "z3-solver" },
 ]
 
 [package.metadata]
@@ -4291,7 +4290,6 @@ dev = [
     { name = "mypy", specifier = ">=1.11" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },
-    { name = "z3-solver", specifier = ">=4.13" },
 ]
 
 [[package]]

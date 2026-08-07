@@ -1,10 +1,11 @@
-"""Verification guards, invariants, GraphSpec, capabilities, and AC-3
-propagation over wire docs.
+"""Verification guards and invariant properties over wire docs.
 
 Guards here operate on entity/relation wire docs (the list-guard-violations /
 check-consistency surface), distinct from the mutation-gate helpers in
-guards.py. Violation messages, invariant logic, and the AC-3 worklist (LIFO)
-are all deterministic so output is stable.
+guards.py. Violation messages and invariant logic are deterministic so output
+is stable. The rest of the verification surface lives beside this module:
+GraphSpec in theloom/operations/verification.py, capability checks in
+capability_spec.py, AC-3 propagation in propagation.py.
 """
 
 from __future__ import annotations
