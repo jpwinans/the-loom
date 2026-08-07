@@ -341,16 +341,33 @@ data block parses, not from a separate build.
 theloom/        the package
   model.py        Pydantic domain model (single source of truth)
   config.py       configuration
-  cli/            Typer CLI (io, app, command registry)
+  errors.py       typed error codes
+  cli/            Typer CLI (io, app, command registry, docs)
   store/          FalkorDB store, event log, lifecycle, filters, migration
-  graph/  semantic/  algebra/  synthesis/
+  graph/  semantic/  algebra/  synthesis/  analysis/  exploration/
   documents/  extraction/  verification/  operations/  composites/
+  reification/  symbolic/  prompts/
   viz/            TapestryBundle assembly + HTML template injection
 tests/          test suite, including golden fixtures and harness
 tapestry/       frontend workspace (Vite/React/sigma.js SPA, contributor-only)
+examples/       per-skill guides: how each shipped skill drives the Loom
+docs/
+  architecture/   the self-model: generated map, query cheat-sheet, manifest
+  adr/            architecture decision records
+  benchmarks/     recorded scale benchmarks
+  design/         approved design specs
+scripts/        dev utilities (benchmark graph generator, live-demo seeder)
+CONTEXT.md      the ubiquitous language — domain glossary
+STACK.md        the dependency stack, and why each library
 docker-compose.yml   FalkorDB service
 pyproject.toml       project + tooling config (ruff, mypy, pytest)
 ```
+
+The repository maps itself: **[docs/architecture/ARCHITECTURE-MAP.md](docs/architecture/ARCHITECTURE-MAP.md)**
+is the generated, explained map of this codebase, kept current after merges by
+[`/map-codebase`](examples/map-codebase/README.md), and
+**[docs/architecture/QUERYING.md](docs/architecture/QUERYING.md)** is the cheat
+sheet for querying the underlying graph instead of grepping.
 
 ## Development
 
@@ -362,3 +379,10 @@ uv run mypy --strict theloom
 
 See **[CONTRIBUTING.md](CONTRIBUTING.md)** for the full quality gate, the
 architecture invariants every change must respect, and the PR workflow.
+
+## License
+
+[ISC](LICENSE). Note that FalkorDB's server is SSPLv1 (source-available) —
+fine for running The Loom locally or internally; see the license note in
+[STACK.md](STACK.md) if you intend to offer FalkorDB itself as a hosted
+service.
