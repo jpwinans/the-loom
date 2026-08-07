@@ -1,7 +1,7 @@
 # .claude/ — Project Agent Assets
 
 This directory is the **single source of truth** for the autonomous research pipeline,
-the `/map-codebase` pipeline, and the Loom skill. Usage guides for the three example
+the `/map-codebase` pipeline, and the Loom skill. Usage guides for the example
 skills — including how each drives the Loom CLI — live in
 [`examples/`](../examples/README.md); this file documents the assets themselves. Run everything from the repo root so project-level skills,
 workflows, and agents resolve together and `uv run loom` hits this checkout.
