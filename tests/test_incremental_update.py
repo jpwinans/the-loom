@@ -418,6 +418,29 @@ def test_deleted_file_supersedes_its_entities_and_edges(
     assert {d["status"] for d in result["entityDiffs"]} == {"superseded"}
 
 
+def test_renamed_file_supersedes_the_old_path_and_lands_the_new(
+    seeded: Path, multi: MultiGraph, store: FalkorGraphStore
+) -> None:
+    """git reports a rename as `R<score> old new`. Replaying only the new
+    path would leave the old path's records live forever with no file behind
+    them — a rename must land as delete(old) plus add(new)."""
+    git(seeded, "mv", "lib/helper.js", "lib/formatting.js")
+    commit(seeded, "rename helper to formatting")
+
+    result = update(seeded, multi)
+
+    live = names(store)
+    assert live.isdisjoint({"file:lib/helper.js", "formatBalance (helper)", "roundCents (helper)"})
+    assert "file:lib/formatting.js" in live
+    old_file = [
+        e
+        for e in store.list_entities(_all_statuses())
+        if e.name == "file:lib/helper.js" and e.status == "superseded"
+    ]
+    assert len(old_file) == 1
+    assert result["stats"]["entitiesRetracted"] >= 3
+
+
 def test_deleted_file_retracts_edges_pointing_into_it(
     seeded: Path, multi: MultiGraph, store: FalkorGraphStore
 ) -> None:

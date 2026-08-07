@@ -14,10 +14,10 @@ module group via the `codebase-enricher` agent, one `embed-entities` pass, then 
 ## Invoke
 
 1. Parse `$ARGUMENTS`: **PATH** = first non-flag token (default `.`). Optional flags:
-   `--graph NAME`, `--output DIR`, `--full`, `--no-tests`, `--no-enrich`.
+   `--graph NAME`, `--output DIR`, `--full`, `--no-tests`, `--no-enrich`, `--thorough`.
 2. Call the Workflow tool — this is the valid opt-in (a skill instructing a Workflow run):
    ```
-   Workflow({ name: "map-codebase", args: { path: <PATH>, graph: <NAME or omit>, output: <DIR or omit>, full: <true if --full>, noTests: <true if --no-tests>, noEnrich: <true if --no-enrich> } })
+   Workflow({ name: "map-codebase", args: { path: <PATH>, graph: <NAME or omit>, output: <DIR or omit>, full: <true if --full>, noTests: <true if --no-tests>, noEnrich: <true if --no-enrich>, thorough: <true if --thorough> } })
    ```
    `--no-enrich` skips the Enrich phase entirely — a structural-only run (extraction +
    embed + cartograph, no semantic layer) that produces a structure-only map in
@@ -27,8 +27,15 @@ module group via the `codebase-enricher` agent, one `embed-entities` pass, then 
    `keyFindings`.
 
 **Re-runs are incremental by default** when the target's `map-manifest.json` and graph
-exist (`update-codebase` from the last mapped commit; only changed groups re-enrich);
-`--full` forces fresh extraction. The graph persists for follow-up queries — `QUERYING.md`
+exist (`update-codebase` from the last mapped commit), and they scale to the diff:
+each changed group is classified **carried** (tiny diff — semantic layer stands,
+nothing re-read), **delta** (a minority of files changed — only the notes citing
+those files are superseded and rewritten, on a cheaper model), or **rewrite**
+(substantial change — whole-group re-enrichment as before). When few groups were
+touched, the cartographer likewise **patches** the existing map in place instead of
+re-deriving every section. A routine post-merge update therefore costs minutes, not
+a re-map. `--thorough` forces whole-group re-enrichment plus a full cartograph pass
+for every changed group; `--full` forces fresh extraction of everything. The graph persists for follow-up queries — `QUERYING.md`
 is the cheat sheet for them (`loom explore`, `loom find-callers`/`find-callees`,
 `loom blast-radius`, `loom entity-deep-dive`, `loom hybrid-search`).
 

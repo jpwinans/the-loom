@@ -11,7 +11,9 @@ verification block carries the pipeline's single highest-value reliability guara
 ## Setup — emitted by the inline setup agent
 
 `mode` selects full extraction vs `update-codebase` incremental; `moduleGroups` drives
-the Enrich fan-out; `headCommit` stamps the manifest.
+the Enrich fan-out; `headCommit` stamps the manifest. The three per-group change
+fields appear in incremental mode only — the workflow classifies each group
+carried / delta / rewrite from them.
 
 ```json
 {
@@ -27,7 +29,13 @@ the Enrich fan-out; `headCommit` stamps the manifest.
         "id": { "type": "string", "description": "stable slug, e.g. theloom-store" },
         "label": { "type": "string" },
         "paths": { "type": "array", "items": { "type": "string" } },
-        "fileCount": { "type": "integer", "minimum": 0 } } } },
+        "fileCount": { "type": "integer", "minimum": 0 },
+        "changedFiles": { "type": "array", "items": { "type": "string" },
+          "description": "incremental only: the group's paths named by the diff" },
+        "changedLines": { "type": "integer", "minimum": 0,
+          "description": "incremental only: summed added+deleted lines over changedFiles" },
+        "addedOrDeleted": { "type": "integer", "minimum": 0,
+          "description": "incremental only: changedFiles that were added/deleted/renamed" } } } },
     "skippedFiles": { "type": "integer", "minimum": 0 },
     "dirtyTree": { "type": "boolean" }
   }

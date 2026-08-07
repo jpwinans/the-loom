@@ -21,6 +21,8 @@ an unenriched group is a blank page in the walkthrough.
 | **PROJECT_PATH** | Absolute path to the target repo root |
 | **GROUP** | This agent's module group: `{id, label, paths, fileCount}` |
 | **MODE** | `full` or `incremental` |
+| **ENRICH_MODE** | `rewrite` (default — the whole group) or `delta` (changed files only; see the Delta mode section) |
+| **CHANGED_FILES** | Delta mode only: the subset of `GROUP.paths` the diff touched |
 
 ## Loom Access (CLI-only)
 
@@ -150,6 +152,39 @@ timed out. A batch that partially landed stays partially landed; the idempotency
 in step 4 means a legitimate re-run of the whole group is also safe, but re-running
 inside one pass over a transient verify hiccup is what produced the duplicate notes
 this constraint exists to prevent.
+
+## Delta mode (ENRICH_MODE: delta)
+
+A small update touched a minority of this group's files; the rest of the group's
+semantic layer is still true and must stand. Delta mode replaces steps 1–2 with a
+file-scoped variant — steps 3–5 run unchanged but only over what delta mode selects:
+
+1. **Supersede only the notes citing a changed file.** For each path in
+   CHANGED_FILES, find this group's live semantic entities that reference it — by
+   observation text (`loom list-entities '{"entityType": "<type>", "query":
+   "<file path>", "compact": true, "limit": 50, "graph": "GRAPH_NAME"}'` per type)
+   and by relations on the file's `system` entity (`loom get-relations` with the
+   file entity's id). Keep only hits stamped `map_layer: semantic`,
+   `module_group: <GROUP.id>`, `extractor: map-codebase`; supersede those
+   (`statusReason: "remapped"`). A note grounded solely in unchanged files is NOT
+   superseded — leaving it standing is the point of delta mode. The group-purpose
+   concept (`<GROUP.label> purpose`) is superseded and rewritten ONLY if the
+   changes alter what the module is for; a bug fix or small addition usually does
+   not.
+2. **Read the changed files, not the whole group.** Read every CHANGED_FILES path
+   in full, and run `git diff` on them (the workflow's manifest commit is in the
+   graph's history; `git -C PROJECT_PATH log --oneline -5 -- <file>` orients you)
+   to see what actually moved. Skim an unchanged neighbor only when a changed
+   file's new content references it and you need the context to describe a
+   pattern or claim accurately — never re-read the whole group by default.
+3. **Write replacements scoped to the change.** Recreate or newly create notes
+   (steps 3–5 of the normal flow) only where the changed files justify them.
+   Anchors must cite the changed files' CURRENT line numbers. Do not re-state
+   notes you left standing.
+
+Delta mode's output contract is unchanged; `supersededCount` counts only the
+file-scoped supersessions. Empty arrays are the normal outcome when a change
+turns out to be semantically inert (e.g. a rename with no behavior change).
 
 ## Constraints
 
