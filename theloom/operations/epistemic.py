@@ -27,7 +27,7 @@ from theloom.model import (
     confidence_label,
 )
 from theloom.operations.common import CommandInput, UuidStr
-from theloom.operations.notices import notice, with_notices
+from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.filters import matches_session
 from theloom.store.multigraph import MultiGraph
@@ -209,7 +209,7 @@ class CrossSessionContradictionsInput(EpistemicQueryInput):
 # =============================================================================
 
 
-def uncertain_claims(params: UncertainClaimsInput, multi: MultiGraph) -> list[Doc]:
+def uncertain_claims(params: UncertainClaimsInput, multi: MultiGraph) -> Doc:
     threshold = params.threshold if params.threshold is not None else 0.5
     store = multi.get_store(params.graph)
     entities = _list(
@@ -230,10 +230,10 @@ def uncertain_claims(params: UncertainClaimsInput, multi: MultiGraph) -> list[Do
                 }
             )
     results.sort(key=lambda r: r["confidenceScore"])
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def needs_evidence(params: NeedsEvidenceInput, multi: MultiGraph) -> list[Doc]:
+def needs_evidence(params: NeedsEvidenceInput, multi: MultiGraph) -> Doc:
     min_supports = params.min_supports if params.min_supports is not None else 2
     store = multi.get_store(params.graph)
     if params.claim_id:
@@ -264,10 +264,10 @@ def needs_evidence(params: NeedsEvidenceInput, multi: MultiGraph) -> list[Doc]:
                 }
             )
     results.sort(key=lambda r: -float(str(r["evidenceGap"])))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def stale_beliefs(params: StaleBeliefsInput, multi: MultiGraph) -> list[Doc]:
+def stale_beliefs(params: StaleBeliefsInput, multi: MultiGraph) -> Doc:
     days_old = params.days_old if params.days_old is not None else 30
     store = multi.get_store(params.graph)
     entities = _list(
@@ -294,10 +294,10 @@ def stale_beliefs(params: StaleBeliefsInput, multi: MultiGraph) -> list[Doc]:
         return (0, 0.0) if days_value is None else (1, -float(days_value))
 
     results.sort(key=sort_key)
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def provenance_chain(params: ProvenanceChainInput, multi: MultiGraph) -> list[Doc]:
+def provenance_chain(params: ProvenanceChainInput, multi: MultiGraph) -> Doc:
     max_depth = min(params.max_depth if params.max_depth is not None else 10, MAX_DEPTH_LIMIT)
     store = multi.get_store(params.graph)
     start = _read(store, params.entity_id)
@@ -329,19 +329,19 @@ def provenance_chain(params: ProvenanceChainInput, multi: MultiGraph) -> list[Do
                 item["entity"].get("observations") or [],
             )
         ]
-    return chain
+    return list_envelope(chain)
 
 
-def single_source_claims(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc]:
+def single_source_claims(params: EpistemicQueryInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     claims = _list(store, _status_filter(params.include_all_statuses), "claim", params.session)
     results = [
         claim for claim in claims if len(_relations(store, claim["id"], "outgoing", "sources")) == 1
     ]
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def most_certain(params: MostCertainInput, multi: MultiGraph) -> list[Doc]:
+def most_certain(params: MostCertainInput, multi: MultiGraph) -> Doc:
     top_k = params.top_k if params.top_k is not None else 10
     store = multi.get_store(params.graph)
     entities = _list(
@@ -363,10 +363,10 @@ def most_certain(params: MostCertainInput, multi: MultiGraph) -> list[Doc]:
             }
         )
     results.sort(key=lambda r: -float(r["confidenceScore"]))
-    return results[:top_k]
+    return list_envelope(results[:top_k])
 
 
-def contested_claims(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc]:
+def contested_claims(params: EpistemicQueryInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     claims = _list(store, _status_filter(params.include_all_statuses), "claim", params.session)
     results = []
@@ -382,10 +382,10 @@ def contested_claims(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc
                 }
             )
     results.sort(key=lambda r: -min(int(str(r["supportCount"])), int(str(r["contradictCount"]))))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def claims_from_source(params: ClaimsFromSourceInput, multi: MultiGraph) -> list[Doc]:
+def claims_from_source(params: ClaimsFromSourceInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     if _read(store, params.source_id) is None:
         raise NotFoundError(f"Source entity not found: {params.source_id}")
@@ -401,10 +401,10 @@ def claims_from_source(params: ClaimsFromSourceInput, multi: MultiGraph) -> list
             if matches_session(params.session, e.get("session"), e.get("observations") or [])
         ]
     results.sort(key=lambda e: (e["entityType"], e["name"]))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def inferred_claims(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]:
+def inferred_claims(params: TypedEpistemicInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     entities = _list(
         store,
@@ -418,10 +418,10 @@ def inferred_claims(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]
         if (e.get("provenance") or {}).get("sourceType") == "inference"
         or (e.get("confidence") or {}).get("basis") == "inference"
     ]
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def unprovenanced(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]:
+def unprovenanced(params: TypedEpistemicInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     entities = _list(
         store,
@@ -429,18 +429,18 @@ def unprovenanced(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]:
         params.entity_type.value if params.entity_type else None,
         params.session,
     )
-    return _limited([e for e in entities if not e.get("provenance")], params.limit)
+    return list_envelope(_limited([e for e in entities if not e.get("provenance")], params.limit))
 
 
-def open_questions(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc]:
+def open_questions(params: EpistemicQueryInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     questions = _list(
         store, _status_filter(params.include_all_statuses), "question", params.session
     )
-    return _limited(questions, params.limit)
+    return list_envelope(_limited(questions, params.limit))
 
 
-def blocking_questions(params: BlockingQuestionsInput, multi: MultiGraph) -> list[Doc]:
+def blocking_questions(params: BlockingQuestionsInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     questions = _list(store, DEFAULT_ACTIVE_STATUSES, "question", params.session)
     results = []
@@ -469,10 +469,10 @@ def blocking_questions(params: BlockingQuestionsInput, multi: MultiGraph) -> lis
             }
         )
     results.sort(key=lambda r: -int(str(r["blockedCount"])))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def answered_questions(params: AnsweredQuestionsInput, multi: MultiGraph) -> list[Doc]:
+def answered_questions(params: AnsweredQuestionsInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     superseded = _list(store, ["superseded"], "question", params.session)
     active = _list(store, DEFAULT_ACTIVE_STATUSES, "question", params.session)
@@ -487,7 +487,7 @@ def answered_questions(params: AnsweredQuestionsInput, multi: MultiGraph) -> lis
     if params.since:
         since = params.since
         results = [q for q in results if q["updated_at"] >= since]
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
 # =============================================================================
@@ -738,7 +738,7 @@ def _trace_session(store: FalkorGraphStore, entity_id: str, max_depth: int) -> D
 
 def cross_session_contradictions(
     params: CrossSessionContradictionsInput, multi: MultiGraph
-) -> list[Doc]:
+) -> Doc:
     store = multi.get_store(params.graph)
     max_depth = min(params.max_depth if params.max_depth is not None else 3, MAX_DEPTH_LIMIT)
     statuses = _status_filter(params.include_all_statuses)
@@ -788,7 +788,7 @@ def cross_session_contradictions(
                 "relation": doc,
             }
         )
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
 # =============================================================================
@@ -957,7 +957,7 @@ def _propagate_one(
     return with_notices(result, dry_notices, applied=applied_count > 0)
 
 
-def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> list[Doc]:
+def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     ids = params.entity_ids
     if not ids:
@@ -976,4 +976,5 @@ def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> list[Do
         options["relationTypes"] = [t for t in params.relation_types if t in valid_types]
     if params.propagation_mode is not None:
         options["propagationMode"] = params.propagation_mode
-    return [_propagate_one(store, entity_id, params.delta, options) for entity_id in ids]
+    results = [_propagate_one(store, entity_id, params.delta, options) for entity_id in ids]
+    return list_envelope(results)

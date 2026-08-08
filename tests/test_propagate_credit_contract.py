@@ -85,10 +85,12 @@ def test_default_dry_run_is_false_and_persists(multi: MultiGraph) -> None:
 
     baseline = _stored_score(multi, target["id"])
 
-    [result] = propagate_credit(
+    propagated = propagate_credit(
         PropagateCreditInput.model_validate({"entityIds": [trigger["id"]], "delta": 0.2}),
         multi,
     )
+    assert propagated["count"] == 1
+    result = propagated["items"][0]
 
     assert result["applied"] is True
     assert "notices" not in result
@@ -108,12 +110,12 @@ def test_dry_run_true_does_not_persist_and_carries_notice(multi: MultiGraph) -> 
 
     baseline = _stored_score(multi, target["id"])
 
-    [result] = propagate_credit(
+    result = propagate_credit(
         PropagateCreditInput.model_validate(
             {"entityIds": [trigger["id"]], "delta": 0.2, "dryRun": True}
         ),
         multi,
-    )
+    )["items"][0]
 
     assert result["applied"] is False
     assert result["changes"], "a dry run still computes the would-be changes"
@@ -129,12 +131,12 @@ def test_explicit_dry_run_false_matches_default_and_persists(multi: MultiGraph) 
     target = _entity(multi, "Target C")
     _link(multi, trigger["id"], target["id"])
 
-    [result] = propagate_credit(
+    result = propagate_credit(
         PropagateCreditInput.model_validate(
             {"entityIds": [trigger["id"]], "delta": 0.2, "dryRun": False}
         ),
         multi,
-    )
+    )["items"][0]
     assert result["applied"] is True
     assert "notices" not in result
     after = _stored_score(multi, target["id"])
@@ -146,10 +148,10 @@ def test_dry_run_with_no_confidence_changes_is_not_applied(multi: MultiGraph) ->
     must stay false even on a real (non-dry) run, since nothing was written."""
     trigger = _entity(multi, "No-confidence trigger", confidence=None)
 
-    [result] = propagate_credit(
+    result = propagate_credit(
         PropagateCreditInput.model_validate({"entityIds": [trigger["id"]], "delta": 0.2}),
         multi,
-    )
+    )["items"][0]
     assert result["changes"] == []
     assert result["applied"] is False
 
