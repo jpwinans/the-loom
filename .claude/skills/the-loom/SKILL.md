@@ -35,6 +35,20 @@ uv run loom <command> '<json>'
 Commands use `kebab-case` (e.g., `create-entity`, `hybrid-search`). All accept an
 optional `graph` parameter for multi-graph mode.
 
+**Discovering payload shapes:** every command supports `--schema`, printing the full
+JSON Schema of its input (field names, types, enums, defaults, and behavioral notes
+in the descriptions):
+
+```bash
+uv run loom create-relation --schema
+```
+
+This is the canonical shape source — prefer it over any hand-written parameter list
+(including this skill's tool catalog). COMMANDS.md carries the same per-field tables
+for offline scanning. Validation errors name the offending field and echo its
+expected schema fragment, so a failed payload is self-correcting: read the error,
+fix the named field, retry.
+
 ### First Steps with Any Graph
 
 ```
@@ -102,6 +116,44 @@ genuinely nothing to cite). The CLI rejects a relation missing any of these.
 ```
 
 Supported formats: PDF, DOCX, MD, HTML, TXT, JSON.
+
+## The Agent Contract
+
+Every response is a fact or a diagnosis — never a silent no-op. Two response keys
+carry this (from the TL-477 epic):
+
+- **`notices`** — a list of structured warnings `{code, message, hint}`. Codes in
+  use: `NOT_PERSISTED`, `NONE_PERSISTED`, `DRY_RUN`, `EMPTY_TRAVERSAL`,
+  `AUTO_SCOPED`, `PARAMETER_IGNORED`. Always read them; the hint names the exact
+  flag or follow-up that changes the outcome.
+- **`applied`** — on dry-run-capable mutating commands, `true` only when something
+  was actually written. Computed from real writes, not the mode flag: a real run
+  that changed nothing reports `applied: false`.
+
+Behavior these keys describe:
+
+- `propagate-credit` **persists by default** (`dryRun` defaults to false). Pass
+  `dryRun: true` for a preview; the simulated response carries `applied: false` and
+  a `DRY_RUN` notice.
+- `run-inference` with `dryRun: true` persists **nothing** — no trace entity, no
+  derived relations; the would-be trace comes back as an unpersisted `tracePreview`.
+- `detect-loops` does **not** persist by default; the response says so
+  (`NOT_PERSISTED`). Pass `persist: true` before `list-loops` or `loop-details` —
+  they only see persisted loop entities, and an empty `list-loops` explains itself
+  (`NONE_PERSISTED` ≠ "no loops exist").
+- `semiring-distances` defaults `direction` to `out`; `in` and `both` are genuinely
+  different traversals. A zero-edge traversal returns an `EMPTY_TRAVERSAL`
+  diagnosis with real edge counts in both directions instead of a bare `[]`.
+- `verify-fidelity` without `entityIds` auto-scopes via its own retrieval
+  (disclosed in an `AUTO_SCOPED` notice) or refuses with `INPUT_REQUIRED` when
+  nothing clears the relevance floor. Grounding is lexical — near-verbatim entity
+  names in the text ground; heavy paraphrase scores low.
+- Document commands (`ingest-document` and siblings) ignore any `graph` parameter —
+  documents are global — and say so with a `PARAMETER_IGNORED` notice. Scoping
+  happens later, at `extract-from-documents` time.
+- Inference rule endpoints use `?name` variables (e.g. `"from": "?a"`); a bare
+  string is treated as a literal entity id and silently yields a rule that can
+  never fire. The `--schema` descriptions on `inference-rule-create` spell this out.
 
 ## Core Principles
 
@@ -230,7 +282,7 @@ Keep responses small instead of fetching everything and filtering client-side:
 
 ## References
 
-- **[Tool Catalog](references/tool-catalog.md)** — read when you need a command's exact parameters, or to scan what exists in an unfamiliar category
+- **[Tool Catalog](references/tool-catalog.md)** — read to scan what exists in an unfamiliar category; for a command's exact parameters run `loom <cmd> --schema` (the catalog's parameter hints are orientation, not contract)
 - **[Data Model](references/data-model.md)** — read before creating entities/relations of a type you haven't used yet: entity types, relation types, epistemic metadata, storage format
 - **[Workflows](references/workflows.md)** — read at the start of a multi-step task (research, system modeling, codebase analysis, maintenance) to follow the established pattern instead of improvising one
 
@@ -243,3 +295,6 @@ Keep responses small instead of fetching everything and filtering client-side:
 5. **Observations as single string** — Must be an array of strings, not one string
 6. **Missing category on document ingestion** — Without category, documents aren't filterable in search
 7. **Using delete instead of status change** — Prefer `status: "superseded"` over `delete-entity` to preserve history
+8. **Detect-then-list without persisting** — `detect-loops` needs `persist: true` for `list-loops`/`loop-details` to see anything; the notices will tell you, but only if you read them
+9. **Expecting propagate-credit to simulate** — it persists by default; pass `dryRun: true` for a preview
+10. **Ignoring the `notices` array** — every silent-no-op trap now announces itself there; a response with notices unread is a false belief waiting to happen

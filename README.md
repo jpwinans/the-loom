@@ -96,9 +96,18 @@ the skill's output, run against The Loom itself.
 ## CLI contract
 
 - **Input:** a single JSON argument per command; results print as JSON to stdout.
+- **Schemas:** every command supports `--schema`, printing the JSON Schema of its
+  input (fields, types, enums, defaults, and behavioral notes) — the canonical way
+  to discover a payload shape without reading source.
 - **Errors:** a typed error code plus message go to stderr and the process exits
   non-zero. Codes are `PARSE_ERROR`, `INPUT_REQUIRED`, `VALIDATION_ERROR`,
-  `NOT_FOUND`, `OPERATION_ERROR`, and `CONFIG_ERROR`.
+  `NOT_FOUND`, `OPERATION_ERROR`, and `CONFIG_ERROR`. Validation errors name the
+  offending field and echo its expected schema fragment.
+- **Honesty:** responses are facts or diagnoses, never silent no-ops. Structured
+  `notices` (`{code, message, hint}`) flag anything that didn't happen or needs a
+  follow-up (unpersisted results, ignored parameters, empty traversals with edge
+  counts, auto-scoped verification), and dry-run-capable mutating commands carry
+  `applied: true/false` reflecting what was actually written.
 - **Docs:** `uv run loom --generate-docs` regenerates the command catalog from
   the registry.
 
