@@ -804,7 +804,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 
 - **`detect-loops`** — Detect and classify feedback loops.
   - `graph` — string | null; optional
-  - `persist` — boolean | null; optional
+  - `persist` — boolean | null; optional — Persist detected loops as loop entities (plus part_of member relations) so list-loops and loop-details can find them afterward. Defaults to false: a detect-loops call with no persist key still returns full loop data (each loop has id: null and persisted: false) but writes nothing to the graph -- a following list-loops call will NOT see these loops until you re-run detect-loops with "persist": true. When results are not persisted, the response carries applied: false and a NOT_PERSISTED notice naming this flag as the fix.
   - `minSize` — integer | null; optional
   - `maxSize` — integer | null; optional
 
