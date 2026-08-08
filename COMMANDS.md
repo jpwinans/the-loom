@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**164 registry commands** across 23 categories, plus the special `init` command.
+**165 registry commands** across 24 categories, plus the special `init` command.
 
 Each command lists its input fields below its summary: dotted paths (`confidence.score`) descend into nested objects, `[]` (`relations[].from`) marks an array of objects. `required`/`optional` is scoped to the field's immediate parent — a required field of an optional object only applies once that object is supplied at all. Run `loom <command> --schema` for the raw JSON Schema (with full `$defs`) behind any entry.
 
@@ -581,6 +581,15 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `graph` — string | null; optional
   - `session` — string | null; optional
   - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+
+## Event Log
+
+- **`what-changed`** — Replay a span of the event log as a compact diff: entity/relation, field, old, new, and the command that caused it.
+  - `graph` — string | null; optional
+  - `eventIds` — array<string> | null; optional — Replay exactly these event ids (e.g. a prior mutating response's eventIds), in the order given. Mutually exclusive with fromEventId/toEventId — when set, those are ignored.
+  - `fromEventId` — string | null; optional — Inclusive lower bound of the stream span to replay. Omit for the start of the log.
+  - `toEventId` — string | null; optional — Inclusive upper bound of the stream span to replay. Omit for the end of the log.
+  - `limit` — integer | null; optional — Caps how many raw events are read before diffing (default 500). Ignored when eventIds is given — an explicit id list is never truncated.
 
 ## Extraction
 
