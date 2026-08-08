@@ -147,6 +147,10 @@ _CONSISTENCY_RELATION_GUARDS = ["causalPolarity", "nonCausalPolarity", "noSelfLo
 
 
 def _run_consistency(entities: list[Doc], relations: list[Doc]) -> Doc:
+    # Desire 11 (names travel with ids): entities are already fully in hand
+    # here, so the relation violations below can carry fromName/toName beside
+    # from/to for free — no extra store round trip.
+    names = {e["id"]: e["name"] for e in entities}
     entity_violations: list[Doc] = []
     for entity in entities:
         found: list[Doc] = []
@@ -161,7 +165,13 @@ def _run_consistency(entities: list[Doc], relations: list[Doc]) -> Doc:
             found.extend(checks.RELATION_GUARDS[name](relation))
         if found:
             relation_violations.append(
-                {"from": relation["from"], "to": relation["to"], "violations": found}
+                {
+                    "from": relation["from"],
+                    "to": relation["to"],
+                    "fromName": names.get(relation["from"]),
+                    "toName": names.get(relation["to"]),
+                    "violations": found,
+                }
             )
     has_errors = any(
         v["severity"] == "error"
@@ -391,6 +401,7 @@ def list_guard_violations(params: ListGuardViolationsInput, multi: MultiGraph) -
 
     entity_guards = [g for g in _LGV_ENTITY_GUARDS if selected is None or g in selected]
     relation_guards = [g for g in _LGV_RELATION_GUARDS if selected is None or g in selected]
+    names = {e["id"]: e["name"] for e in entities}
 
     entity_violations: list[Doc] = []
     for entity in entities:
@@ -414,6 +425,8 @@ def list_guard_violations(params: ListGuardViolationsInput, multi: MultiGraph) -
                     {
                         "from": relation["from"],
                         "to": relation["to"],
+                        "fromName": names.get(relation["from"]),
+                        "toName": names.get(relation["to"]),
                         "guardName": name,
                         "violations": found,
                     }

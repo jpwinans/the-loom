@@ -19,6 +19,7 @@ from theloom.extraction import treesitter
 from theloom.model import RelationFilter
 from theloom.operations.bulk import BulkImportInput, bulk_import
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import list_envelope
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis.llm import create_synthesis_client
@@ -268,7 +269,7 @@ def extraction_status(params: ExtractionStatusInput, multi: MultiGraph) -> Any:
         if run is None:
             raise NotFoundError(f"Extraction run '{params.run_id}' not found")
         return run
-    return store.list_runs()
+    return list_envelope(store.list_runs())
 
 
 def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> Doc:
