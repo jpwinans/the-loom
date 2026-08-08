@@ -25,6 +25,7 @@ from theloom.model import (
     RelationType,
 )
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -77,8 +78,23 @@ class InferenceRuleDeleteInput(CommandInput):
     graph: str | None = None
 
 
+_RUN_INFERENCE_DRY_RUN_DESC = (
+    "Preview a run without persisting anything. Defaults to false: a call "
+    "with no dryRun (or dryRun: false) matches rules AND PERSISTS the "
+    "derived relations plus an inference_trace entity recording the run. "
+    "Pass dryRun: true to preview the derived relations without writing "
+    "an inference_trace entity or any derived relations — the would-be "
+    "trace payload is still returned, unpersisted, as `tracePreview` "
+    "(traceId stays null since nothing was written). Either way the "
+    "response carries an `applied` marker (true only on a real, persisted "
+    "run) and, on a simulated run, a DRY_RUN notice."
+)
+
+
 class RunInferenceInput(CommandInput):
-    dry_run: bool | None = Field(default=None, alias="dryRun")
+    dry_run: bool | None = Field(
+        default=None, alias="dryRun", description=_RUN_INFERENCE_DRY_RUN_DESC
+    )
     rule_id: str | None = Field(default=None, alias="ruleId")
     graph: str | None = None
 
@@ -286,6 +302,14 @@ def _resolve(pattern: str, bindings: dict[str, str]) -> str:
     return pattern
 
 
+def _dry_run_notice() -> Doc:
+    return notice(
+        "DRY_RUN",
+        "This was a preview run; no inference_trace entity or derived relations were persisted.",
+        hint="Omit dryRun, or pass dryRun: false (the default), to persist the run.",
+    )
+
+
 def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
     store = _store(multi, params.graph)
     dry_run = params.dry_run or False
@@ -345,6 +369,7 @@ def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
             )
 
     trace_id: str | None = None
+    trace_preview: Doc | None = None
     if trace_steps or enabled_rules:
         trace_data = {
             "timestamp": timestamp,
@@ -355,24 +380,30 @@ def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
             "derivedFactCount": len(trace_steps),
             "skippedDuplicates": skipped,
         }
-        trace_entity = store.create_entity(
-            EntityCreate.model_validate(
-                {
-                    "name": f"[Trace] inference-run-{timestamp}",
-                    "entityType": "inference_trace",
-                    "observations": [
-                        TRACE_DATA_PREFIX + json.dumps(trace_data),
-                        (
-                            f"Inference run: {len(enabled_rules)} rules evaluated, "
-                            f"{len(trace_steps)} facts derived, {skipped} duplicates skipped"
-                        ),
-                    ],
-                }
+        if dry_run:
+            # A preview run must not mutate the graph at all — not even to
+            # record that it happened (TL-472: trace creation used to sit
+            # above this guard). Return the payload the entity would have
+            # held, without ever writing it.
+            trace_preview = trace_data
+        else:
+            trace_entity = store.create_entity(
+                EntityCreate.model_validate(
+                    {
+                        "name": f"[Trace] inference-run-{timestamp}",
+                        "entityType": "inference_trace",
+                        "observations": [
+                            TRACE_DATA_PREFIX + json.dumps(trace_data),
+                            (
+                                f"Inference run: {len(enabled_rules)} rules evaluated, "
+                                f"{len(trace_steps)} facts derived, {skipped} duplicates skipped"
+                            ),
+                        ],
+                    }
+                )
             )
-        )
-        trace_id = trace_entity.id
+            trace_id = trace_entity.id
 
-        if not dry_run:
             from theloom.model import RelationCreate
 
             wrote_ids = False
@@ -416,13 +447,21 @@ def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
                     },
                 )
 
-    return {
+    result: Doc = {
         "rulesEvaluated": len(enabled_rules),
         "derivedRelations": derived,
         "skippedDuplicates": skipped,
         "dryRun": dry_run,
         "traceId": trace_id,
     }
+    if trace_preview is not None:
+        result["tracePreview"] = trace_preview
+
+    # `applied` tracks whether this call actually persisted a trace entity
+    # (and, with it, any derived relations) — true exactly when trace_id was
+    # assigned, which only happens on the non-dry-run branch above.
+    dry_notices = [_dry_run_notice()] if dry_run else []
+    return with_notices(result, dry_notices, applied=trace_id is not None)
 
 
 # =============================================================================
