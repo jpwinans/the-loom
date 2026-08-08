@@ -532,7 +532,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `dampingFactor` — number | null; optional
   - `maxDepth` — integer | null; optional
   - `minDelta` — number | null; optional
-  - `dryRun` — boolean | null; optional
+  - `dryRun` — boolean | null; optional — Preview the propagation without persisting anything. Defaults to false: a call with no dryRun (or dryRun: false) computes AND PERSISTS the propagated confidence changes immediately — this is a mutating command by default, consistent with the other mutating epistemic commands (postmortem-evaluate, session-changelog). Pass dryRun: true to compute the would-be newConfidence values without writing them. Either way the response carries an `applied` marker (true iff a write actually happened) and, on a simulated run, a DRY_RUN notice.
   - `relationTypes` — array<string> | null; optional
   - `propagationMode` — string | null; optional
   - `graph` — string | null; optional
@@ -776,7 +776,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `graph` — string | null; optional
 
 - **`run-inference`** — Run the inference engine: evaluate enabled rules.
-  - `dryRun` — boolean | null; optional
+  - `dryRun` — boolean | null; optional — Preview a run without persisting anything. Defaults to false: a call with no dryRun (or dryRun: false) matches rules AND PERSISTS the derived relations plus an inference_trace entity recording the run. Pass dryRun: true to preview the derived relations without writing an inference_trace entity or any derived relations — the would-be trace payload is still returned, unpersisted, as `tracePreview` (traceId stays null since nothing was written). Either way the response carries an `applied` marker (true only on a real, persisted run) and, on a simulated run, a DRY_RUN notice.
   - `ruleId` — string | null; optional
   - `graph` — string | null; optional
 
