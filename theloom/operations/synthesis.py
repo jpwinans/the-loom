@@ -11,6 +11,7 @@ silently dropping unknown values (input models enforce the allowed enums).
 
 from __future__ import annotations
 
+import math
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, StringConstraints
@@ -33,7 +34,7 @@ from theloom.synthesis.links import ChunkLookup
 from theloom.synthesis.llm import SynthesisLlmClient, create_synthesis_client
 from theloom.synthesis.orderer import compute_core_numbers
 from theloom.synthesis.planner import plan_synthesis as plan_synthesis_core
-from theloom.synthesis.selector import HybridSearch, find_anchors
+from theloom.synthesis.selector import MAX_ANCHORS, DocStore, HybridSearch, find_anchors
 from theloom.synthesis.traverser import traverse_synthesis as traverse_synthesis_core
 
 Doc = dict[str, Any]
@@ -541,6 +542,60 @@ def traverse_synthesis(params: TraverseSynthesisInput, multi: MultiGraph) -> Doc
     return traverse_synthesis_core(plan, resolved["store"], _chunk_lookup(multi), mode=params.mode)
 
 
+# TL-484 round 2: vector-path anchor search is k-nearest-neighbors, which
+# always returns up to MAX_ANCHORS candidates regardless of how (ir)relevant
+# they are — kNN has no "no results" case, so an unfiltered candidate list
+# can never signal "nothing matched" the way the keyword-fallback path
+# already does. This floor gives the vector path that same ability.
+#
+# On the shared 1/(1+L2) scale unit vectors report (search_by_vector /
+# anchor_search_for; see test_anchor_search_scores_on_the_shared_scale),
+# cosine similarity c scores 1/(1 + sqrt(2 - 2c)). The textbook "unrelated"
+# baseline — c=0, two ORTHOGONAL vectors, no linear relationship at all — is
+# tempting as the floor, but it is NOT a safe one: real embedding models are
+# anisotropic (embeddings occupy a narrow cone rather than spanning the full
+# sphere), so two genuinely unrelated texts routinely score c well above 0.
+# Verified directly against this repo's own local embedder: unrelated text
+# pairs measured around c ≈ 0.41-0.44 (score ≈ 0.48-0.49) — already above
+# the orthogonal score of 1/(1+sqrt(2)) ≈ 0.4142, which is exactly the
+# failure the round-2 report reproduced (gibberish cleared that floor easily
+# and auto-scoped across the whole graph).
+#
+# The floor instead sits at c=0.5 — 1/(1 + sqrt(2 - 2*0.5)) = 1/(1+1) = 0.5
+# exactly — a conventional "meaningfully related" cutoff in semantic search
+# generally, comfortably above the measured unrelated baseline, and not
+# coincidentally the same MODERATE_THRESHOLD this ticket's own
+# theloom.synthesis.fidelity module already uses to separate "moderate" from
+# "low" composite fidelity. A real anchor must clear a bar related content
+# actually reaches, not just edge past pure orthogonality.
+VERIFY_FIDELITY_RELEVANCE_FLOOR = 1 / (1 + math.sqrt(2 - 2 * 0.5))
+
+
+def _auto_scope_anchor_ids(
+    text: str, store: DocStore, falkor_stores: list[FalkorGraphStore]
+) -> list[str]:
+    """Anchor ids for an unscoped verify-fidelity call.
+
+    Not a call to ``find_anchors`` with the vector search plugged in — that
+    would inherit kNN's "always returns something" behavior and make the
+    refusal below unreachable whenever any entity has an embedding (the
+    reported round-2 gap). Instead: try the vector path directly and drop
+    anything that doesn't clear ``VERIFY_FIDELITY_RELEVANCE_FLOOR``; only
+    when NO store has any embedded entity at all does this fall to
+    ``find_anchors``'s unmodified keyword-only path (which already refuses
+    on zero matches, untouched by this fix).
+    """
+    vector_hits = anchor_search_for(falkor_stores)(text, MAX_ANCHORS)
+    if not vector_hits:
+        return find_anchors(text, store, hybrid_search=None)
+    entity_id_set = {e["id"] for e in store.list_entities()}
+    return [
+        hit["entityId"]
+        for hit in vector_hits
+        if hit["entityId"] in entity_id_set and hit["score"] > VERIFY_FIDELITY_RELEVANCE_FLOOR
+    ]
+
+
 def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:
     """TL-484: an unscoped call must never silently grade `text` against the
     entire graph — on a real-sized graph that produces a near-zero score
@@ -548,13 +603,13 @@ def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:
     actually is (the whole-graph entity/relation denominators swamp the
     handful of entities the text is really about). So when ``entityIds`` is
     omitted (or empty — the same "no scope given" signal), this runs the
-    command's own retrieval — the identical ``find_anchors`` hybrid-search
-    core ``synthesize``/``plan_synthesis`` use for anchor selection, not a
-    reimplementation — to pick relevant entities before scoring, and reports
-    the selection via an ``AUTO_SCOPED`` notice. If retrieval finds nothing
-    (no embeddings AND no keyword overlap), it refuses with INPUT_REQUIRED
-    instead of scoring an empty/whole-graph scope. Explicit ``entityIds``
-    (the scoped path) is untouched: same call, same scoring, no notice.
+    command's own retrieval to pick relevant entities before scoring, and
+    reports the selection via an ``AUTO_SCOPED`` notice. If retrieval finds
+    nothing (no embedded or keyword-matching entity clears the bar — see
+    ``_auto_scope_anchor_ids``), it refuses with INPUT_REQUIRED instead of
+    scoring an empty/whole-graph scope. Explicit ``entityIds`` (the scoped
+    path) is untouched: same call, same scoring, no notice, and this
+    function never even runs the retrieval.
     """
     resolved = _resolve_graph_param(params.graph, multi)
     llm_client = create_synthesis_client()
@@ -565,7 +620,7 @@ def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:
     entity_ids = params.entity_ids
     notices: list[Doc] = []
     if not entity_ids:
-        anchor_ids = find_anchors(params.text, store, anchor_search_for(resolved["falkor_stores"]))
+        anchor_ids = _auto_scope_anchor_ids(params.text, store, resolved["falkor_stores"])
         if not anchor_ids:
             raise InputRequiredError(
                 "verify-fidelity needs entityIds to know which entities `text` "

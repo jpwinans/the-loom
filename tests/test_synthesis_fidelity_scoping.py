@@ -11,36 +11,54 @@ the fix documents the behavior in the input model's
 ``Field(description=...)`` (machine-readable via ``--schema``) and changes the
 *runtime* behavior so the silent whole-graph failure mode cannot happen.
 
-Fix (auto-scope, chosen over an outright refusal): reuse the exact
-``find_anchors``/``anchor_search_for`` hybrid-search core that
+Fix (auto-scope, chosen over an outright refusal): reuse the
+``anchor_search_for``/``find_anchors`` hybrid-search core that
 ``synthesize``/``plan_synthesis``/``traverse_synthesis`` already use for
-anchor selection — no reimplementation. An omitted (or empty) ``entityIds``
-scopes to that retrieval's picks and carries an ``AUTO_SCOPED`` notice (the
-shared ``theloom.operations.notices`` convention) naming the count and the
-selected entities; a hint says ``entityIds`` can be passed explicitly. If
-retrieval finds nothing to scope to (no embeddings and no keyword overlap),
-the command refuses with ``INPUT_REQUIRED`` naming ``entityIds`` and the
+anchor selection — no reimplementation of that machinery. An omitted (or
+empty) ``entityIds`` scopes to that retrieval's picks and carries an
+``AUTO_SCOPED`` notice (the shared ``theloom.operations.notices``
+convention) naming the count and the selected entities; a hint says
+``entityIds`` can be passed explicitly. If retrieval finds nothing to scope
+to, the command refuses with ``INPUT_REQUIRED`` naming ``entityIds`` and the
 hybrid-search-then-verify two-step, rather than falling through to a
 whole-graph or an empty-scope score.
+
+Round 2 (integration arbiter finding): on an EMBEDDED graph, that refusal
+was unreachable. Vector k-nearest-neighbors always returns up to
+MAX_ANCHORS candidates regardless of how (ir)relevant they are — there is no
+"no results" case for kNN — so unrelated prose and pure gibberish both got
+auto-scoped across the whole graph with a verdict-shaped near-zero grade,
+exactly the failure mode this ticket exists to prevent. The fix is
+``VERIFY_FIDELITY_RELEVANCE_FLOOR`` in ``theloom.operations.synthesis``: a
+vector-path candidate must score above what two orthogonal (cosine
+similarity 0 — no linear relationship) vectors would score on the shared
+1/(1+L2) scale to count as an anchor. Below that, and only when NO store has
+any embedding at all, does auto-scope fall to the (unmodified)
+keyword-only path.
 
 These tests pin: (1) the unscoped call never returns a whole-graph
 verdict with no notice, in any case; (2) the auto-scoped path meaningfully
 outperforms the old whole-graph behavior on a graph shaped like the reported
-bug (a handful of relevant entities lost in many irrelevant ones); (3) the
-graceful keyword fallback when entities carry no embeddings; (4) the refusal
-when nothing matches; (5) the scoped path (explicit ``entityIds``) is
-completely untouched — same scores, no notice, and the auto-scope retrieval
-is never even invoked.
+bug (a handful of relevant entities lost in many irrelevant ones); (3) on an
+EMBEDDED graph, a query orthogonal to every entity refuses rather than
+auto-scoping to noise, while a genuinely related query still auto-scopes
+with a meaningful grade; (4) the graceful keyword fallback when entities
+carry no embeddings at all; (5) the refusal when nothing matches by any
+path; (6) the scoped path (explicit ``entityIds``) is completely
+untouched — same scores, no notice, and the auto-scope retrieval is never
+even invoked.
 """
 
 from __future__ import annotations
+
+import math
 
 import pytest
 
 from tests.fakes import FakeEmbedder
 from theloom.errors import InputRequiredError
 from theloom.model import EntityCreate, RelationCreate
-from theloom.operations.synthesis import VerifyFidelityInput
+from theloom.operations.synthesis import VERIFY_FIDELITY_RELEVANCE_FLOOR, VerifyFidelityInput
 from theloom.operations.synthesis import verify_fidelity as verify_fidelity_op
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis.fidelity import verify_fidelity as verify_fidelity_core
@@ -59,10 +77,11 @@ class TestAutoScopeOutperformsWholeGraph:
     not."""
 
     # 7 relevant entities — same count as the ticket's own reported example
-    # ("scoped to 7 relevant entityIds scored 0.541/moderate"). With
-    # MAX_ANCHORS=10, auto-scoping fills the remaining 3 slots with
-    # tie-broken distractors, so the grounding rate is deterministically
-    # 7/10 regardless of which distractors those are.
+    # ("scoped to 7 relevant entityIds scored 0.541/moderate"). Distractors
+    # sit at cosine similarity 0 (orthogonal) to the query, exactly at
+    # VERIFY_FIDELITY_RELEVANCE_FLOOR — the floor drops them (strict `>`),
+    # so the scoped set is deterministically exactly the 7 relevant ones,
+    # never diluted by MAX_ANCHORS filler.
     RELEVANT = [
         "Copper Relay",
         "Signal Buffer",
@@ -121,16 +140,16 @@ class TestAutoScopeOutperformsWholeGraph:
 
         assert [n["code"] for n in result["notices"]] == ["AUTO_SCOPED"]
         scoped_ids = {g["entityId"] for g in result["entityGroundings"]}
-        assert len(scoped_ids) == MAX_ANCHORS  # not the whole 55-entity graph
-        assert set(relevant_ids.values()) <= scoped_ids  # the 7 relevant always rank in
+        # The relevance floor drops every distractor (exactly orthogonal to
+        # the query, i.e. right at the floor, which is exclusive) — so the
+        # scoped set is precisely the 7 relevant entities, not diluted by
+        # MAX_ANCHORS filler the way an unfiltered kNN top-k would be.
+        assert scoped_ids == set(relevant_ids.values())
+        assert len(scoped_ids) < MAX_ANCHORS + distractor_count  # not the whole 55-entity graph
 
-        # Deterministic regardless of which distractors tie-broke into the
-        # remaining anchor slots: no distractor has any relation, and no
-        # distractor's name occurs in TEXT, so grounding/relation counts are
-        # pinned to the 7 relevant entities and their 6 chain relations.
-        assert result["scores"]["entityGroundingRate"] == pytest.approx(0.7)
+        assert result["scores"]["entityGroundingRate"] == pytest.approx(1.0)
         assert result["scores"]["relationPreservationRate"] == pytest.approx(1.0)
-        assert result["level"] in ("moderate", "high")
+        assert result["level"] == "high"
         assert result["scores"]["compositeIndex"] > baseline["scores"]["compositeIndex"]
 
         notice_message = result["notices"][0]["message"]
@@ -155,6 +174,108 @@ class TestAutoScopeOutperformsWholeGraph:
         assert result.get("notices"), "an unscoped call must always carry a notice"
         scoped_ids = {g["entityId"] for g in result["entityGroundings"]}
         assert len(scoped_ids) < len(multi.get_store().list_entity_docs())
+
+
+class TestRelevanceFloorOnAnEmbeddedGraph:
+    """Round-2 fix: the integration arbiter found that on an embedded graph
+    the refusal branch was unreachable — vector kNN always returns up to
+    MAX_ANCHORS candidates no matter how irrelevant the query, so unrelated
+    prose AND pure gibberish both got auto-scoped across the whole graph
+    with a verdict-shaped near-zero grade. ``VERIFY_FIDELITY_RELEVANCE_FLOOR``
+    exists to make that refusal reachable: a candidate must clear cosine
+    similarity 0.5, not merely edge past orthogonality (cosine 0) — real
+    embedding models are anisotropic enough that unrelated text routinely
+    beats the orthogonal score (this repo's own local embedder places
+    unrelated pairs around cosine ≈ 0.41-0.44), which is exactly how the
+    naive orthogonal floor failed to catch the arbiter's probe."""
+
+    def test_floor_is_exactly_the_cosine_half_score_on_the_shared_scale(self) -> None:
+        """Pins the formula, not just its numeric value: 1/(1 + L2) at
+        cosine similarity 0.5 for unit vectors is 1/(1 + sqrt(1)) = 0.5 —
+        deliberately more conservative than the orthogonal (cosine 0) score
+        of ~0.4142, which real (anisotropic) embedding models can clear even
+        for genuinely unrelated text (see the constant's own comment)."""
+        assert pytest.approx(0.5) == VERIFY_FIDELITY_RELEVANCE_FLOOR
+        assert pytest.approx(1 / (1 + math.sqrt(2 - 2 * 0.5))) == VERIFY_FIDELITY_RELEVANCE_FLOOR
+
+    def test_orthogonal_query_refuses_even_though_every_entity_is_embedded(
+        self, multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The previously-unreachable branch: every entity in the graph
+        carries an embedding (so the vector path always returns candidates),
+        but the query text's embedding is orthogonal to all of them —
+        exactly the "unrelated prose / gibberish" shape the arbiter probed.
+        None of them may count as an anchor."""
+        store = multi.get_store()
+        store.ensure_vector_index(dimension=2)
+        for name in ["Copper Relay", "Signal Buffer", "Thermal Core"]:
+            entity = store.create_entity(_entity(name))
+            store.set_entity_vector(entity.id, [1.0, 0.0])
+        monkeypatch.setattr(
+            "theloom.operations.synthesis.get_embedder", lambda: FakeEmbedder([0.0, 1.0])
+        )
+
+        with pytest.raises(InputRequiredError) as excinfo:
+            verify_fidelity_op(
+                VerifyFidelityInput(text="zzqqxvv wgblrk ttphmn qyzorb vklneq."), multi
+            )
+
+        assert excinfo.value.code == "INPUT_REQUIRED"
+        assert "entityIds" in str(excinfo.value)
+        assert "hybrid-search" in str(excinfo.value)
+
+    def test_anisotropic_baseline_above_orthogonal_still_refuses(
+        self, multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact regression the naive orthogonal floor missed: a query
+        at cosine similarity 0.3 to every entity (score ≈ 0.458) clears the
+        old orthogonal floor (≈ 0.4142) easily, but is still well below the
+        0.5 floor this fix actually uses. Simulates the anisotropic
+        "unrelated but not orthogonal" baseline real embedding models
+        produce — proven live against this repo's own local embedder in the
+        manual CLI verification (tl477-build5b), where unrelated pairs
+        scored ≈ 0.48-0.49, never near 0."""
+        store = multi.get_store()
+        store.ensure_vector_index(dimension=2)
+        for name in ["Copper Relay", "Signal Buffer", "Thermal Core"]:
+            entity = store.create_entity(_entity(name))
+            store.set_entity_vector(entity.id, [1.0, 0.0])
+        # cos_sim([1, 0], [0.3, sqrt(1 - 0.3**2)]) == 0.3 exactly.
+        monkeypatch.setattr(
+            "theloom.operations.synthesis.get_embedder",
+            lambda: FakeEmbedder([0.3, math.sqrt(1 - 0.3**2)]),
+        )
+
+        with pytest.raises(InputRequiredError):
+            verify_fidelity_op(
+                VerifyFidelityInput(text="Unrelated but not-quite-orthogonal filler text."), multi
+            )
+
+    def test_related_query_still_auto_scopes_with_a_meaningful_grade(
+        self, multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The positive control for the same graph shape: a query whose
+        embedding actually matches the entities must still auto-scope and
+        score well — the floor rejects noise, not signal."""
+        store = multi.get_store()
+        store.ensure_vector_index(dimension=2)
+        ids = {}
+        for name in ["Copper Relay", "Signal Buffer", "Thermal Core"]:
+            entity = store.create_entity(_entity(name))
+            store.set_entity_vector(entity.id, [1.0, 0.0])
+            ids[name] = entity.id
+        monkeypatch.setattr(
+            "theloom.operations.synthesis.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
+        )
+        text = "Copper Relay feeds Signal Buffer, and Signal Buffer powers Thermal Core."
+
+        result = verify_fidelity_op(VerifyFidelityInput(text=text), multi)
+
+        assert [n["code"] for n in result["notices"]] == ["AUTO_SCOPED"]
+        scoped_ids = {g["entityId"] for g in result["entityGroundings"]}
+        assert scoped_ids == set(ids.values())
+        assert result["scores"]["entityGroundingRate"] == pytest.approx(1.0)
+        assert result["level"] == "high"
 
 
 class TestAutoScopeWithoutEmbeddings:
