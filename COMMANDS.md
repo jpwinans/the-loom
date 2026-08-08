@@ -240,11 +240,11 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `similarityThreshold` — number | null; optional
   - `minClusterSize` — integer | null; optional
   - `maxChunks` — integer | null; optional
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 - **`delete-document`** — Delete a document and all its chunks from the vector store.
   - `source_id` — string; required
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 - **`ingest-content`** — Ingest string content directly.
   - `content` — string; required
@@ -255,7 +255,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `chunk_strategy` — string | null; optional
   - `target_chunk_size` — integer | null; optional
   - `overlap` — integer | null; optional
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 - **`ingest-directory`** — Batch-ingest all matching documents in a directory.
   - `dir_path` — string; required
@@ -264,7 +264,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `chunk_strategy` — string | null; optional
   - `target_chunk_size` — integer | null; optional
   - `overlap` — integer | null; optional
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 - **`ingest-document`** — Ingest a document file into the vector store.
   - `file_path` — string; required
@@ -273,7 +273,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `chunk_strategy` — string | null; optional
   - `target_chunk_size` — integer | null; optional
   - `overlap` — integer | null; optional
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 - **`ingest-url`** — Fetch and ingest web content from a URL.
   - `url` — string; required
@@ -282,11 +282,11 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `chunk_strategy` — string | null; optional
   - `target_chunk_size` — integer | null; optional
   - `overlap` — integer | null; optional
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 - **`list-documents`** — List all ingested documents with chunk counts.
   - `category` — string | null; optional
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 - **`reingest-document`** — Re-ingest a document, comparing content and updating changed chunks.
   - `source_id` — string; required
@@ -294,7 +294,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `chunk_strategy` — string | null; optional
   - `target_chunk_size` — integer | null; optional
   - `overlap` — integer | null; optional
-  - `graph` — string | null; optional
+  - `graph` — string | null; optional — Ignored: documents are global, not graph-scoped, so this has no effect on where the document is stored or which chunks are returned. Graph scoping happens later, when entities are extracted from the document via extract-from-documents. Supplying this returns a PARAMETER_IGNORED notice in the response.
 
 ## Embeddings
 
