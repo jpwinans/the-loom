@@ -10,6 +10,7 @@ reached) point the caller at ``--schema`` instead of leaving them to guess.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from typer.testing import CliRunner
@@ -18,6 +19,26 @@ from theloom.cli.app import app
 from theloom.cli.registry import COMMANDS
 
 runner = CliRunner()
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+# Rich/Typer render --help through a colorized, box-drawn layout whenever the
+# ambient environment looks like a color-capable terminal (observed in CI,
+# not reproduced by default in a plain local shell). Two effects follow: (1)
+# a styled token like "--schema" can be split across separate ANSI style
+# spans so the raw substring is absent from ``result.output``, and (2) a
+# narrow render width can word-wrap a flag name across lines. Neither affects
+# the feature — only whether a plain substring match on rendered help text is
+# reliable. Route --help invocations through this helper instead of asserting
+# on ``result.output`` directly: it pins a wide, stable render width and
+# strips ANSI escapes so the plain text is deterministic across CI and local
+# runs alike.
+def _invoke_help(args: list[str]) -> str:
+    result = runner.invoke(app, args, env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    return _ANSI_ESCAPE_RE.sub("", result.output)
+
 
 # One command per category-ish spread, exercised individually below so a
 # failure names the exact command rather than a generic parametrize id.
@@ -82,9 +103,8 @@ def test_schema_flag_requires_no_store_connection() -> None:
 
 
 def test_schema_flag_appears_in_command_help() -> None:
-    result = runner.invoke(app, ["create-entity", "--help"])
-    assert result.exit_code == 0
-    assert "--schema" in result.output
+    output = _invoke_help(["create-entity", "--help"])
+    assert "--schema" in output
 
 
 def test_schema_flag_output_matches_enum_and_required_fields() -> None:
