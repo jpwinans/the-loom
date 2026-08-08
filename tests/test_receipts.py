@@ -153,9 +153,8 @@ def test_a_batch_that_gets_rejected_records_no_phantom_ids(
 
     a = store.create_entity(spec("A"))
     missing = "00000000-0000-4000-8000-000000000000"
-    with receipts.collecting("create-relations") as ids:
-        with pytest.raises(NotFoundError):
-            store.create_relations([rel_spec(a.id, missing)])
+    with receipts.collecting("create-relations") as ids, pytest.raises(NotFoundError):
+        store.create_relations([rel_spec(a.id, missing)])
     assert ids == []
     assert [event.type for event in log.read_all()] == ["entity_created"]
 

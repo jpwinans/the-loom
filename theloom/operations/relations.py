@@ -43,6 +43,8 @@ from theloom.model import (
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.operations.entity import compact_entity_doc
+from theloom.operations.notices import Doc, list_envelope
+from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.verification.guards import (
     endpoint_error,
@@ -309,13 +311,31 @@ def read_relation(params: ReadRelationInput, multi: MultiGraph) -> dict[str, Any
     return relation.model_dump(by_alias=True, exclude_unset=True)
 
 
-def read_relations(params: ReadRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
-    relations = multi.get_store(params.graph).read_relations(
+def _with_endpoint_names(docs: list[Doc], store: FalkorGraphStore) -> list[Doc]:
+    """Stamp ``fromName``/``toName`` beside every relation doc's ``from``/``to``
+    id (desire 11) — one batched ``read_entity_docs`` for every endpoint any
+    doc references, never a lookup per row. A row's endpoint absent from the
+    store (a retracted-then-hard-deleted entity) simply carries no name,
+    rather than the whole row failing."""
+    wanted = {doc["from"] for doc in docs} | {doc["to"] for doc in docs}
+    if not wanted:
+        return docs
+    endpoints = store.read_entity_docs(wanted)
+    names = {entity_id: doc.get("name", "") for entity_id, doc in endpoints.items()}
+    return [
+        {**doc, "fromName": names.get(doc["from"]), "toName": names.get(doc["to"])} for doc in docs
+    ]
+
+
+def read_relations(params: ReadRelationsInput, multi: MultiGraph) -> dict[str, Any]:
+    store = multi.get_store(params.graph)
+    relations = store.read_relations(
         params.from_,
         params.to,
         params.relation_type.value if params.relation_type else None,
     )
-    return [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
+    docs = [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
+    return list_envelope(_with_endpoint_names(docs, store))
 
 
 def _gated_update_polarity(
@@ -396,7 +416,7 @@ def delete_relation(params: DeleteRelationInput, multi: MultiGraph) -> str:
     return f"Relation from {params.from_} to {params.to} {verb} successfully."
 
 
-def list_relations(params: ListRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def list_relations(params: ListRelationsInput, multi: MultiGraph) -> dict[str, Any]:
     filter_doc: dict[str, Any] = {}
     if params.from_ is not None:
         filter_doc["from"] = params.from_
@@ -419,11 +439,13 @@ def list_relations(params: ListRelationsInput, multi: MultiGraph) -> list[dict[s
     if params.graph == WILDCARD_GRAPH:
         results: list[dict[str, Any]] = []
         for graph_name in multi.graph_names():
-            for doc in fetch(graph_name):
+            docs = _with_endpoint_names(fetch(graph_name), multi.get_store(graph_name))
+            for doc in docs:
                 doc["graph"] = graph_name
                 results.append(doc)
-        return results
-    return fetch(params.graph)
+        return list_envelope(results)
+    docs = _with_endpoint_names(fetch(params.graph), multi.get_store(params.graph))
+    return list_envelope(docs)
 
 
 # =============================================================================
@@ -451,7 +473,7 @@ def _bridge_matches(
     return relation_type is None or bridge["relationType"] == relation_type
 
 
-def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def get_relations(params: GetRelationsInput, multi: MultiGraph) -> dict[str, Any]:
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
@@ -459,7 +481,9 @@ def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str
         store, entity_id=params.entity_id, name=params.name, id_field="entityId"
     )
     relations = store.get_relations(entity_id, direction, relation_type)  # type: ignore[arg-type]
-    results = [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
+    results = _with_endpoint_names(
+        [r.model_dump(by_alias=True, exclude_unset=True) for r in relations], store
+    )
 
     for bridge in multi.bridges.list_bridges({"entity_id": entity_id}):
         if not _bridge_matches(bridge, entity_id, direction, relation_type):
@@ -471,16 +495,18 @@ def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str
             if from_entity is not None:
                 doc = from_entity.model_dump(by_alias=True, exclude_unset=True)
                 row["from_entity"] = compact_entity_doc(doc) if params.compact else doc
+                row["fromName"] = doc["name"]
             to_store = multi.get_store(bridge["to_graph"])
             to_entity = to_store.read_entity(bridge["to"])
             if to_entity is not None:
                 doc = to_entity.model_dump(by_alias=True, exclude_unset=True)
                 row["to_entity"] = compact_entity_doc(doc) if params.compact else doc
+                row["toName"] = doc["name"]
         results.append(row)
-    return results
+    return list_envelope(results)
 
 
-def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> dict[str, Any]:
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
@@ -570,4 +596,4 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
                 "direction": edge_direction,
             }
         )
-    return results
+    return list_envelope(results)

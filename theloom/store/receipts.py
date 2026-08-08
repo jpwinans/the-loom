@@ -70,10 +70,11 @@ def collecting(command: str) -> Iterator[list[str]]:
     own scope and restores the outer one on exit, rather than sharing or
     clobbering it.
     """
-    ids_token = _ids.set([])
+    sink: list[str] = []
+    ids_token = _ids.set(sink)
     command_token = _command.set(command)
     try:
-        yield _ids.get()  # type: ignore[return-value]  # just set, never None
+        yield sink
     finally:
         _ids.reset(ids_token)
         _command.reset(command_token)

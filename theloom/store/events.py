@@ -88,7 +88,11 @@ class EventLog:
 
     def append(self, event_type: str, payload: dict[str, Any]) -> str:
         """Append one event; returns the stream entry id."""
-        entry_id = self._redis.xadd(self.key, self._fields(event_type, payload))
+        # redis-py's stub wants a union-keyed dict even though a plain
+        # str-keyed one is exactly what every XADD caller in this codebase
+        # (including the pre-existing inline-literal calls this replaces) has
+        # always passed — a stub mismatch, not a real type hazard.
+        entry_id = self._redis.xadd(self.key, self._fields(event_type, payload))  # type: ignore[arg-type]
         return _decode_id(entry_id)
 
     def queue(self, pipe: Pipeline, event_type: str, payload: dict[str, Any]) -> None:
@@ -98,7 +102,7 @@ class EventLog:
         belongs to, or — if anything raises while the transaction is still
         being built — neither ever reaches the server.
         """
-        pipe.xadd(self.key, self._fields(event_type, payload))
+        pipe.xadd(self.key, self._fields(event_type, payload))  # type: ignore[arg-type]
 
     def discard(self, entry_ids: Sequence[str]) -> None:
         """Remove already-appended entries (compensation for a failed mutation).
@@ -148,7 +152,7 @@ class EventLog:
             return []
         with self._redis.pipeline(transaction=False) as pipe:
             for event_type, payload in events:
-                pipe.xadd(self.key, self._fields(event_type, payload))
+                pipe.xadd(self.key, self._fields(event_type, payload))  # type: ignore[arg-type]
             replies = pipe.execute()
         return [_decode_id(reply) for reply in replies]
 

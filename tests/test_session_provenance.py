@@ -126,7 +126,7 @@ def test_list_relations_filters_by_session(multi: MultiGraph) -> None:
     make_relation(multi, b["id"], a["id"], session="session-2")
     make_relation(multi, a["id"], b["id"], relationType="related_to")
     results = list_relations(ListRelationsInput.model_validate({"session": "session-1"}), multi)
-    assert [r["id"] for r in results] == [tagged["id"]]
+    assert [r["id"] for r in results["items"]] == [tagged["id"]]
 
 
 # =============================================================================
