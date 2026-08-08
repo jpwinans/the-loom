@@ -409,3 +409,14 @@ def test_provenance_chain_scopes_by_session(multi: MultiGraph) -> None:
         ProvenanceChainInput.model_validate({"entityId": start["id"], "session": LEGACY_SID}), multi
     )["items"]
     assert {item["entity"]["id"] for item in legacy_scoped} == {start["id"], legacy["id"]}
+
+    unscoped = provenance_chain(
+        ProvenanceChainInput.model_validate({"entityId": start["id"]}), multi
+    )["items"]
+    assert {item["entity"]["id"] for item in unscoped} == {
+        start["id"],
+        tagged["id"],
+        other["id"],
+        legacy["id"],
+        plain["id"],
+    }
