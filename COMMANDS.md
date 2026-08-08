@@ -1002,7 +1002,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `mode` — enum(WALK, TRAIL, ACYCLIC, SIMPLE) | null; optional
   - `limit` — integer | null; optional
   - `graph` — string | null; optional
-  - `direction` — string | null; optional
+  - `direction` — enum(out, in, both) | null; optional — Which edges to traverse from `source`. 'out' follows outgoing edges (source is the cause; the default when omitted). 'in' follows incoming edges (source is the effect — walked backward, so results are predecessors, not successors). 'both' unions outgoing and incoming. If the traversal touches zero edges from `source` in the searched direction, the response carries an EMPTY_TRAVERSAL notice with the real edge counts in each direction and, when the other direction has edges, a hint to retry with it — an empty `distances` list alone never distinguishes 'no causal reach' from 'wrong direction'.
 
 - **`semiring-most-confident`** — Max-product confidence path.
   - `source` — string; required
