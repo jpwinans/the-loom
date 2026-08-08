@@ -163,7 +163,7 @@ For each entity returned, infer `sourceType` from its entity type and repair via
 ### 8. Feedback loops
 
 ```bash
-loom detect-loops '{"maxSize": 6, "graph": "GRAPH_NAME"}'
+loom detect-loops '{"maxSize": 6, "persist": true, "graph": "GRAPH_NAME"}'
 loom list-loops '{"graph": "GRAPH_NAME"}'
 loom loop-details '{"loopId": "<loop_id>", "graph": "GRAPH_NAME"}'
 ```

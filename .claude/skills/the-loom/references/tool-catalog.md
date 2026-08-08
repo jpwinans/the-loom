@@ -4,6 +4,11 @@ All Loom commands grouped by function. Commands use kebab-case (e.g., `create-en
 
 **CLI invocation:** `uv run loom <command> '<json>'`
 
+**The parameter columns below are orientation, not contract.** For any command's
+exact input shape run `uv run loom <command> --schema` (full JSON Schema with
+enums, defaults, and behavioral notes) or read its field table in COMMANDS.md —
+both are generated from the registry and cannot drift; this hand-written catalog can.
+
 ---
 
 ## Entity & Relation CRUD (16 tools)
@@ -87,7 +92,7 @@ response when omitted). `list-entities` with `limit` returns
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
-| `ingest-document` | Ingest file (PDF, DOCX, MD, TXT, JSON, HTML) | `filePath`, `category?`, `graph?` |
+| `ingest-document` | Ingest file (PDF, DOCX, MD, TXT, JSON, HTML); documents are global — a `graph` param is ignored with a `PARAMETER_IGNORED` notice | `file_path`, `category?`, `title?` |
 | `ingest-directory` | Batch ingest | `dir_path`, `pattern?`, `category?`, `graph?` |
 | `ingest-content` | Ingest string content | `content`, `source`, `category?`, `graph?` |
 | `ingest-url` | Ingest from URL | `url`, `category?`, `graph?` |
@@ -107,10 +112,10 @@ response when omitted). `list-entities` with `limit` returns
 |------|-------------|------------|
 | `analyze-centrality` | Hub detection (degree/betweenness/pagerank); returns ranked `[{id, name, entityType, score}]` | `algorithm`, `limit?`, `graph?` |
 | `detect-cycles` | Find circular dependencies | `includePaths?`, `causalOnly?`, `graph?` |
-| `detect-loops` | Find causal feedback loops | `graph?` |
+| `detect-loops` | Find causal feedback loops; does NOT persist unless `persist: true` (response carries `applied` + `NOT_PERSISTED` notice) | `persist?`, `maxSize?`, `graph?` |
 | `detect-components` | Find connected components | `graph?` |
 | `find-clusters` | Community detection | `graph?` |
-| `list-loops` | List detected loops | `graph?` |
+| `list-loops` | List persisted loop entities; empty result carries a `NONE_PERSISTED` notice (≠ "no loops exist") | `graph?` |
 | `loop-details` | Detail for specific loop | `loopId`, `graph?` |
 | `list-leverage-points` | Find intervention points | `level?`, `minLevel?`, `maxLevel?`, `depthCategory?`, `graph?` |
 | `reify-patterns` | Reify recurring structural motifs as pattern entities | `minOccurrences?`, `maxDepth?`, `maxPatterns?`, `dryRun?`, `graph?` |
@@ -141,7 +146,7 @@ response when omitted). `list-entities` with `limit` returns
 | `inferred-claims` | Derived by inference | `graph?` |
 | `claims-from-source` | Claims from a source | `sourceId`, `graph?` |
 | `provenance-chain` | Trace lineage | `entityId`, `maxDepth?`, `graph?` |
-| `propagate-credit` | Cascade confidence changes | `entityId`, `delta`, `maxDepth?`, `graph?` |
+| `propagate-credit` | Cascade confidence changes; PERSISTS by default (`dryRun` defaults false); response carries `applied` | `entityIds` (array), `delta`, `dryRun?`, `dampingFactor?`, `maxDepth?`, `graph?` |
 | `cross-session-contradictions` | Contradictions across sessions | `limit?`, `includeAllStatuses?`, `session?`, `entityType?`, `minConfidence?`, `sessionIds?`, `maxDepth?`, `graph?` |
 | `trigger-status` | Status of the analogy trigger queue | `graph?` |
 | `process-triggers` | Dequeue pending analogy trigger candidates | `limit?`, `graph?` |
@@ -164,7 +169,7 @@ Semiring-based graph computation for advanced path analysis.
 
 | Tool | Description | Key Params |
 |------|-------------|------------|
-| `semiring-distances` | Shortest distances (tropical) | `sourceId`, `graph?` |
+| `semiring-distances` | Distances under a semiring algebra; `direction` defaults `out` (`in`/`both` are real traversals); zero-edge results carry an `EMPTY_TRAVERSAL` diagnosis | `source`, `semiring`, `direction?`, `graph?` |
 | `semiring-most-confident` | Most confident paths (Viterbi) | `sourceId`, `graph?` |
 | `semiring-count-paths` | Count all paths | `sourceId`, `targetId?`, `graph?` |
 | `semiring-reachable` | Boolean reachability | `sourceId`, `graph?` |
@@ -186,7 +191,7 @@ Semiring-based graph computation for advanced path analysis.
 | Tool | Description | Key Params |
 |------|-------------|------------|
 | `verify-graph` | Full verification | `graph?` |
-| `verify-fidelity` | Data integrity | `graph?` |
+| `verify-fidelity` | Grade how well a text is grounded in graph entities/relations; unscoped calls auto-scope via retrieval (`AUTO_SCOPED` notice) or refuse with `INPUT_REQUIRED` | `text`, `entityIds?`, `graph?` |
 | `check-consistency` | Relation consistency | `graph?` |
 | `check-invariants` | Graph invariants | `graph?` |
 | `validate-spec` | Validate against spec | `spec`, `graph?` |
@@ -206,7 +211,7 @@ Declarative forward-chaining rules over the graph, with a queryable derivation t
 | `inference-rule-create` | Create a declarative inference rule | `rule`, `graph?` |
 | `inference-rule-list` | List all inference rules stored in the graph | `graph?` |
 | `inference-rule-delete` | Delete an inference rule by its entity id | `ruleId`, `graph?` |
-| `run-inference` | Run the inference engine: evaluate enabled rules | `dryRun?`, `ruleId?`, `graph?` |
+| `run-inference` | Run the inference engine: evaluate enabled rules; `dryRun: true` persists nothing and returns an unpersisted `tracePreview` | `dryRun?`, `ruleId?`, `graph?` |
 | `inference-trace-list` | List inference traces | `ruleId?`, `limit?`, `graph?` |
 | `inference-trace-get` | Get full details of a specific inference trace | `traceId`, `graph?` |
 | `inference-trace-for-fact` | Find the inference trace that produced a relation | `relationId`, `graph?` |
