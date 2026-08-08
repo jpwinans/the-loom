@@ -45,6 +45,21 @@ per command). ``count`` is always ``len(items)`` — the number of rows the
 response actually carries, never a separate "total available before a filter"
 figure (a command that truncates says so via a notice, not a second number
 with an ambiguous relationship to the first).
+
+``NOTICE_CATALOG`` (desire 3, the queryable notice catalog behind the
+``notices-catalog`` command) is the single source of truth for every notice
+*code* this build of The Loom can emit: a ``code -> meaning`` mapping that
+``notice()`` itself enforces — building a notice with a code that isn't a
+catalog key raises ``ValueError`` rather than shipping an uncataloged code.
+That refusal is what makes the catalog self-maintaining rather than a list
+someone has to remember to update: a new notice code cannot go live without
+a meaning here the same commit it lands in an emitting call site, and
+``theloom.cli.notices_catalog`` separately walks the registry to discover
+*which* commands can actually surface each code, so neither half is
+hand-listed. See ``theloom/cli/notices_catalog.py`` and
+``tests/test_notices_catalog.py`` for the generation and the tests that
+would fail if a code were documented but unreachable, or emitted but
+undocumented.
 """
 
 from __future__ import annotations
@@ -53,6 +68,47 @@ from collections.abc import Sequence
 from typing import Any
 
 Doc = dict[str, Any]
+
+
+NOTICE_CATALOG: dict[str, str] = {
+    "ALREADY_REAPED": (
+        "The session workspace named in the request was already reaped; there "
+        "were no member graphs left to delete, so nothing further happened."
+    ),
+    "AUTO_SCOPED": (
+        "A required scoping parameter was omitted, so the command auto-selected "
+        "a scope using its own retrieval (e.g. hybrid search) instead of "
+        "grading or acting against the whole graph."
+    ),
+    "DRY_RUN": (
+        "The command ran as a simulation only: it computed what it would do "
+        "but did not persist any changes to the graph."
+    ),
+    "EMPTY_TRAVERSAL": (
+        "The traversal found zero edges to follow from the source entity in "
+        "the searched direction, so no results could be produced."
+    ),
+    "NONE_PERSISTED": (
+        "No entities of the kind this command lists have been persisted in "
+        "the graph yet. This does not mean none exist -- only that the "
+        "generating command has not been run with persistence, or has not "
+        "found any yet."
+    ),
+    "NOT_PERSISTED": (
+        "The command computed results but did not write them to the graph; a "
+        "later read (e.g. a list command over the same entity kind) will not "
+        "see them until the command is re-run with persistence requested."
+    ),
+    "PARAMETER_IGNORED": (
+        "A supplied parameter was accepted for schema compatibility but was "
+        "not applied -- the response reflects the command's real behavior, "
+        "not the ignored parameter's implication."
+    ),
+    "TRUNCATED": (
+        "The result set was larger than the page returned in this response; "
+        "only a prefix is included."
+    ),
+}
 
 
 def list_envelope(items: Sequence[Any], notices: list[Doc] | None = None) -> Doc:
@@ -65,7 +121,20 @@ def list_envelope(items: Sequence[Any], notices: list[Doc] | None = None) -> Doc
 
 def notice(code: str, message: str, hint: str | None = None) -> Doc:
     """One structured notice: ``{"code", "message", "hint"}`` — ``hint`` is
-    omitted (not set to ``null``) when there is nothing actionable to add."""
+    omitted (not set to ``null``) when there is nothing actionable to add.
+
+    ``code`` must be a key in ``NOTICE_CATALOG``: this is the enforcement
+    half of the queryable notice catalog (desire 3) — a code cannot ship
+    without a cataloged meaning, so ``loom notices-catalog`` can never miss
+    one. Raises ``ValueError`` (an internal-invariant bug, not a caller
+    input error) rather than silently emitting an uncataloged code.
+    """
+    if code not in NOTICE_CATALOG:
+        raise ValueError(
+            f"Notice code {code!r} is not registered in NOTICE_CATALOG "
+            "(theloom/operations/notices.py) -- add its meaning there before "
+            "emitting it, so `notices-catalog` can enumerate it."
+        )
     doc: Doc = {"code": code, "message": message}
     if hint is not None:
         doc["hint"] = hint

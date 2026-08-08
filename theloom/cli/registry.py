@@ -27,6 +27,7 @@ from typing import Any
 
 import pydantic
 
+from theloom.cli import notices_catalog as notices_catalog_ops
 from theloom.cli.schema import describe_validation_error
 from theloom.composites import analogy_transfer as analogy_transfer_composite
 from theloom.composites import creativity_loop as creativity_loop_composite
@@ -1673,6 +1674,15 @@ def _tail_commands() -> list[CommandDescriptor]:
                 "Serve the interactive visualization live over a read-only REST API.",
                 viz_serve.ServeInput,
                 viz_serve.serve,
+                True,
+            ),
+            _Spec(
+                "notices-catalog",
+                "Contract",
+                "Enumerate every notice code, its meaning, and the commands that can "
+                "emit it -- generated from source, never hand-maintained.",
+                notices_catalog_ops.EmptyInput,
+                notices_catalog_ops.notices_catalog,
                 True,
             ),
         ]

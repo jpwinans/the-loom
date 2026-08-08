@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**168 registry commands** across 25 categories, plus the special `init` command.
+**169 registry commands** across 26 categories, plus the special `init` command.
 
 Each command lists its input fields below its summary: dotted paths (`confidence.score`) descend into nested objects, `[]` (`relations[].from`) marks an array of objects. `required`/`optional` is scoped to the field's immediate parent — a required field of an optional object only applies once that object is supplied at all. Run `loom <command> --schema` for the raw JSON Schema (with full `$defs`) behind any entry.
 
@@ -231,6 +231,10 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `name` — string | null; optional
   - `limit` — integer | null; optional
   - `graph` — string | null; optional
+
+## Contract
+
+- **`notices-catalog`** — Enumerate every notice code, its meaning, and the commands that can emit it -- generated from source, never hand-maintained.
 
 ## Documents
 
