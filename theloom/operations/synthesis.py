@@ -15,12 +15,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, StringConstraints
 
-from theloom.errors import NotFoundError, OperationError
+from theloom.errors import InputRequiredError, NotFoundError, OperationError
 from theloom.graph.analytics import connected_components
 from theloom.graph.hydrate import hydrate_graph
 from theloom.graph.paths import bidirectional
 from theloom.model import EntityCreate, RelationCreate
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref_multi
+from theloom.operations.notices import notice, with_notices
 from theloom.semantic.embed import get_embedder
 from theloom.semantic.search import SupportsQueryEmbedding, search_by_vector
 from theloom.store.falkor import FalkorGraphStore
@@ -32,7 +33,7 @@ from theloom.synthesis.links import ChunkLookup
 from theloom.synthesis.llm import SynthesisLlmClient, create_synthesis_client
 from theloom.synthesis.orderer import compute_core_numbers
 from theloom.synthesis.planner import plan_synthesis as plan_synthesis_core
-from theloom.synthesis.selector import HybridSearch
+from theloom.synthesis.selector import HybridSearch, find_anchors
 from theloom.synthesis.traverser import traverse_synthesis as traverse_synthesis_core
 
 Doc = dict[str, Any]
@@ -243,9 +244,27 @@ class TraverseSynthesisInput(CommandInput):
     graph: GraphParam = None
 
 
+_VERIFY_FIDELITY_ENTITY_IDS_DESC = (
+    "Which entities to check `text` against. Omitting this (or passing an "
+    "empty list) does NOT grade against the whole graph — a real-sized graph "
+    "makes that score meaningless (mostly-zero entity/relation coverage). "
+    "Instead the command auto-scopes: it runs its own retrieval (hybrid "
+    "vector search on `text`, falling back to keyword matching when "
+    "entities lack embeddings) to select up to 10 relevant entities, grades "
+    "against those, and reports the selection as an AUTO_SCOPED entry in "
+    "the response's `notices`. If nothing in the graph matches `text` well "
+    "enough to select, the command refuses (INPUT_REQUIRED) rather than "
+    "silently scoring nothing. For predictable, reviewable scoping, run "
+    "hybrid-search on `text` yourself first and pass the entity ids you "
+    "judge relevant here."
+)
+
+
 class VerifyFidelityInput(CommandInput):
     text: Annotated[str, StringConstraints(min_length=1, max_length=1000000)]
-    entity_ids: list[UuidStr] | None = Field(default=None, alias="entityIds")
+    entity_ids: list[UuidStr] | None = Field(
+        default=None, alias="entityIds", description=_VERIFY_FIDELITY_ENTITY_IDS_DESC
+    )
     mode: Literal["structural", "narrative"] | None = None
     graph: GraphParam = None
 
@@ -523,17 +542,69 @@ def traverse_synthesis(params: TraverseSynthesisInput, multi: MultiGraph) -> Doc
 
 
 def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:
+    """TL-484: an unscoped call must never silently grade `text` against the
+    entire graph — on a real-sized graph that produces a near-zero score
+    shaped like a real verdict regardless of how well-grounded the text
+    actually is (the whole-graph entity/relation denominators swamp the
+    handful of entities the text is really about). So when ``entityIds`` is
+    omitted (or empty — the same "no scope given" signal), this runs the
+    command's own retrieval — the identical ``find_anchors`` hybrid-search
+    core ``synthesize``/``plan_synthesis`` use for anchor selection, not a
+    reimplementation — to pick relevant entities before scoring, and reports
+    the selection via an ``AUTO_SCOPED`` notice. If retrieval finds nothing
+    (no embeddings AND no keyword overlap), it refuses with INPUT_REQUIRED
+    instead of scoring an empty/whole-graph scope. Explicit ``entityIds``
+    (the scoped path) is untouched: same call, same scoring, no notice.
+    """
     resolved = _resolve_graph_param(params.graph, multi)
     llm_client = create_synthesis_client()
     store = resolved["store"]
-    return fidelity_mod.verify_fidelity(
+    entities = store.list_entities()
+    relations = store.list_relations()
+
+    entity_ids = params.entity_ids
+    notices: list[Doc] = []
+    if not entity_ids:
+        anchor_ids = find_anchors(params.text, store, anchor_search_for(resolved["falkor_stores"]))
+        if not anchor_ids:
+            raise InputRequiredError(
+                "verify-fidelity needs entityIds to know which entities `text` "
+                "should be checked against. entityIds was omitted, and this "
+                "command's own retrieval (hybrid search, falling back to "
+                "keyword matching) found no entity in the graph that matches "
+                "`text` well enough to auto-scope to — grading against the "
+                "whole graph would produce a meaningless score, so it refuses "
+                "instead. Run hybrid-search on the text to find relevant "
+                "entities, then pass their ids as entityIds."
+            )
+        entity_ids = anchor_ids
+        by_id = {e["id"]: e["name"] for e in entities}
+        selected_names = [by_id.get(eid, eid) for eid in anchor_ids]
+        notices.append(
+            notice(
+                "AUTO_SCOPED",
+                f"entityIds was omitted; auto-scoped to {len(anchor_ids)} "
+                f"entit{'y' if len(anchor_ids) == 1 else 'ies'} selected by this "
+                f"command's own retrieval (hybrid search over the text, "
+                f"falling back to keyword matching when entities lack "
+                f"embeddings): {', '.join(selected_names)}.",
+                hint=(
+                    "Pass entityIds explicitly to control scoping yourself — "
+                    "e.g. the entity ids returned by hybrid-search on the same "
+                    "text."
+                ),
+            )
+        )
+
+    result = fidelity_mod.verify_fidelity(
         params.text,
-        store.list_entities(),
-        store.list_relations(),
-        entity_ids=params.entity_ids,
+        entities,
+        relations,
+        entity_ids=entity_ids,
         mode=params.mode,
         llm_client=llm_client,
     )
+    return with_notices(result, notices)
 
 
 def explain_path(params: ExplainPathInput, multi: MultiGraph) -> Doc:
