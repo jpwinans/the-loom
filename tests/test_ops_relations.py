@@ -93,6 +93,17 @@ def test_create_structural_keeps_null_polarity(multi: MultiGraph) -> None:
     assert "_bridge_created" not in result
 
 
+def test_create_relation_carries_from_to_names(multi: MultiGraph) -> None:
+    """Desire 11: the single-relation commands are self-describing without a
+    join, the same as list-relations."""
+    a, b = ent(multi, "Cause"), ent(multi, "Effect")
+    result = create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    assert result["from"] == a
+    assert result["to"] == b
+    assert result["fromName"] == "Cause"
+    assert result["toName"] == "Effect"
+
+
 @pytest.mark.parametrize("relation_type", ["calls", "references"])
 def test_create_code_relation_keeps_null_polarity(multi: MultiGraph, relation_type: str) -> None:
     a, b = ent(multi, "A"), ent(multi, "B")
@@ -239,6 +250,31 @@ def test_batch_counts_and_errors(multi: MultiGraph) -> None:
     assert result["errors"][0]["to"] == MISSING
 
 
+def test_batch_error_rows_carry_endpoint_names(multi: MultiGraph) -> None:
+    """Desire 11: a failed batch item's error row is self-describing too —
+    fromName resolves for a real entity, toName is absent (None, not a
+    KeyError) for an endpoint that does not exist."""
+    a, b = ent(multi, "Alpha"), ent(multi, "Beta")
+    result = create_relations(
+        CreateRelationsInput.model_validate({"relations": [rel_input(a, MISSING)]}), multi
+    )
+    assert result["errors"] == [
+        {
+            "from": a,
+            "to": MISSING,
+            "fromName": "Alpha",
+            "toName": None,
+            "error": result["errors"][0]["error"],
+        }
+    ]
+
+    self_loop = create_relations(
+        CreateRelationsInput.model_validate({"relations": [rel_input(b, b)]}), multi
+    )
+    assert self_loop["errors"][0]["fromName"] == "Beta"
+    assert self_loop["errors"][0]["toName"] == "Beta"
+
+
 def test_batch_continue_on_error_false_throws(multi: MultiGraph) -> None:
     a, b = ent(multi, "A"), ent(multi, "B")
     with pytest.raises(LoomError):
@@ -304,6 +340,14 @@ def test_read_relation_not_found_raises(multi: MultiGraph) -> None:
         read_relation(ReadRelationInput.model_validate({"from": a, "to": b}), multi)
 
 
+def test_read_relation_carries_from_to_names(multi: MultiGraph) -> None:
+    a, b = ent(multi, "Cause"), ent(multi, "Effect")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    result = read_relation(ReadRelationInput.model_validate({"from": a, "to": b}), multi)
+    assert result["fromName"] == "Cause"
+    assert result["toName"] == "Effect"
+
+
 def test_update_relation_fields(multi: MultiGraph) -> None:
     a, b = ent(multi, "A"), ent(multi, "B")
     create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
@@ -315,6 +359,16 @@ def test_update_relation_fields(multi: MultiGraph) -> None:
     )
     assert updated["strength"] == "strong"
     assert updated["evidence"] == "new evidence"
+
+
+def test_update_relation_carries_from_to_names(multi: MultiGraph) -> None:
+    a, b = ent(multi, "Cause"), ent(multi, "Effect")
+    create_relation(CreateRelationInput.model_validate(rel_input(a, b, "supports")), multi)
+    updated = update_relation(
+        UpdateRelationInput.model_validate({"from": a, "to": b, "strength": "strong"}), multi
+    )
+    assert updated["fromName"] == "Cause"
+    assert updated["toName"] == "Effect"
 
 
 @pytest.mark.parametrize("relation_type", ["calls", "references", "supports"])

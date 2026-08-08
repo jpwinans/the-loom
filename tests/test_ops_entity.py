@@ -237,6 +237,8 @@ def test_update_superseded_with_replaced_by_creates_supersedes_relation(
     assert relation["to"] == old["id"]
     assert relation["relationType"] == "supersedes"
     assert relation["strength"] == "strong"
+    assert relation["fromName"] == "New Model"
+    assert relation["toName"] == "Old Model"
 
 
 def test_update_replaced_by_missing_raises_not_found(multi: MultiGraph) -> None:
