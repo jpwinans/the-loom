@@ -727,7 +727,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 
 - **`verify-fidelity`** — Check structural fidelity of text against the knowledge graph.
   - `text` — string; required
-  - `entityIds` — array<string> | null; optional
+  - `entityIds` — array<string> | null; optional — Which entities to check `text` against. Omitting this (or passing an empty list) does NOT grade against the whole graph — a real-sized graph makes that score meaningless (mostly-zero entity/relation coverage). Instead the command auto-scopes: it runs its own retrieval (hybrid vector search on `text`, falling back to keyword matching when entities lack embeddings) to select up to 10 relevant entities, grades against those, and reports the selection as an AUTO_SCOPED entry in the response's `notices`. If nothing in the graph matches `text` well enough to select, the command refuses (INPUT_REQUIRED) rather than silently scoring nothing. For predictable, reviewable scoping, run hybrid-search on `text` yourself first and pass the entity ids you judge relevant here.
   - `mode` — enum(structural, narrative) | null; optional
   - `graph` — string | array<string> | null; optional
 
