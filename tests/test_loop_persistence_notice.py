@@ -145,7 +145,7 @@ def test_list_loops_empty_graph_carries_none_persisted_notice(multi: MultiGraph)
     result = list_loops(ListLoopsInput(graph=multi.default_graph), multi)
 
     assert result["count"] == 0
-    assert result["loops"] == []
+    assert result["items"] == []
     notices = result.get("notices", [])
     codes = [n["code"] for n in notices]
     assert "NONE_PERSISTED" in codes
@@ -164,7 +164,7 @@ def test_list_loops_after_persisted_detect_finds_the_loop_with_no_notice(
     result = list_loops(ListLoopsInput(graph=multi.default_graph), multi)
 
     assert result["count"] == 1
-    assert result["loops"][0]["_metadata"]["classification"] == "reinforcing"
+    assert result["items"][0]["_metadata"]["classification"] == "reinforcing"
     assert "notices" not in result
 
 
