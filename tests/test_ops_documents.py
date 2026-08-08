@@ -334,9 +334,7 @@ def test_list_documents_with_graph_attaches_one_top_level_notice(
     doc_file = tmp_path / "notes.md"
     doc_file.write_text("# Title\n\nSome content.")
     ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
-    result = list_documents(
-        ListDocumentsInput.model_validate({"graph": "tl477-acceptance"}), multi
-    )
+    result = list_documents(ListDocumentsInput.model_validate({"graph": "tl477-acceptance"}), multi)
     assert result["items"]
     assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
     assert all("notices" not in item for item in result["items"])

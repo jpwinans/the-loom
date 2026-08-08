@@ -736,9 +736,7 @@ def _trace_session(store: FalkorGraphStore, entity_id: str, max_depth: int) -> D
     return None
 
 
-def cross_session_contradictions(
-    params: CrossSessionContradictionsInput, multi: MultiGraph
-) -> Doc:
+def cross_session_contradictions(params: CrossSessionContradictionsInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     max_depth = min(params.max_depth if params.max_depth is not None else 3, MAX_DEPTH_LIMIT)
     statuses = _status_filter(params.include_all_statuses)
