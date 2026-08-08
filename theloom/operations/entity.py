@@ -29,6 +29,7 @@ from theloom.model import (
     is_valid_transition,
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
+from theloom.operations.notices import list_envelope, notice
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -343,15 +344,14 @@ def delete_entity(params: DeleteEntityInput, multi: MultiGraph) -> dict[str, Any
 TRUNCATION_HINT = "raise limit or narrow with entityType/query"
 
 
-def list_entities(
-    params: ListEntitiesInput, multi: MultiGraph
-) -> list[dict[str, Any]] | dict[str, Any]:
-    """Entity docs in the store's deterministic order.
-
-    Output shape is behaviour-first: without ``limit`` the legacy bare array is
-    preserved; with ``limit`` the result is
-    ``{"items": [...], "truncated": {"shown", "total", "hint"}}`` so a capped
-    read always says how much it did not show.
+def list_entities(params: ListEntitiesInput, multi: MultiGraph) -> dict[str, Any]:
+    """Entity docs in the store's deterministic order, as the uniform
+    ``{items, count, notices?}`` envelope (desire 9). Without ``limit`` every
+    match is returned; with ``limit``, ``items`` is capped and — when the
+    store holds more matches than were shown — a ``TRUNCATED`` notice says
+    how many there really were and how to see the rest, rather than a
+    separate ``truncated`` object with an ambiguous relationship to
+    ``count``.
     """
     status_filter = ["active"]
     if params.include_superseded is True:
@@ -404,12 +404,18 @@ def list_entities(
             results = [compact_entity_doc(doc) for doc in results]
 
     if params.limit is None:
-        return results
+        return list_envelope(results)
     shown = results[: params.limit]
-    return {
-        "items": shown,
-        "truncated": {"shown": len(shown), "total": total, "hint": TRUNCATION_HINT},
-    }
+    notices = None
+    if len(shown) < total:
+        notices = [
+            notice(
+                "TRUNCATED",
+                f"Showing {len(shown)} of {total} matching entities.",
+                hint=TRUNCATION_HINT,
+            )
+        ]
+    return list_envelope(shown, notices)
 
 
 def read_entities_by_name(params: ReadEntitiesByNameInput, multi: MultiGraph) -> dict[str, Any]:

@@ -263,11 +263,11 @@ def test_list_include_flags_extend_status_filter(multi: MultiGraph) -> None:
         multi,
     )
     default = list_entities(ListEntitiesInput.model_validate({}), multi)
-    assert [e["id"] for e in default] == [active["id"]]
+    assert [e["id"] for e in default["items"]] == [active["id"]]
     with_deprecated = list_entities(
         ListEntitiesInput.model_validate({"includeDeprecated": True}), multi
     )
-    assert {e["id"] for e in with_deprecated} == {active["id"], deprecated["id"]}
+    assert {e["id"] for e in with_deprecated["items"]} == {active["id"], deprecated["id"]}
 
 
 def test_list_wildcard_graph_annotates_graph(multi: MultiGraph) -> None:
@@ -275,7 +275,7 @@ def test_list_wildcard_graph_annotates_graph(multi: MultiGraph) -> None:
     make(multi, "In Default")
     make(multi, "In Research", graph="research")
     result = list_entities(ListEntitiesInput.model_validate({"graph": "*"}), multi)
-    graphs = {e["name"]: e["graph"] for e in result}
+    graphs = {e["name"]: e["graph"] for e in result["items"]}
     assert graphs == {"In Default": "default", "In Research": "research"}
 
 
@@ -286,19 +286,21 @@ def test_list_wildcard_compact_keeps_the_graph_key(multi: MultiGraph) -> None:
     make(multi, "X")
     make(multi, "X", graph="research")
     result = list_entities(ListEntitiesInput.model_validate({"graph": "*", "compact": True}), multi)
-    assert isinstance(result, list)
-    assert {e["graph"] for e in result} == {"default", "research"}
+    assert isinstance(result, dict)
+    items = result["items"]
+    assert {e["graph"] for e in items} == {"default", "research"}
     fields = {"id", "name", "entityType", "status", "observations", "graph"}
-    assert all(set(e) == fields for e in result)
+    assert all(set(e) == fields for e in items)
 
 
 def test_list_compact_projects_each_entity_to_five_fields(multi: MultiGraph) -> None:
     make(multi, "One")
     make(multi, "Two")
     result = list_entities(ListEntitiesInput.model_validate({"compact": True}), multi)
-    assert isinstance(result, list)
-    assert [e["name"] for e in result] == ["One", "Two"]
-    assert all(set(e) == {"id", "name", "entityType", "status", "observations"} for e in result)
+    assert isinstance(result, dict)
+    items = result["items"]
+    assert [e["name"] for e in items] == ["One", "Two"]
+    assert all(set(e) == {"id", "name", "entityType", "status", "observations"} for e in items)
 
 
 def test_list_compact_composes_with_limit(multi: MultiGraph) -> None:
@@ -309,36 +311,42 @@ def test_list_compact_composes_with_limit(multi: MultiGraph) -> None:
     assert [e["name"] for e in result["items"]] == ["One", "Two"]
     fields = {"id", "name", "entityType", "status", "observations"}
     assert all(set(e) == fields for e in result["items"])
-    assert result["truncated"]["total"] == 3
+    assert "3" in result["notices"][0]["message"]
 
 
-def test_list_without_limit_keeps_the_bare_array_shape(multi: MultiGraph) -> None:
+def test_list_without_limit_carries_no_truncation_notice(multi: MultiGraph) -> None:
     make(multi, "One")
     make(multi, "Two")
     result = list_entities(ListEntitiesInput.model_validate({}), multi)
-    assert isinstance(result, list)
-    assert [e["name"] for e in result] == ["One", "Two"]
+    assert isinstance(result, dict)
+    assert result["count"] == 2
+    assert [e["name"] for e in result["items"]] == ["One", "Two"]
+    assert "notices" not in result
 
 
-def test_list_with_limit_returns_the_truncation_envelope(multi: MultiGraph) -> None:
+def test_list_with_limit_returns_the_uniform_envelope(multi: MultiGraph) -> None:
     for name in ("One", "Two", "Three"):
         make(multi, name)
     result = list_entities(ListEntitiesInput.model_validate({"limit": 2}), multi)
     assert isinstance(result, dict)
-    assert set(result) == {"items", "truncated"}
+    assert set(result) == {"items", "count", "notices"}
+    assert result["count"] == 2
     assert [e["name"] for e in result["items"]] == ["One", "Two"]
-    assert result["truncated"] == {
-        "shown": 2,
-        "total": 3,
-        "hint": "raise limit or narrow with entityType/query",
-    }
+    assert result["notices"] == [
+        {
+            "code": "TRUNCATED",
+            "message": "Showing 2 of 3 matching entities.",
+            "hint": "raise limit or narrow with entityType/query",
+        }
+    ]
 
 
 def test_list_with_a_generous_limit_reports_no_truncation(multi: MultiGraph) -> None:
     make(multi, "Only")
     result = list_entities(ListEntitiesInput.model_validate({"limit": 50}), multi)
     assert isinstance(result, dict)
-    assert result["truncated"]["shown"] == result["truncated"]["total"] == 1
+    assert result["count"] == 1
+    assert "notices" not in result
 
 
 def test_list_limit_composes_with_the_other_filters(multi: MultiGraph) -> None:
@@ -350,7 +358,7 @@ def test_list_limit_composes_with_the_other_filters(multi: MultiGraph) -> None:
     )
     assert isinstance(result, dict)
     assert [e["name"] for e in result["items"]] == ["Concept A"]
-    assert result["truncated"]["total"] == 2
+    assert "2" in result["notices"][0]["message"]
 
 
 def test_list_limit_totals_across_the_wildcard_graph(multi: MultiGraph) -> None:
@@ -360,11 +368,13 @@ def test_list_limit_totals_across_the_wildcard_graph(multi: MultiGraph) -> None:
     result = list_entities(ListEntitiesInput.model_validate({"graph": "*", "limit": 1}), multi)
     assert isinstance(result, dict)
     assert [e["name"] for e in result["items"]] == ["In Default"]
-    assert result["truncated"] == {
-        "shown": 1,
-        "total": 2,
-        "hint": "raise limit or narrow with entityType/query",
-    }
+    assert result["notices"] == [
+        {
+            "code": "TRUNCATED",
+            "message": "Showing 1 of 2 matching entities.",
+            "hint": "raise limit or narrow with entityType/query",
+        }
+    ]
 
 
 def test_list_limit_rejects_zero(multi: MultiGraph) -> None:
@@ -376,16 +386,19 @@ def test_list_entities_shapes_through_the_registry(multi: MultiGraph) -> None:
     make(multi, "One")
     make(multi, "Two")
     bare = run_handler("list-entities", {}, multi)
-    assert isinstance(bare, list)
-    assert [e["name"] for e in bare] == ["One", "Two"]
+    assert isinstance(bare, dict)
+    assert [e["name"] for e in bare["items"]] == ["One", "Two"]
+    assert "notices" not in bare
     capped = run_handler("list-entities", {"limit": 1}, multi)
     assert isinstance(capped, dict)
     assert [e["name"] for e in capped["items"]] == ["One"]
-    assert capped["truncated"] == {
-        "shown": 1,
-        "total": 2,
-        "hint": "raise limit or narrow with entityType/query",
-    }
+    assert capped["notices"] == [
+        {
+            "code": "TRUNCATED",
+            "message": "Showing 1 of 2 matching entities.",
+            "hint": "raise limit or narrow with entityType/query",
+        }
+    ]
 
 
 def test_read_entities_by_name_partitions(multi: MultiGraph) -> None:

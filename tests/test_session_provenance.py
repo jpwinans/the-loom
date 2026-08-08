@@ -97,7 +97,7 @@ def test_list_entities_filters_by_session(multi: MultiGraph) -> None:
     make_entity(multi, "Other Session", session="session-2")
     make_entity(multi, "No Session")
     results = list_entities(ListEntitiesInput.model_validate({"session": "session-1"}), multi)
-    assert [e["id"] for e in results] == [tagged["id"]]
+    assert [e["id"] for e in results["items"]] == [tagged["id"]]
 
 
 def test_list_entities_session_matches_legacy_subgraph_tag(multi: MultiGraph) -> None:
@@ -106,7 +106,7 @@ def test_list_entities_session_matches_legacy_subgraph_tag(multi: MultiGraph) ->
     make_entity(multi, "Legacy Other Sid", observations=["subgraph: sid2-q1"])
     make_entity(multi, "Unrelated", observations=["subgraph unrelated"])
     results = list_entities(ListEntitiesInput.model_validate({"session": "sid"}), multi)
-    assert {e["id"] for e in results} == {exact["id"], prefixed["id"]}
+    assert {e["id"] for e in results["items"]} == {exact["id"], prefixed["id"]}
 
 
 def test_list_entities_session_combines_with_other_filters(multi: MultiGraph) -> None:
@@ -116,7 +116,7 @@ def test_list_entities_session_combines_with_other_filters(multi: MultiGraph) ->
         ListEntitiesInput.model_validate({"session": "session-1", "entityType": "claim"}),
         multi,
     )
-    assert [e["id"] for e in results] == [claim["id"]]
+    assert [e["id"] for e in results["items"]] == [claim["id"]]
 
 
 def test_list_relations_filters_by_session(multi: MultiGraph) -> None:
