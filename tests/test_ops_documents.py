@@ -300,52 +300,55 @@ def test_delete_document_without_graph_carries_no_notices(
     assert "notices" not in result
 
 
-def test_ingest_directory_with_graph_attaches_a_notice_to_every_ingested_document(
+def test_ingest_directory_with_graph_attaches_one_top_level_notice(
     multi: MultiGraph, tmp_path: Path
 ) -> None:
     (tmp_path / "one.md").write_text("# One\n\nFirst file.")
     (tmp_path / "two.md").write_text("# Two\n\nSecond file.")
-    results = ingest_directory(
+    result = ingest_directory(
         IngestDirectoryInput.model_validate(
             {"dir_path": str(tmp_path), "graph": "tl477-acceptance"}
         ),
         multi,
     )
-    assert len(results) == 2
-    assert all(item["notices"] == [_GRAPH_IGNORED_NOTICE] for item in results)
+    assert result["count"] == 2
+    assert len(result["items"]) == 2
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+    assert all("notices" not in item for item in result["items"])
 
 
 def test_ingest_directory_without_graph_carries_no_notices(
     multi: MultiGraph, tmp_path: Path
 ) -> None:
     (tmp_path / "one.md").write_text("# One\n\nFirst file.")
-    results = ingest_directory(
+    result = ingest_directory(
         IngestDirectoryInput.model_validate({"dir_path": str(tmp_path)}), multi
     )
-    assert len(results) == 1
-    assert all("notices" not in item for item in results)
+    assert result["count"] == 1
+    assert "notices" not in result
 
 
-def test_list_documents_with_graph_attaches_a_notice_to_every_listed_document(
+def test_list_documents_with_graph_attaches_one_top_level_notice(
     multi: MultiGraph, tmp_path: Path
 ) -> None:
     doc_file = tmp_path / "notes.md"
     doc_file.write_text("# Title\n\nSome content.")
     ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
-    results = list_documents(
+    result = list_documents(
         ListDocumentsInput.model_validate({"graph": "tl477-acceptance"}), multi
     )
-    assert results
-    assert all(item["notices"] == [_GRAPH_IGNORED_NOTICE] for item in results)
+    assert result["items"]
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+    assert all("notices" not in item for item in result["items"])
 
 
 def test_list_documents_without_graph_carries_no_notices(multi: MultiGraph, tmp_path: Path) -> None:
     doc_file = tmp_path / "notes.md"
     doc_file.write_text("# Title\n\nSome content.")
     ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
-    results = list_documents(ListDocumentsInput.model_validate({}), multi)
-    assert results
-    assert all("notices" not in item for item in results)
+    result = list_documents(ListDocumentsInput.model_validate({}), multi)
+    assert result["items"]
+    assert "notices" not in result
 
 
 @pytest.fixture()
