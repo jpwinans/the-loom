@@ -734,25 +734,25 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 ## Inference
 
 - **`explain-inference`** — Explain a derived fact by walking its inference trace.
-  - `relationId` — string; required
+  - `relationId` — string; required — The id of a derived relation to explain (from run-inference's `derivedRelations`, or an inference_trace's steps via inference-trace-get). Only relations created by run-inference have a trace to walk; a manually-created relation fails with NOT_FOUND.
   - `graph` — string | null; optional
 
 - **`inference-rule-create`** — Create a declarative inference rule.
-  - `rule` — object; required
-  - `rule.name` — string; required
-  - `rule.description` — string; required
-  - `rule.conditions` — array<object>; required
-  - `rule.conditions[].from` — string; required
-  - `rule.conditions[].to` — string; required
-  - `rule.conditions[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
-  - `rule.conclusion` — object; required
-  - `rule.conclusion.from` — string; required
-  - `rule.conclusion.to` — string; required
-  - `rule.conclusion.relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `rule` — object; required — The rule specification: conditions to match and the relation to derive when they do. See the nested field descriptions (rule.conditions[].from, etc.) for the '?var' rule-variable syntax.
+  - `rule.name` — string; required — A human-readable name for the rule, used in derived-relation and trace output (e.g. `ruleName`) — not itself matched against anything.
+  - `rule.description` — string; required — A human-readable description of what the rule captures; stored and returned as-is, not used for matching.
+  - `rule.conditions` — array<object>; required — The AND-conjunction of relation patterns that must all match simultaneously, with consistent variable bindings across them, for the rule to fire. See each condition's `from`/`to` field descriptions for the rule-variable ('?var') syntax and a worked multi-hop example. Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, {"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion {"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new "enables" relation whenever two chained "enables" relations share a middle entity.
+  - `rule.conditions[].from` — string; required — The pattern this condition matches against each existing relation's `from` (source) endpoint. Either a rule variable — a string starting with '?' (e.g. '?a') — bound at match time to whatever entity id satisfies the pattern, or a literal entity id, matched only against relations whose endpoint is exactly that id. IMPORTANT: a bare string that is not a real entity id (a display name, or a variable typo missing the '?', e.g. 'a' instead of '?a') validates with no error and creates the rule, but the rule can then never match anything — a silently inert rule, not a rejected one (TL-495 tracks warning about this case; not enforced here). The same variable name must bind to the same entity everywhere it appears across a rule's conditions, and any variable used in the conclusion must appear in at least one condition (checked at rule-creation time). Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, {"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion {"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new "enables" relation whenever two chained "enables" relations share a middle entity.
+  - `rule.conditions[].to` — string; required — The pattern this condition matches against each existing relation's `to` (target) endpoint — same '?var' (rule variable, bound at match time) vs. literal-entity-id semantics as `from`: see that field's description for the full syntax, the inert-rule pitfall of a bare non-id string, and a worked example. Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, {"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion {"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new "enables" relation whenever two chained "enables" relations share a middle entity.
+  - `rule.conditions[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — The relation type this condition must match among the graph's existing relations (ANDed together with every other condition in the rule).
+  - `rule.conclusion` — object; required — The relation derived when every condition matches, with each `?var` replaced by its bound entity id. See conclusion.from's description for the variable-binding rules.
+  - `rule.conclusion.from` — string; required — The `from` (source) endpoint of the relation to derive when every condition matches. Either a rule variable already bound by a condition (its bound entity id is substituted in) or a literal entity id used as-is. Every variable referenced here must appear in at least one condition — an unbound variable is rejected at rule-creation time. See RuleCondition's `from` field for the full '?var' syntax. Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, {"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion {"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new "enables" relation whenever two chained "enables" relations share a middle entity.
+  - `rule.conclusion.to` — string; required — The `to` (target) endpoint of the relation to derive when every condition matches — same bound-variable-or-literal-id rule as `conclusion.from`; see RuleCondition's `from` field for the full '?var' syntax and a worked example.
+  - `rule.conclusion.relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — The relation type to create for the derived relation.
   - `rule.conclusion.strength` — string; required
   - `rule.conclusion.evidence` — string; required
   - `rule.conclusion.polarity` — string | null; optional
-  - `rule.enabled` — boolean | null; optional
+  - `rule.enabled` — boolean | null; optional — Whether run-inference evaluates this rule at all; a rule created without `enabled: true` is stored but never fires.
   - `graph` — string | null; optional
 
 - **`inference-rule-delete`** — Delete an inference rule by its entity id.
@@ -777,7 +777,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 
 - **`run-inference`** — Run the inference engine: evaluate enabled rules.
   - `dryRun` — boolean | null; optional — Preview a run without persisting anything. Defaults to false: a call with no dryRun (or dryRun: false) matches rules AND PERSISTS the derived relations plus an inference_trace entity recording the run. Pass dryRun: true to preview the derived relations without writing an inference_trace entity or any derived relations — the would-be trace payload is still returned, unpersisted, as `tracePreview` (traceId stays null since nothing was written). Either way the response carries an `applied` marker (true only on a real, persisted run) and, on a simulated run, a DRY_RUN notice.
-  - `ruleId` — string | null; optional
+  - `ruleId` — string | null; optional — Restrict this run to one rule, by its inference_rule entity id (see inference-rule-create's `id` response field, or inference-rule-list). Omitted: evaluate every enabled rule.
   - `graph` — string | null; optional
 
 ## Leverage Points
