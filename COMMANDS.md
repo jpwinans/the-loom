@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**165 registry commands** across 24 categories, plus the special `init` command.
+**166 registry commands** across 24 categories, plus the special `init` command.
 
 Each command lists its input fields below its summary: dotted paths (`confidence.score`) descend into nested objects, `[]` (`relations[].from`) marks an array of objects. `required`/`optional` is scoped to the field's immediate parent — a required field of an optional object only applies once that object is supplied at all. Run `loom <command> --schema` for the raw JSON Schema (with full `$defs`) behind any entry.
 
@@ -306,6 +306,8 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 - **`embed-entity`** — Embed a single entity by ID.
   - `id` — string; required
   - `graph` — string | null; optional
+
+- **`embedder-profile`** — The configured embedder's live-measured similarity landscape.
 
 - **`embedding-reconcile`** — Reconcile entity status vs vector store.
   - `dryRun` — boolean | null; optional
