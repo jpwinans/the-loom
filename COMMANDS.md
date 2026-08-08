@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**165 registry commands** across 24 categories, plus the special `init` command.
+**168 registry commands** across 25 categories, plus the special `init` command.
 
 Each command lists its input fields below its summary: dotted paths (`confidence.score`) descend into nested objects, `[]` (`relations[].from`) marks an array of objects. `required`/`optional` is scoped to the field's immediate parent — a required field of an optional object only applies once that object is supplied at all. Run `loom <command> --schema` for the raw JSON Schema (with full `$defs`) behind any entry.
 
@@ -891,6 +891,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `relations[].session` — string | null; optional
   - `relations[].graph` — string | null; optional
   - `continueOnError` — boolean | null; optional
+  - `graph` — string | null; optional — Default graph for any item that omits its own `graph` — an item's own `graph` always wins. Without this, a top-level `graph` on create-relations was silently ignored (extra fields are dropped) and the batch fell through to each item's own graph, usually the default graph.
 
 - **`delete-relation`** — Retract a relation, preserving history (erase outright with "hard": true).
   - `from` — string; required
@@ -1253,3 +1254,14 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `outcome` — enum(useful, dead_end, corrected); required — How a recorded piece of work actually turned out (the experiential layer). ``useful`` is a positive citation of what it cited; ``dead_end`` and ``corrected`` are negative — the difference is that a correction says the graph was wrong, a dead end says it led nowhere.
   - `correction` — string | null; optional
   - `graph` — string | null; optional
+
+## Workspaces
+
+- **`begin-session`** — Start a namespaced, TTL-bearing session workspace for scratch graphs.
+  - `name` — string | null; optional — Optional human label for the session; purely descriptive, shown back by list-sessions and end-session but never used for addressing (sessionId is).
+  - `ttlSeconds` — integer | null; optional — How long the session is expected to live, in seconds. Informational: past this point the session shows expired=true in list-sessions, but nothing reaps it automatically — end-session is always the one call that actually deletes its graphs.
+
+- **`end-session`** — Reap a session in one call: delete every graph registered under its namespace and mark the session reaped.
+  - `sessionId` — string; required — The sessionId returned by begin-session.
+
+- **`list-sessions`** — List session workspaces with their namespace, TTL, and current member graphs.

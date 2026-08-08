@@ -48,6 +48,20 @@ class GraphSpace:
         self._graph = db.select_graph(f"{key_prefix}:graph:{graph_name}")
         self._redis = redis
         self._events = EventLog(redis, graph_name, key_prefix)
+        # Every write through `_commit`/`_commit_steps` also SADDs this
+        # graph's name into the multigraph registry set (`{prefix}:graphs`),
+        # in the same MULTI/EXEC as the mutation (see `commit_steps`'s
+        # `register` parameter) — the fix for the registry gap where a graph
+        # created implicitly via a bare `graph` param on any mutating command
+        # was invisible to `list-graphs`/`delete-graph` and needed redis-cli
+        # to clean up. Reserved graphs (leading underscore — `_chunks`,
+        # `_bridges`, `_refs`) are excluded: they are not user-addressable
+        # graphs and `MultiGraph.create_graph` already refuses that name
+        # shape for explicit creation, so auto-registration must honour the
+        # same rule rather than leaking internal graphs into `list-graphs`.
+        self._register: tuple[str, str] | None = (
+            None if graph_name.startswith("_") else (f"{key_prefix}:graphs", graph_name)
+        )
 
     @property
     def events(self) -> EventLog:
@@ -97,7 +111,9 @@ class GraphSpace:
         checking every endpoint before committing and by deleting the edges it
         did create if the reply still disagrees.
         """
-        results, event_ids = commit_steps(self._redis, self._graph, self._events, steps, events)
+        results, event_ids = commit_steps(
+            self._redis, self._graph, self._events, steps, events, register=self._register
+        )
         return list(results), event_ids
 
     # -- query helpers ----------------------------------------------------------

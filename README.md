@@ -27,7 +27,7 @@ the floor; a memory that can defend what it believes is the product.
 
 ## What it does
 
-The CLI exposes **165 commands across 24 categories**, plus a special `init`
+The CLI exposes **168 commands across 25 categories**, plus a special `init`
 command and a set of high-level composites. In short:
 
 - **Entities & relations** — full CRUD, bulk/batch import, typed relations, and

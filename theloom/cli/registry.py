@@ -14,7 +14,9 @@ explicitly; there is no "defaults to False by omission" reading.
 Output shapes are fixed: list-graphs → sorted GraphInfo objects;
 create/delete-graph → success strings; list-bridges → bridge docs in insertion
 order; find-related-graphs → sorted names; graph-connections → pair counts
-sorted by from_graph then to_graph.
+sorted by from_graph then to_graph; begin/end-session and list-sessions →
+session docs (namespace, TTL, current member graphs) via
+``theloom.operations.sessions``.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ from theloom.operations import receipts as receipt_ops
 from theloom.operations import reification as reification_ops
 from theloom.operations import relations as relation_ops
 from theloom.operations import semantic as semantic_ops
+from theloom.operations import sessions as sessions_ops
 from theloom.operations import solve as solve_ops
 from theloom.operations import symbolic as symbolic_ops
 from theloom.operations import synthesis as synthesis_ops
@@ -1526,6 +1529,42 @@ def _composite_commands() -> list[CommandDescriptor]:
     )
 
 
+def _session_commands() -> list[CommandDescriptor]:
+    """Session workspaces (desire 2): a namespaced, TTL-bearing scratch
+    boundary that turns "only touch graphs prefixed X" from a convention an
+    orchestrator has to police into a property the substrate tracks and
+    reaps in one call."""
+    return _build(
+        [
+            _Spec(
+                "begin-session",
+                "Workspaces",
+                "Start a namespaced, TTL-bearing session workspace for scratch graphs.",
+                sessions_ops.BeginSessionInput,
+                sessions_ops.begin_session,
+                True,
+            ),
+            _Spec(
+                "end-session",
+                "Workspaces",
+                "Reap a session in one call: delete every graph registered under its "
+                "namespace and mark the session reaped.",
+                sessions_ops.EndSessionInput,
+                sessions_ops.end_session,
+                False,
+            ),
+            _Spec(
+                "list-sessions",
+                "Workspaces",
+                "List session workspaces with their namespace, TTL, and current member graphs.",
+                sessions_ops.EmptyInput,
+                sessions_ops.list_sessions,
+                True,
+            ),
+        ]
+    )
+
+
 def _tail_commands() -> list[CommandDescriptor]:
     """Everything not grouped by one of the category functions above: pattern
     reification/triggers, Multi-Graph, and Visualization. Same single
@@ -1678,6 +1717,7 @@ COMMANDS: list[CommandDescriptor] = [
     *_event_log_commands(),
     *_work_memory_commands(),
     *_composite_commands(),
+    *_session_commands(),
     *_tail_commands(),
 ]
 

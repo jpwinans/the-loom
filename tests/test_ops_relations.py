@@ -228,6 +228,61 @@ def test_create_cross_graph_blocked_by_gate_like_reference(multi: MultiGraph) ->
 # =============================================================================
 
 
+def test_batch_top_level_graph_is_a_per_item_default(multi: MultiGraph) -> None:
+    """The create-relations graph footgun: a top-level `graph` used to be a
+    plain extra field, silently dropped by CommandInput's `extra="ignore"`,
+    so the whole batch fell through to each item's own `graph` (usually the
+    default graph). It is now a real per-item default — and an item's own
+    `graph` still wins when the item sets one."""
+    multi.create_graph("scratch")
+    a, b = ent(multi, "A", graph="scratch"), ent(multi, "B", graph="scratch")
+    c, d = ent(multi, "C"), ent(multi, "D")  # default graph
+
+    result = create_relations(
+        CreateRelationsInput.model_validate(
+            {
+                "graph": "scratch",
+                "relations": [
+                    rel_input(a, b, "supports"),  # falls through to top-level default
+                    rel_input(c, d, "supports", graph="default"),  # item wins over default
+                ],
+            }
+        ),
+        multi,
+    )
+    assert result["applied"] == 2
+    assert result["failed"] == 0
+
+    scratch_pairs = [
+        (r["from"], r["to"])
+        for r in list_relations(ListRelationsInput.model_validate({"graph": "scratch"}), multi)[
+            "items"
+        ]
+    ]
+    assert scratch_pairs == [(a, b)]
+
+    default_pairs = [
+        (r["from"], r["to"])
+        for r in list_relations(ListRelationsInput.model_validate({}), multi)["items"]
+    ]
+    assert default_pairs == [(c, d)]
+
+
+def test_batch_without_top_level_graph_is_unchanged(multi: MultiGraph) -> None:
+    """Omitting the new field is byte-identical to before it existed: every
+    item still falls through to the default graph on its own."""
+    a, b = ent(multi, "A"), ent(multi, "B")
+    result = create_relations(
+        CreateRelationsInput.model_validate({"relations": [rel_input(a, b, "supports")]}), multi
+    )
+    assert result["applied"] == 1
+    pairs = [
+        (r["from"], r["to"])
+        for r in list_relations(ListRelationsInput.model_validate({}), multi)["items"]
+    ]
+    assert pairs == [(a, b)]
+
+
 def test_batch_counts_and_errors(multi: MultiGraph) -> None:
     a, b, c = ent(multi, "A"), ent(multi, "B"), ent(multi, "C")
     result = create_relations(

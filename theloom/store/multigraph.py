@@ -1,20 +1,31 @@
-"""Multi-graph management + the cross-graph bridge registry.
+"""Multi-graph management + the cross-graph bridge registry + session
+workspaces.
 
 Graphs are FalkorDB-native named graphs tracked in a Redis set
-(``{prefix}:graphs``) so empty graphs exist before their first write. Bridges
-are store records like any other — ``:_Bridge`` nodes in the reserved
-``_bridges`` graph, event-logged and bi-temporal, migrated off the old Redis
-list on first access (see :mod:`theloom.store.bridges`).
+(``{prefix}:graphs``) so empty graphs exist before their first write, and so
+every graph a write ever lands on — explicit ``create_graph`` or an implicit
+bare ``graph`` param — is a member: ``GraphSpace`` (``theloom/store/space.py``)
+SADDs a graph into this same set, inside the same MULTI/EXEC as the mutation,
+on every commit (see ``theloom.store.commit.commit_steps``'s ``register``
+parameter). Bridges are store records like any other — ``:_Bridge`` nodes in
+the reserved ``_bridges`` graph, event-logged and bi-temporal, migrated off
+the old Redis list on first access (see :mod:`theloom.store.bridges`).
+Sessions are refs — see :mod:`theloom.store.refs` for the generic mechanism
+and the "-- session workspaces --" section below for what a session ref means
+here specifically.
 
 Semantics: graph names match ``^[a-zA-Z0-9_-]+$`` and may not start with
 ``_``; the default graph is undeletable; ``list_graphs`` sorts by name; a
 bridge is keyed by (from, to, relationType) and duplicates are rejected; a
-relation whose endpoints live in different graphs becomes a bridge.
+relation whose endpoints live in different graphs becomes a bridge; a session
+is a namespace prefix plus a TTL, and ``end_session`` deletes every graph
+currently registered under that namespace in one call.
 """
 
 from __future__ import annotations
 
 import re
+import uuid
 from typing import Any
 
 from falkordb import FalkorDB
@@ -32,14 +43,44 @@ from theloom.store.bridges import (
 )
 from theloom.store.events import EventLog
 from theloom.store.falkor import FalkorGraphStore
+from theloom.store.refs import RefRecord, RefRegistry
 
 GRAPH_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 __all__ = ["GRAPH_NAME_RE", "BridgeDoc", "BridgeFilter", "BridgeRegistry", "MultiGraph"]
 
 
+def _session_doc(record: RefRecord, all_graph_names: list[str]) -> dict[str, Any]:
+    """A session ref rendered for the CLI: its namespace's *current* member
+    graphs, computed by prefix-scanning the live graph registry rather than
+    tracked incrementally — so it can never drift from what ``list-graphs``
+    itself would show, whether a member graph arrived via ``create-graph`` or
+    an ad-hoc ``graph`` param on any other mutating command."""
+    namespace = str(record.metadata.get("namespace", ""))
+    graphs = [name for name in all_graph_names if namespace and name.startswith(namespace)]
+    return {
+        "sessionId": record.id,
+        "name": record.name,
+        "namespace": namespace,
+        "status": record.status,
+        "createdAt": record.created_at,
+        "expiresAt": record.expires_at,
+        "reapedAt": record.reaped_at,
+        "ttlSeconds": record.ttl_seconds,
+        "expired": record.expired,
+        "graphs": graphs,
+        "graphCount": len(graphs),
+    }
+
+
 class MultiGraph:
-    """The multi-graph facade: named graphs, their stores, and bridges."""
+    """The multi-graph facade: named graphs, their stores, bridges, and
+    session workspaces."""
+
+    #: The ``theloom.store.refs.RefRegistry`` kind session workspaces use —
+    #: exported so a future ``kind="world"`` consumer (desire 12 / Part 5)
+    #: has a concrete sibling to pick a non-colliding kind next to.
+    SESSION_KIND = "session"
 
     def __init__(
         self,
@@ -53,6 +94,7 @@ class MultiGraph:
         self._prefix = key_prefix
         self.default_graph = default_graph
         self.bridges = BridgeRegistry(db, redis, key_prefix)
+        self.refs = RefRegistry(redis, key_prefix)
         self._registry_key = f"{key_prefix}:graphs"
         redis.sadd(self._registry_key, default_graph)
 
@@ -117,15 +159,88 @@ class MultiGraph:
         return EventLog(self._redis, name or self.default_graph, self._prefix)
 
     def wipe(self) -> None:
-        """Remove every graph, bridge, and event stream under this prefix
-        (reseeding / migration path)."""
+        """Remove every graph, bridge, session ref, and event stream under
+        this prefix (reseeding / migration path)."""
         for name in self.graph_names():
             self.get_store(name).delete_graph_data()
         self.bridges.delete_all()
         self.chunk_store().wipe()
         self.run_store().wipe()
+        self.refs.wipe(self.SESSION_KIND)
+        self.refs.events.delete()
         self._redis.delete(self._registry_key)
         self._redis.sadd(self._registry_key, self.default_graph)
+
+    # -- session workspaces (desire 2) --------------------------------------------
+    #
+    # A session is a `theloom.store.refs.RefRegistry` ref of kind
+    # `SESSION_KIND`: a unique namespace prefix plus a TTL, nothing else. No
+    # graph creation path changes for a session to "contain" a graph — a
+    # caller creates graphs the ordinary way (create-graph, or a bare `graph`
+    # param on any mutating command) and simply names them under the
+    # namespace `begin_session` hands back. Two properties compose to make
+    # that a complete workspace boundary rather than a naming convention an
+    # orchestrator has to police:
+    #
+    #   1. Every graph a write ever lands on is registered at creation (the
+    #      `GraphSpace`/`commit_steps` fix above), so it is guaranteed to
+    #      show up in `graph_names()` — nothing can be "inside" a session
+    #      invisibly.
+    #   2. A session's namespace embeds a random id, so a prefix scan over
+    #      `graph_names()` at reap time can never pick up a graph the caller
+    #      did not create inside this session.
+    #
+    # `end_session` therefore needs no separate membership bookkeeping: it
+    # reaps exactly what a prefix scan finds, every time, which also means it
+    # is self-correcting — a graph created after some `list_sessions()` call
+    # is still reaped correctly.
+
+    def begin_session(self, name: str | None, ttl_seconds: int | None) -> dict[str, Any]:
+        """Start a session: mint a unique namespace, register it as a ref,
+        and return it rendered for the CLI (`_session_doc`)."""
+        session_id = f"sess-{uuid.uuid4().hex[:12]}"
+        namespace = f"{session_id}-"
+        record = self.refs.register(
+            self.SESSION_KIND,
+            ref_id=session_id,
+            name=name,
+            ttl_seconds=ttl_seconds,
+            metadata={"namespace": namespace},
+        )
+        return _session_doc(record, [])
+
+    def end_session(self, session_id: str) -> dict[str, Any]:
+        """Reap a session: delete every graph currently registered under its
+        namespace, then mark the ref reaped. Idempotent — reaping an
+        already-reaped session deletes nothing (there is nothing left to
+        delete) and the returned doc carries `"alreadyReaped": True` so the
+        operations layer can render that truthfully rather than claiming a
+        write that did not happen."""
+        record = self.refs.get(self.SESSION_KIND, session_id)
+        if record is None:
+            raise NotFoundError(
+                f"Session '{session_id}' not found. Use list_sessions to see active sessions."
+            )
+        if record.status == "reaped":
+            doc = _session_doc(record, [])
+            doc["reapedGraphs"] = []
+            doc["alreadyReaped"] = True
+            return doc
+        namespace = str(record.metadata.get("namespace", ""))
+        members = [name for name in self.graph_names() if namespace and name.startswith(namespace)]
+        for graph_name in members:
+            self.delete_graph(graph_name)
+        reaped = self.refs.reap(self.SESSION_KIND, session_id)
+        doc = _session_doc(reaped, [])
+        doc["reapedGraphs"] = members
+        doc["alreadyReaped"] = False
+        return doc
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """Every session ref, oldest first, each with its current member
+        graphs (one `graph_names()` call shared across all of them)."""
+        names = self.graph_names()
+        return [_session_doc(record, names) for record in self.refs.list(self.SESSION_KIND)]
 
     # -- cross-graph relations ------------------------------------------------------
 

@@ -82,6 +82,50 @@ def test_delete_missing_graph_raises_not_found(multi: MultiGraph) -> None:
 
 
 # =============================================================================
+# Ad-hoc graph registration (the registry gap)
+#
+# A graph created implicitly via a bare `graph` param — never through
+# `create_graph` — used to be invisible to `list_graphs`/`delete_graph`;
+# cleanup needed redis-cli. `GraphSpace` now SADDs a graph's name into the
+# registry set on every write, atomically with the mutation.
+# =============================================================================
+
+
+def test_ad_hoc_graph_is_registered_on_first_write(multi: MultiGraph) -> None:
+    assert not multi.has_graph("adhoc")
+    multi.get_store("adhoc").create_entity(ent("x"))  # no multi.create_graph call
+    assert multi.has_graph("adhoc")
+    assert "adhoc" in [g["name"] for g in multi.list_graphs()]
+
+
+def test_ad_hoc_graph_is_deletable_without_redis_cli(multi: MultiGraph) -> None:
+    multi.get_store("adhoc").create_entity(ent("x"))
+    multi.delete_graph("adhoc")  # would raise NotFoundError before the fix
+    assert not multi.has_graph("adhoc")
+
+
+def test_ad_hoc_graph_registered_by_a_relation_write_too(multi: MultiGraph) -> None:
+    """Not just create_entity — any write on the store (create_relation,
+    update, delete) goes through the same commit primitive and registers the
+    graph the same way."""
+    store = multi.get_store("adhoc-rel")
+    a = store.create_entity(ent("A"))
+    b = store.create_entity(ent("B"))
+    store.create_relation(rel(a.id, b.id))
+    assert "adhoc-rel" in multi.graph_names()
+
+
+def test_reserved_graphs_are_never_auto_registered(multi: MultiGraph) -> None:
+    """The chunk store's reserved graph (`_chunks`) writes through the same
+    `GraphSpace` machinery but must never appear in list-graphs — reserved
+    names are excluded from auto-registration the same way `create_graph`
+    already refuses them explicitly."""
+    multi.chunk_store().upsert_chunk("c1", {"sourceId": "doc-1", "text": "hi"}, None)
+    assert "_chunks" not in multi.graph_names()
+    assert not multi.has_graph("_chunks")
+
+
+# =============================================================================
 # Bridge registry
 # =============================================================================
 
@@ -169,3 +213,85 @@ def test_find_entity_graph(multi: MultiGraph) -> None:
     a = multi.get_store("research").create_entity(ent("A"))
     assert multi.find_entity_graph(a.id) == "research"
     assert multi.find_entity_graph("00000000-0000-4000-8000-000000000000") is None
+
+
+# =============================================================================
+# Session workspaces (desire 2)
+# =============================================================================
+
+
+def test_begin_session_returns_a_fresh_namespace_and_ttl(multi: MultiGraph) -> None:
+    session = multi.begin_session("scratch work", 3600)
+    assert session["sessionId"].startswith("sess-")
+    assert session["namespace"] == f"{session['sessionId']}-"
+    assert session["name"] == "scratch work"
+    assert session["status"] == "active"
+    assert session["ttlSeconds"] == 3600
+    assert session["expiresAt"] is not None
+    assert session["expired"] is False
+    assert session["graphs"] == []
+    assert session["graphCount"] == 0
+
+
+def test_two_sessions_get_distinct_namespaces(multi: MultiGraph) -> None:
+    first = multi.begin_session(None, None)
+    second = multi.begin_session(None, None)
+    assert first["sessionId"] != second["sessionId"]
+    assert first["namespace"] != second["namespace"]
+
+
+def test_graphs_created_under_the_namespace_are_tracked_without_any_extra_call(
+    multi: MultiGraph,
+) -> None:
+    """No "join this session" step: naming a graph under the namespace is
+    enough, whether via create_graph or an ad-hoc bare `graph` write."""
+    session = multi.begin_session(None, None)
+    namespace = session["namespace"]
+    multi.create_graph(f"{namespace}explicit")
+    multi.get_store(f"{namespace}adhoc").create_entity(ent("x"))
+    multi.create_graph("not-in-the-session")
+
+    listed = multi.list_sessions()
+    assert len(listed) == 1
+    assert sorted(listed[0]["graphs"]) == [f"{namespace}adhoc", f"{namespace}explicit"]
+    assert listed[0]["graphCount"] == 2
+
+
+def test_end_session_deletes_every_member_graph_in_one_call(multi: MultiGraph) -> None:
+    session = multi.begin_session(None, None)
+    namespace = session["namespace"]
+    multi.create_graph(f"{namespace}a")
+    multi.get_store(f"{namespace}b").create_entity(ent("x"))
+    multi.create_graph("untouched")
+
+    result = multi.end_session(session["sessionId"])
+    assert sorted(result["reapedGraphs"]) == [f"{namespace}a", f"{namespace}b"]
+    assert result["status"] == "reaped"
+    assert result["alreadyReaped"] is False
+    assert not multi.has_graph(f"{namespace}a")
+    assert not multi.has_graph(f"{namespace}b")
+    assert multi.has_graph("untouched")  # never touched — outside the namespace
+
+
+def test_end_session_on_an_already_reaped_session_is_a_truthful_no_op(multi: MultiGraph) -> None:
+    session = multi.begin_session(None, None)
+    multi.create_graph(f"{session['namespace']}a")
+    first = multi.end_session(session["sessionId"])
+    assert first["alreadyReaped"] is False
+    assert first["reapedGraphs"] == [f"{session['namespace']}a"]
+
+    second = multi.end_session(session["sessionId"])
+    assert second["alreadyReaped"] is True
+    assert second["reapedGraphs"] == []
+
+
+def test_end_session_missing_session_raises_not_found(multi: MultiGraph) -> None:
+    with pytest.raises(NotFoundError):
+        multi.end_session("sess-does-not-exist")
+
+
+def test_list_sessions_is_oldest_first(multi: MultiGraph) -> None:
+    first = multi.begin_session("first", None)
+    second = multi.begin_session("second", None)
+    listed = multi.list_sessions()
+    assert [s["sessionId"] for s in listed] == [first["sessionId"], second["sessionId"]]

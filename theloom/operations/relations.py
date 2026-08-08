@@ -83,6 +83,21 @@ class CreateRelationInput(RelationItem):
 class CreateRelationsInput(CommandInput):
     relations: list[RelationItem] = Field(max_length=200_000)
     continue_on_error: bool | None = Field(default=None, alias="continueOnError")
+    # A per-item default, not a batch-wide override: an item's own `graph`
+    # always wins when set. Without this field, `CommandInput`'s
+    # `extra="ignore"` silently dropped a top-level `{"graph": ...}` and the
+    # whole batch fell through to whatever each item's own `graph` said
+    # (usually nothing — the default graph, i.e. production). Optional and
+    # additive, so a caller that never passed a top-level `graph` sees no
+    # behavior change.
+    graph: str | None = Field(
+        default=None,
+        description="Default graph for any item that omits its own `graph` — an item's "
+        "own `graph` always wins. Without this, a top-level `graph` on "
+        "create-relations was silently ignored (extra fields are dropped) and "
+        "the batch fell through to each item's own graph, usually the default "
+        "graph.",
+    )
 
 
 class ReadRelationInput(CommandInput):
@@ -260,6 +275,10 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
         return known_status[graph]
 
     for item in params.relations:
+        # The batch-level `graph` is a per-item default: an item that names
+        # its own `graph` always wins, even inside a batch that also set a
+        # top-level one.
+        effective_graph = item.graph if item.graph is not None else params.graph
         polarity = _effective_polarity(item)
         gate_errors: list[str] = []
         if item.relation_type in CAUSAL_POLARITY_DEFAULTS:
@@ -273,7 +292,7 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
             gate_errors.append(
                 f"Relation cannot reference the same entity as source and target: '{item.from_}'"
             )
-        graph_status = status_for(item.graph)
+        graph_status = status_for(effective_graph)
         for role, endpoint in (("Source", item.from_), ("Target", item.to)):
             error = endpoint_error(role, endpoint, graph_status.get(endpoint))
             if error is not None:
@@ -282,7 +301,7 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
         if gate_errors:
             failed += 1
             message = f"Relation creation blocked by verification gate: {'; '.join(gate_errors)}"
-            names = known_names.get(item.graph, {})
+            names = known_names.get(effective_graph, {})
             errors.append(
                 {
                     "from": item.from_,
@@ -297,7 +316,7 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
                 raise OperationError(f"Error creating relations batch: {message}")
             continue
 
-        pending.setdefault(item.graph, []).append(_spec(item, polarity))
+        pending.setdefault(effective_graph, []).append(_spec(item, polarity))
         applied += 1
 
     flush()
