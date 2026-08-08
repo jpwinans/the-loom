@@ -25,6 +25,7 @@ from typing import Any
 
 import pydantic
 
+from theloom.cli.schema import describe_validation_error
 from theloom.composites import analogy_transfer as analogy_transfer_composite
 from theloom.composites import creativity_loop as creativity_loop_composite
 from theloom.composites import enrichment_crawl as enrichment_crawl_composite
@@ -44,7 +45,6 @@ from theloom.composites import semantic_landscape as semantic_landscape_composit
 from theloom.composites import simulate_change as simulate_change_composite
 from theloom.composites import structural_survey as structural_survey_composite
 from theloom.composites import verified_extract as verified_extract_composite
-from theloom.errors import ValidationError
 from theloom.operations import algebra as algebra_ops
 from theloom.operations import analysis as analysis_ops
 from theloom.operations import bulk as bulk_ops
@@ -1671,6 +1671,6 @@ def run_handler(name: str, input_doc: dict[str, Any], multi: MultiGraph) -> Any:
     try:
         params = descriptor.input_model.model_validate(input_doc)
     except pydantic.ValidationError as exc:
-        raise ValidationError(str(exc)) from exc
+        raise describe_validation_error(descriptor.input_model, exc, command=name) from exc
     assert descriptor.handler is not None
     return descriptor.handler(params, multi)

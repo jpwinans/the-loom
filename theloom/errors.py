@@ -7,7 +7,7 @@ serializes {error, code} to stderr with exit 1.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 ErrorCode = Literal[
     "PARSE_ERROR",
@@ -20,13 +20,22 @@ ErrorCode = Literal[
 
 
 class LoomError(Exception):
-    """Base for all Loom errors; carries the structured CLI error code."""
+    """Base for all Loom errors; carries the structured CLI error code.
+
+    ``details`` is an optional, additive list of structured fragments (e.g.
+    ``{"field": ..., "message": ..., "expected": <schema fragment>}``) that
+    ``theloom.cli.io.format_error`` surfaces as a ``"details"`` key when
+    present — never added when absent, so existing ``{error, code}`` output
+    is untouched unless a raiser opts in (see
+    ``theloom.cli.schema.describe_validation_error``).
+    """
 
     code: ErrorCode = "OPERATION_ERROR"
 
-    def __init__(self, message: str) -> None:
+    def __init__(self, message: str, *, details: list[dict[str, Any]] | None = None) -> None:
         super().__init__(message)
         self.message = message
+        self.details = details
 
 
 class ParseError(LoomError):
