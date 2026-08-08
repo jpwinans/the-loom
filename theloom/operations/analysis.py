@@ -314,12 +314,22 @@ def analyze_centrality(params: AnalyzeCentralityInput, multi: MultiGraph) -> dic
 
 
 def detect_components(params: DetectComponentsInput, multi: MultiGraph) -> dict[str, Any]:
-    _, _, graph = _hydrated(multi.get_store(params.graph))
+    entities, _, graph = _hydrated(multi.get_store(params.graph))
     components = (
         strongly_connected_components(graph) if params.strong else connected_components(graph)
     )
+    # `components` stays list[list[id]] (viz/analytics.py feeds it straight
+    # into AnalyticsSection.components, a fixed list[list[str]] the frontend
+    # already depends on) — componentNames is index-for-index parallel to it
+    # (desire 11: self-describing without a join, additive rather than a
+    # reshape of an existing wire contract).
+    names = {e["id"]: e["name"] for e in entities}
+    component_names = [
+        [names.get(member_id) for member_id in component] for component in components
+    ]
     return {
         "components": components,
+        "componentNames": component_names,
         "summary": {
             "componentCount": len(components),
             "largestComponentSize": max((len(c) for c in components), default=0),
