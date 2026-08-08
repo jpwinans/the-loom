@@ -56,6 +56,7 @@ from theloom.operations import extraction as extraction_ops
 from theloom.operations import inference as inference_ops
 from theloom.operations import merge as merge_ops
 from theloom.operations import multigraph as multigraph_ops
+from theloom.operations import notices as notices_ops
 from theloom.operations import portability as portability_ops
 from theloom.operations import receipts as receipt_ops
 from theloom.operations import reification as reification_ops
@@ -1560,7 +1561,7 @@ def _tail_commands() -> list[CommandDescriptor]:
                 "Multi-Graph",
                 "List all available graphs with their loaded status and stats.",
                 EmptyInput,
-                lambda _, multi: multi.list_graphs(),
+                lambda _, multi: notices_ops.list_envelope(multi.list_graphs()),
                 True,
             ),
             _Spec(
@@ -1649,7 +1650,7 @@ def _delete_graph(params: GraphNameInput, multi: MultiGraph) -> str:
     return f"Graph '{params.name}' deleted successfully."
 
 
-def _list_bridges(params: BridgeFilterInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def _list_bridges(params: BridgeFilterInput, multi: MultiGraph) -> dict[str, Any]:
     filter: dict[str, str] = {}
     if params.from_graph is not None:
         filter["from_graph"] = params.from_graph
@@ -1657,7 +1658,7 @@ def _list_bridges(params: BridgeFilterInput, multi: MultiGraph) -> list[dict[str
         filter["to_graph"] = params.to_graph
     if params.entity_id is not None:
         filter["entity_id"] = params.entity_id
-    return multi.bridges.list_bridges(filter or None)
+    return notices_ops.list_envelope(multi.bridges.list_bridges(filter or None))
 
 
 COMMANDS: list[CommandDescriptor] = [

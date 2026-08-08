@@ -55,8 +55,11 @@ from typing import Any
 Doc = dict[str, Any]
 
 
-def list_envelope(items: Sequence[Doc], notices: list[Doc] | None = None) -> Doc:
-    """The uniform list-command response: ``{"items", "count"[, "notices"]}``."""
+def list_envelope(items: Sequence[Any], notices: list[Doc] | None = None) -> Doc:
+    """The uniform list-command response: ``{"items", "count"[, "notices"]}``.
+
+    ``items`` is usually a list of docs but is not required to be one — a
+    handful of commands (``find-related-graphs``) list bare strings."""
     return with_notices({"items": list(items), "count": len(items)}, notices)
 
 

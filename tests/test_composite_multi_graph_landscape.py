@@ -56,7 +56,7 @@ def test_related_graphs_agrees_with_the_find_related_graphs_command(multi: Multi
     related = landscape["result"]["relatedGraphs"]["data"]
     assert related == {"default": ["research"], "isolated": [], "research": ["default"]}
     for graph, expected in related.items():
-        assert find_related_graphs(GraphInput(graph=graph), multi) == expected
+        assert find_related_graphs(GraphInput(graph=graph), multi)["items"] == expected
 
 
 def test_focus_graph_narrows_related_to_that_graph_alone(multi: MultiGraph) -> None:

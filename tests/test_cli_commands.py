@@ -1,9 +1,11 @@
 """Multi-Graph command handler tests.
 
-Handlers produce the exact wire shapes the CLI emits: list-graphs is sorted
-GraphInfo with loaded:false in one-shot mode; create/delete return their
-success strings; find-related-graphs sorts names; graph-connections counts
-pairs sorted by from_graph then to_graph. Error codes per the CLI contract.
+Handlers produce the exact wire shapes the CLI emits: every list-returning
+command (list-graphs, list-bridges, find-related-graphs, graph-connections)
+uses the uniform {items, count} envelope (desire 9); create/delete return
+their success strings; find-related-graphs sorts names; graph-connections
+counts pairs sorted by from_graph then to_graph. Error codes per the CLI
+contract.
 """
 
 from __future__ import annotations
@@ -43,10 +45,13 @@ def test_registry_has_the_six_multi_graph_commands() -> None:
 def test_list_graphs_shape(multi: MultiGraph) -> None:
     multi.create_graph("research")
     result = run_handler("list-graphs", {}, multi)
-    assert result == [
-        {"name": "default", "loaded": False},
-        {"name": "research", "loaded": False},
-    ]
+    assert result == {
+        "items": [
+            {"name": "default", "loaded": False},
+            {"name": "research", "loaded": False},
+        ],
+        "count": 2,
+    }
 
 
 def test_create_graph_success_string(multi: MultiGraph) -> None:
@@ -83,10 +88,13 @@ def test_delete_graph(multi: MultiGraph) -> None:
 def test_list_bridges_filters(multi: MultiGraph) -> None:
     multi.bridges.create_bridge(bridge("e1", "e2", "default", "research"))
     multi.bridges.create_bridge(bridge("e2", "e3", "research", "systems"))
-    assert len(run_handler("list-bridges", {}, multi)) == 2
-    assert len(run_handler("list-bridges", {"from_graph": "default"}, multi)) == 1
-    assert len(run_handler("list-bridges", {"entity_id": "e2"}, multi)) == 2
-    assert run_handler("list-bridges", {"to_graph": "nowhere"}, multi) == []
+    assert run_handler("list-bridges", {}, multi)["count"] == 2
+    assert run_handler("list-bridges", {"from_graph": "default"}, multi)["count"] == 1
+    assert run_handler("list-bridges", {"entity_id": "e2"}, multi)["count"] == 2
+    assert run_handler("list-bridges", {"to_graph": "nowhere"}, multi) == {
+        "items": [],
+        "count": 0,
+    }
 
 
 def test_find_related_graphs(multi: MultiGraph) -> None:
@@ -94,10 +102,10 @@ def test_find_related_graphs(multi: MultiGraph) -> None:
     multi.create_graph("systems")
     multi.bridges.create_bridge(bridge("e1", "e2", "default", "research"))
     multi.bridges.create_bridge(bridge("e2", "e3", "research", "systems"))
-    assert run_handler("find-related-graphs", {"graph": "research"}, multi) == [
-        "default",
-        "systems",
-    ]
+    assert run_handler("find-related-graphs", {"graph": "research"}, multi) == {
+        "items": ["default", "systems"],
+        "count": 2,
+    }
     with pytest.raises(LoomError) as missing:
         run_handler("find-related-graphs", {"graph": "nowhere"}, multi)
     assert missing.value.code == "NOT_FOUND"
@@ -107,10 +115,13 @@ def test_graph_connections_counts_sorted(multi: MultiGraph) -> None:
     multi.bridges.create_bridge(bridge("e1", "e2", "zeta", "alpha"))
     multi.bridges.create_bridge(bridge("e3", "e4", "alpha", "beta"))
     multi.bridges.create_bridge(bridge("e5", "e6", "zeta", "alpha"))
-    assert run_handler("graph-connections", {}, multi) == [
-        {"from_graph": "alpha", "to_graph": "beta", "count": 1},
-        {"from_graph": "zeta", "to_graph": "alpha", "count": 2},
-    ]
+    assert run_handler("graph-connections", {}, multi) == {
+        "items": [
+            {"from_graph": "alpha", "to_graph": "beta", "count": 1},
+            {"from_graph": "zeta", "to_graph": "alpha", "count": 2},
+        ],
+        "count": 2,
+    }
 
 
 def test_unknown_extra_input_keys_are_ignored(multi: MultiGraph) -> None:
