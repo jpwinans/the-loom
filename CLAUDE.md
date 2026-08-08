@@ -82,7 +82,7 @@ there, anchored to file and line. Your first query needs nothing beyond this
 section:
 
 ```bash
-uv run loom explore '{"name": "run_handler", "graph": "codebase-the-loom"}'
+uv run loom explore '{"name": "run_handler (registry)", "graph": "codebase-the-loom"}'
 # → definition, callers, callees, imports, and the written notes, in one call
 ```
 
