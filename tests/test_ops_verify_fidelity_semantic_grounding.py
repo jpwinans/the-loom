@@ -3,19 +3,19 @@
 verify-fidelity`` actually calls), not just fidelity's internal core. Same
 scenario as tests/test_synthesis_fidelity_semantic_grounding.py: a paraphrase
 that reuses one word from the entity name must ground, and a coincidental
-word-overlap claim sharing that SAME word with a different entity must not —
-both via the residual (word-stripped) check, since (round 2, blind critic
-finding) the raw score alone clears the cutoff for both on this embedder's
-real geometry.
+word-overlap claim sharing that SAME word with a different entity must not.
+
+Round 3: grounding is a RELATIVE (per-entity z-score, dual-representation)
+decision — see theloom/synthesis/fidelity.py's own module docstring for the
+round 1/2 failure history. This test mocks
+``theloom.semantic.landscape.measure_specificity`` directly (both
+representations) rather than hand-deriving a full probe-corpus calibration,
+the same simplification tests/test_synthesis_fidelity_semantic_grounding.py
+uses and explains in its own module docstring.
 
 Uses explicit ``entityIds`` throughout so this stays a pure grounding test —
 TL-484's auto-scope/relevance-floor machinery (tests/test_synthesis_fidelity_
 scoping.py) is exercised elsewhere and is untouched by desire 10.
-
-Vectors are sized to the real measured geometry (cosine ~0.35 unrelated,
-~0.6-0.7 word-inflated/related — see theloom/semantic/landscape.py's own
-probe corpus), not an arbitrary 0.95, per the round-2 critic finding that
-0.95 mocks proved nothing about the real path.
 """
 
 from __future__ import annotations
@@ -62,48 +62,64 @@ def _vec(dim: int, primary: int, cosine: float, secondary: int) -> list[float]:
     return v
 
 
-# One reserved axis pair per entity so unrelated (entity, span) pairs stay
-# exactly orthogonal (cosine 0) instead of accidentally sharing a "spare"
-# axis with a different entity's engineered vector.
+def _shared_cosine_vec(dim: int, axes: tuple[int, ...], cosine: float, spare: int) -> list[float]:
+    v = [0.0] * dim
+    for axis in axes:
+        v[axis] = cosine
+    v[spare] = math.sqrt(max(0.0, 1 - cosine**2 * len(axes)))
+    return v
+
+
+class _FakeSpecificityProfile:
+    def __init__(self, cutoff: float) -> None:
+        self.specificity_z_cutoff = cutoff
+
+
+# One reserved axis per entity so unrelated (entity, span) pairs stay
+# exactly orthogonal instead of accidentally sharing a "spare" axis with a
+# different entity's engineered vector.
 _DIM = 6
-_CALIBRATION_AXES = (0, 1)
-_FEEDBACK_AXES = (2, 3)
-_SILENT_AXES = (4, 5)
+_FEEDBACK_AXIS = 0
+_SILENT_AXIS = 2
 
 
 def _build_vectors() -> dict[str, list[float]]:
-    calibration_primary, calibration_spare = _CALIBRATION_AXES
-    feedback_primary, feedback_spare = _FEEDBACK_AXES
-    silent_primary, silent_spare = _SILENT_AXES
-
-    def unit(axis: int) -> list[float]:
-        v = [0.0] * _DIM
-        v[axis] = 1.0
-        return v
-
-    return {
-        "cu": unit(calibration_primary),
-        "cud": _vec(_DIM, calibration_primary, 0.35, calibration_spare),
-        "cr": unit(calibration_primary),
-        "crd": _vec(_DIM, calibration_primary, 0.70, calibration_spare),
-        # "Feedback Delay": genuine paraphrase reusing "feedback". Raw
-        # cosine 0.69, stripped of "feedback" still 0.58 -- survives.
-        "Feedback Delay": unit(feedback_primary),
-        PARAPHRASE_SENTENCE: _vec(_DIM, feedback_primary, 0.69, feedback_spare),
-        FEEDBACK_STRIPPED: _vec(_DIM, feedback_primary, 0.58, feedback_spare),
-        # "Silent Failure Mode": false friend sharing "silent". Raw cosine
-        # 0.62 clears the cutoff alone; stripped of "silent" it collapses
-        # to 0.20 -- the exact case the residual check exists to catch.
-        "Silent Failure Mode": unit(silent_primary),
-        FALSE_FRIEND_SENTENCE: _vec(_DIM, silent_primary, 0.62, silent_spare),
-        SILENT_STRIPPED: _vec(_DIM, silent_primary, 0.20, silent_spare),
+    vectors: dict[str, list[float]] = {
+        "distractor one": _shared_cosine_vec(_DIM, (_FEEDBACK_AXIS, _SILENT_AXIS), 0.05, 4),
+        "distractor two": _shared_cosine_vec(_DIM, (_FEEDBACK_AXIS, _SILENT_AXIS), 0.15, 4),
     }
+    feedback_unit = [0.0] * _DIM
+    feedback_unit[_FEEDBACK_AXIS] = 1.0
+    silent_unit = [0.0] * _DIM
+    silent_unit[_SILENT_AXIS] = 1.0
+
+    vectors["Feedback Delay"] = feedback_unit
+    vectors["[concept] Feedback Delay"] = feedback_unit
+    # Genuine paraphrase reusing "feedback": raw and residual both clear.
+    vectors[PARAPHRASE_SENTENCE] = _vec(_DIM, _FEEDBACK_AXIS, 0.9, 1)
+    vectors[FEEDBACK_STRIPPED] = _vec(_DIM, _FEEDBACK_AXIS, 0.85, 1)
+
+    vectors["Silent Failure Mode"] = silent_unit
+    vectors["[concept] Silent Failure Mode"] = silent_unit
+    # False friend sharing "silent": raw clears, residual collapses.
+    vectors[FALSE_FRIEND_SENTENCE] = _vec(_DIM, _SILENT_AXIS, 0.9, 3)
+    vectors[SILENT_STRIPPED] = _vec(_DIM, _SILENT_AXIS, 0.05, 3)
+    return vectors
 
 
 @pytest.fixture(autouse=True)
-def _tiny_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(landscape, "UNRELATED_PROBE_PAIRS", (("cu", "cud"),))
-    monkeypatch.setattr(landscape, "RELATED_PROBE_PAIRS", (("cr", "crd"),))
+def _tiny_battery(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        landscape, "UNRELATED_PROBE_PAIRS", (("bg1", "distractor one"), ("bg2", "distractor two"))
+    )
+
+
+@pytest.fixture(autouse=True)
+def _mocked_specificity(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(embedder: object, *, representation: str, **kwargs: object) -> _FakeSpecificityProfile:
+        return _FakeSpecificityProfile(0.5)
+
+    monkeypatch.setattr(landscape, "measure_specificity", fake)
 
 
 def test_verify_fidelity_command_grounds_paraphrase_and_rejects_word_overlap(
@@ -129,9 +145,12 @@ def test_verify_fidelity_command_grounds_paraphrase_and_rejects_word_overlap(
     assert feedback_grounding["matchBasis"] == "semantic"
     assert feedback_grounding["mentionedAs"] == PARAPHRASE_SENTENCE
     assert isinstance(feedback_grounding["matchScore"], float)
+    assert isinstance(feedback_grounding["zScore"], float)
+    assert isinstance(feedback_grounding["asymZScore"], float)
 
     silent_grounding = by_id[silent.id]
     assert silent_grounding["status"] == "omitted"
     assert silent_grounding["matchBasis"] is None
+    assert silent_grounding["zScore"] is None
 
     assert result["scores"]["entityGroundingRate"] == pytest.approx(0.5)

@@ -1,37 +1,53 @@
 """Fidelity verification.
 
-Entity grounding (desire 10, claude-desires.md): an exact (case-insensitive)
-substring match is always "exact" grounding — cheap and unambiguous, kept as
-the fast path. Anything short of that is decided SEMANTICALLY when an
-embedder is available: the entity name is compared, by embedding, against
-sentence-level spans of ``text``, and a match counts only when the
-best-scoring span clears the embedder's own live-measured "meaningfully
-related" cutoff (see ``theloom.semantic.landscape`` — desire 8's machinery,
-reused rather than a fresh magic number). Only when NO embedder is supplied
-does this fall back to the legacy "any significant word overlaps"
+Entity grounding (desire 10, claude-desires.md; round 3 design): an exact
+(case-insensitive) substring match is always "exact" grounding — cheap and
+unambiguous, kept as the fast path. Anything short of that is decided
+SEMANTICALLY when an embedder is available. Only when NO embedder is
+supplied does this fall back to the legacy "any significant word overlaps"
 heuristic — the one that credited an unrelated claim for sharing a single
 word with an entity's name.
 
-Clearing the cutoff is necessary but not sufficient when the matched span
-shares a literal word with the entity name: live-measured against this
-repo's local embedder, a coincidental word/stem overlap alone (a wine
-decanter's "bottleneck", not a throughput constraint; a support ticket's
-"escalation", not sunk-cost investment) inflates similarity almost
-independent of whether the span is actually ABOUT the entity — enough that
-some such "false friends" clear the same cutoff a genuine paraphrase does
-(see ``theloom.semantic.landscape``'s module docstring; a single scalar
-threshold cannot cleanly separate the two populations on this embedder).
-So whenever the winning span shares a significant word with the entity
-name, grounding additionally requires the match to SURVIVE having that word
-removed: the entity name is re-scored against the span with every shared
-word stripped out, and that residual score must ALSO clear the cutoff — a
-match built only from the shared word collapses back toward the noise floor
-once the word is gone, while a genuine paraphrase that merely happens to
-reuse a word keeps most of its similarity (measured: "Feedback Delay" vs
-"the lag in the feedback loop..." drops only from 0.559 to 0.519, still
-clear of the ~0.488 cutoff; "Silent Failure Mode" vs the "silent movie
-score" false friend drops from 0.499 to 0.473, falling below it). Every
-grounding decision discloses its ``matchBasis`` alongside ``mentionedAs``.
+Two prior designs for the semantic path were tried and both failed against
+live, fresh (not previously seen) adversarial cases — the failure history is
+load-bearing context for why the current design looks the way it does:
+
+1. **Round 1**: a single absolute cosine cutoff, calibrated from a
+   topically-disjoint probe corpus. Failed in the RECALL direction: real
+   embedding models are anisotropic (unrelated text scores well above cosine
+   0), so the cutoff sat comfortably below where genuine paraphrases live —
+   fine — but also below where coincidental word-overlap "false friends"
+   (a wine decanter's "bottleneck", not a throughput constraint) land, so
+   contaminating the calibration corpus with false-friend examples to raise
+   the cutoff instead broke 11/14 genuine paraphrases (round 1's own
+   regression).
+2. **Round 2**: kept the clean cutoff, added a targeted guard — re-score the
+   entity name against the matched span with the shared word stripped out,
+   and require the RESIDUAL to also clear the cutoff. This caught the round-2
+   named false friends but round 3's FRESH ones ("Root Cause Analysis" vs a
+   gardening sentence about "root system", "Silver Lining" vs an antiques
+   sentence about a "silver spoon") still cleared the residual check: a
+   grammatically coherent English sentence about ANY concrete, nameable
+   topic routinely scores within noise of the cutoff on this embedder, so an
+   absolute threshold — residual or raw — cannot separate "genuinely about
+   this entity" from "just a normal sentence" no matter where it sits.
+
+**Round 3 (current): a RELATIVE decision, not an absolute one.** The question
+this module answers is no longer "is this score high" but "is this score
+high FOR THIS ENTITY specifically" — see
+``theloom.semantic.landscape``'s "Specificity" docstring section for the
+full measurement design (:func:`theloom.semantic.landscape.measure_specificity`).
+In short: each entity's own baseline similarity to a battery of clearly
+unrelated content is measured live, and a candidate span (residual-stripped
+first, if it shares a word with the name — the round-2 guard is still the
+right first move, just no longer judged against a fixed number) must clear
+THAT ENTITY'S OWN baseline by a z-score margin that is itself calibrated
+live from the same probe corpus (:data:`theloom.semantic.landscape.RELATED_PROBE_PAIRS`
+/ :data:`theloom.semantic.landscape.UNRELATED_PROBE_PAIRS`), never a fresh
+magic number. Every grounding decision discloses ``matchBasis``,
+``mentionedAs``, ``matchScore`` (the score the z-score was computed from),
+``nullMean``/``nullStdev`` (this entity's own baseline) and ``zScore`` — a
+caller can recompute and audit any single decision from those fields.
 
 Structural mode is positional: both entity names must appear as substrings
 (first-occurrence indices decide preserved vs inverted); narrative mode
@@ -44,10 +60,11 @@ from __future__ import annotations
 
 import math
 import re
+from statistics import pstdev
 from typing import Any, Protocol
 
+from theloom.semantic import landscape
 from theloom.semantic.embed import cosine_similarity
-from theloom.semantic.landscape import measure_landscape
 from theloom.semantic.search import l2_similarity
 from theloom.synthesis.llm import SynthesisLlmClient
 from theloom.synthesis.prompts import sanitize_for_prompt, strip_code_fences
@@ -210,24 +227,48 @@ def _strip_shared_words(span: str, name_lower: str) -> str:
     return re.sub(r"\s+", " ", stripped).strip()
 
 
+def _entity_null_baseline(
+    name_vector: list[float], unrelated_doc_vectors: list[list[float]]
+) -> tuple[float, float]:
+    """This entity's own (mean, stdev) similarity to a battery of clearly
+    unrelated content — its personal noise floor. See
+    theloom.semantic.landscape's "Specificity" docstring section: a fixed
+    number of points above a GLOBAL floor is not a safe cutoff on this
+    embedder, but a number of THIS ENTITY'S OWN standard deviations above
+    ITS OWN floor is — measured the exact same way
+    theloom.semantic.landscape.measure_specificity calibrates the z-cutoff
+    against, so the two stay comparable."""
+    scores = [l2_similarity(cosine_similarity(name_vector, v)) for v in unrelated_doc_vectors]
+    mean = sum(scores) / len(scores)
+    stdev = pstdev(scores) if len(scores) > 1 else 0.0
+    return mean, stdev
+
+
 def _semantic_grounding(
     text: str, entities: list[Doc], embedder: SupportsMentionEmbedding
 ) -> dict[str, Doc]:
     """Semantic match basis for ``entities`` (already known not to appear as
-    an exact substring of ``text``): the entity name — short, name-shaped —
-    is embedded as a query; each candidate span of ``text`` — passage-shaped
-    — is embedded as a document, batched in one call. A match counts only
-    when the best-scoring span clears this embedder's own live-measured
-    "meaningfully related" cutoff (``theloom.semantic.landscape`` — desire
-    8's calibration, reused rather than a fresh magic number), so the two
-    desires share one number instead of inventing a second one.
+    an exact substring of ``text``) — a RELATIVE decision (round 3 design;
+    see this module's own docstring for why rounds 1-2's absolute cutoffs
+    both failed against fresh adversarial cases).
 
-    Clearing the cutoff is necessary but not sufficient when the winning
-    span shares a significant word with the entity name: see this module's
-    docstring for why (a false friend can clear the same cutoff a genuine
-    paraphrase does on this embedder) and :func:`_strip_shared_words` for
-    the residual-similarity check that guards against it — the match must
-    ALSO clear the cutoff with the shared word(s) removed.
+    For each entity: embed its name TWO ways — symmetric (type-anchored,
+    via ``embed_document``) and asymmetric (bare name, via ``embed_query`` —
+    the OLD round-1/2 representation) — and measure its OWN baseline
+    similarity to a battery of clearly unrelated content in EACH
+    representation (the same document battery
+    ``theloom.semantic.landscape.measure_specificity`` calibrates against).
+    Each candidate span is compared against the entity name — residual-
+    stripped first if it shares a significant word with the name, the same
+    guard round 2 introduced, still the right first move — and converted to
+    a z-score against the entity's OWN baseline, ranked by the symmetric
+    z-score (the stronger of the two signals — see the module docstring).
+    The best (highest symmetric-z) span grounds the entity only if BOTH its
+    symmetric AND asymmetric z-scores clear their OWN independently
+    calibrated cutoffs: live-tested (this module's own docstring), the two
+    representations disagree often enough on different false-friend cases
+    that requiring agreement rejects more of them than either check alone,
+    without costing recall on genuine matches (which clear both easily).
 
     Returns a dict keyed by entity id — only entities that cleared both
     checks appear in it; the caller decides what "not present" means.
@@ -237,49 +278,69 @@ def _semantic_grounding(
     spans = _candidate_mention_spans(text)
     if not spans:
         return {}
-    cutoff = measure_landscape(embedder).meaningfully_related_cutoff
+    unrelated_docs = landscape.unrelated_document_battery()
+    if not unrelated_docs:
+        return {}
+    sym_cutoff = landscape.measure_specificity(
+        embedder, representation="symmetric"
+    ).specificity_z_cutoff
+    asym_cutoff = landscape.measure_specificity(
+        embedder, representation="asymmetric"
+    ).specificity_z_cutoff
+    unrelated_doc_vectors = [embedder.embed_document(d) for d in unrelated_docs]
     span_vectors = embedder.embed_documents(spans)
     span_lowers = [s.lower() for s in spans]
 
     results: dict[str, Doc] = {}
     for entity in entities:
         name_lower = entity["name"].lower()
-        name_vector = embedder.embed_query(entity["name"])
-        best_span = spans[0]
-        best_span_lower = span_lowers[0]
-        best_score = -1.0
+        sym_name_vector = embedder.embed_document(landscape.entity_representation(entity["name"]))
+        asym_name_vector = embedder.embed_query(entity["name"])
+        sym_null_mean, sym_null_stdev = _entity_null_baseline(
+            sym_name_vector, unrelated_doc_vectors
+        )
+        asym_null_mean, asym_null_stdev = _entity_null_baseline(
+            asym_name_vector, unrelated_doc_vectors
+        )
+
+        best_span: str | None = None
+        best_score = 0.0
+        best_sym_z = -math.inf
+        best_asym_z = -math.inf
         for span, span_lower, span_vector in zip(spans, span_lowers, span_vectors, strict=True):
-            score = l2_similarity(cosine_similarity(name_vector, span_vector))
-            if score > best_score:
-                best_score = score
-                best_span = span
-                best_span_lower = span_lower
-        if best_score <= cutoff:
-            continue
+            shared_words = [w for w in _significant_words(name_lower) if _word_match(span_lower, w)]
+            if shared_words:
+                residual_span = _strip_shared_words(span, name_lower)
+                if not residual_span:
+                    continue  # nothing left once the shared word(s) are removed
+                eval_vector = embedder.embed_document(residual_span)
+            else:
+                eval_vector = span_vector
 
-        shared_words = [
-            w for w in _significant_words(name_lower) if _word_match(best_span_lower, w)
-        ]
-        if shared_words:
-            residual_span = _strip_shared_words(best_span, name_lower)
-            residual_score = (
-                l2_similarity(
-                    cosine_similarity(name_vector, embedder.embed_document(residual_span))
+            sym_score = l2_similarity(cosine_similarity(sym_name_vector, eval_vector))
+            sym_z = (sym_score - sym_null_mean) / sym_null_stdev if sym_null_stdev > 0 else 0.0
+            if sym_z > best_sym_z:
+                asym_score = l2_similarity(cosine_similarity(asym_name_vector, eval_vector))
+                best_sym_z = sym_z
+                best_asym_z = (
+                    (asym_score - asym_null_mean) / asym_null_stdev if asym_null_stdev > 0 else 0.0
                 )
-                if residual_span
-                else -1.0
-            )
-            if residual_score <= cutoff:
-                continue  # similarity doesn't survive removing the shared word(s)
+                best_score = sym_score
+                best_span = span  # disclose the ORIGINAL span, not the residual
 
-        results[entity["id"]] = {
-            "entityId": entity["id"],
-            "entityName": entity["name"],
-            "status": "grounded",
-            "mentionedAs": _mention_preview(best_span),
-            "matchBasis": "semantic",
-            "matchScore": best_score,
-        }
+        if best_span is not None and best_sym_z > sym_cutoff and best_asym_z > asym_cutoff:
+            results[entity["id"]] = {
+                "entityId": entity["id"],
+                "entityName": entity["name"],
+                "status": "grounded",
+                "mentionedAs": _mention_preview(best_span),
+                "matchBasis": "semantic",
+                "matchScore": best_score,
+                "nullMean": sym_null_mean,
+                "nullStdev": sym_null_stdev,
+                "zScore": best_sym_z,
+                "asymZScore": best_asym_z,
+            }
     return results
 
 
@@ -314,6 +375,10 @@ def check_entity_grounding(
                 "mentionedAs": entity["name"],
                 "matchBasis": "exact",
                 "matchScore": None,
+                "nullMean": None,
+                "nullStdev": None,
+                "zScore": None,
+                "asymZScore": None,
             }
         else:
             unresolved.append(entity)
@@ -338,6 +403,10 @@ def check_entity_grounding(
                     "mentionedAs": matched_word,
                     "matchBasis": "partial_word",
                     "matchScore": None,
+                    "nullMean": None,
+                    "nullStdev": None,
+                    "zScore": None,
+                    "asymZScore": None,
                 }
                 continue
         results[entity["id"]] = {
@@ -347,6 +416,10 @@ def check_entity_grounding(
             "mentionedAs": None,
             "matchBasis": None,
             "matchScore": None,
+            "nullMean": None,
+            "nullStdev": None,
+            "zScore": None,
+            "asymZScore": None,
         }
 
     groundings = [results[entity["id"]] for entity in entities]
@@ -421,6 +494,10 @@ def _refine_grounding_with_llm(
                     else match["entityName"],
                     "matchBasis": "llm",
                     "matchScore": None,
+                    "nullMean": None,
+                    "nullStdev": None,
+                    "zScore": None,
+                    "asymZScore": None,
                 }
             )
     return refined

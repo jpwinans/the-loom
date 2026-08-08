@@ -22,8 +22,11 @@ from theloom.semantic.landscape import (
     RELATED_PROBE_PAIRS,
     UNRELATED_PROBE_PAIRS,
     band_stats_doc,
+    entity_representation,
     measure_landscape,
+    measure_specificity,
     pair_doc,
+    unrelated_document_battery,
 )
 from theloom.semantic.search import l2_similarity
 
@@ -233,3 +236,186 @@ class TestWireShapeHelpers:
         assert set(doc) == {"query", "document", "relation", "cosine", "score"}
         assert doc["cosine"] == pytest.approx(cosine_similarity(vectors["q"], vectors["d"]))
         assert doc["score"] == pytest.approx(1.0)
+
+
+# =============================================================================
+# Specificity: the RELATIVE (per-entity z-score) calibration desire 10 uses
+# (round 3, after two absolute-cutoff designs both failed against fresh
+# adversarial cases — see theloom/synthesis/fidelity.py's own docstring).
+# =============================================================================
+
+
+def _corpus_vectors_for_specificity() -> dict[str, list[float]]:
+    # Every corpus entity's SYMMETRIC name representation
+    # ("[concept] <name>") shares one axis -- measure_specificity never
+    # compares two entities' vectors directly, only entity-vs-document, so
+    # (as with measure_landscape's own tests above) this is safe.
+    vectors = {
+        "[concept] cu1": [1.0, 0.0, 0.0],
+        "[concept] cu2": [1.0, 0.0, 0.0],
+        "[concept] cu3": [1.0, 0.0, 0.0],
+        "[concept] cr1": [1.0, 0.0, 0.0],
+        "[concept] cr2": [1.0, 0.0, 0.0],
+        "cud1": _vector_for_cosine(0.0),
+        "cud2": _vector_for_cosine(0.1),
+        "cud3": _vector_for_cosine(0.05),
+        "crd1": _vector_for_cosine(0.9),
+        "crd2": _vector_for_cosine(0.85),
+    }
+    return vectors
+
+
+_SPECIFICITY_UNRELATED = (("cu1", "cud1"), ("cu2", "cud2"), ("cu3", "cud3"))
+_SPECIFICITY_RELATED = (("cr1", "crd1"), ("cr2", "crd2"))
+
+
+class TestSpecificityEntityRepresentation:
+    def test_uniform_concept_prefix(self) -> None:
+        assert entity_representation("Root Cause Analysis") == "[concept] Root Cause Analysis"
+
+    def test_unrelated_document_battery_reads_the_live_corpus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "theloom.semantic.landscape.UNRELATED_PROBE_PAIRS", (("q", "custom document"),)
+        )
+        assert unrelated_document_battery() == ("custom document",)
+
+    def test_default_matches_the_module_constant(self) -> None:
+        assert unrelated_document_battery() == tuple(d for _, d in UNRELATED_PROBE_PAIRS)
+
+
+class TestSpecificityCalibration:
+    """Numbers below are independently computed (leave-one-out for the
+    corpus's own unrelated pairs, full-battery for related pairs, exactly
+    matching ``_measure_specificity``'s own algorithm) rather than copied
+    from the implementation, so this pins the CONTRACT, not just whatever
+    the code currently does."""
+
+    def test_symmetric_calibration_matches_hand_computed_z_scores(self) -> None:
+        embedder = _MappedEmbedder(_corpus_vectors_for_specificity())
+
+        profile = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=_SPECIFICITY_RELATED,
+            representation="symmetric",
+            use_cache=False,
+        )
+
+        unrelated_cos = [0.0, 0.1, 0.05]
+        related_cos = [0.9, 0.85]
+        # Leave-one-out z for each unrelated pair.
+        expected_unrelated_zs = []
+        for i in range(3):
+            others = [unrelated_cos[j] for j in range(3) if j != i]
+            other_scores = [_score_for_cosine(c) for c in others]
+            mean = sum(other_scores) / len(other_scores)
+            stdev = math.sqrt(sum((s - mean) ** 2 for s in other_scores) / len(other_scores))
+            expected_unrelated_zs.append((_score_for_cosine(unrelated_cos[i]) - mean) / stdev)
+        # Full-battery z for each related pair.
+        all_scores = [_score_for_cosine(c) for c in unrelated_cos]
+        mean_all = sum(all_scores) / len(all_scores)
+        stdev_all = math.sqrt(sum((s - mean_all) ** 2 for s in all_scores) / len(all_scores))
+        expected_related_zs = [(_score_for_cosine(c) - mean_all) / stdev_all for c in related_cos]
+
+        assert profile.unrelated_z_baseline.mean == pytest.approx(
+            sum(expected_unrelated_zs) / len(expected_unrelated_zs)
+        )
+        assert profile.related_z_range.min == pytest.approx(min(expected_related_zs))
+        umax = max(expected_unrelated_zs)
+        rmin = min(expected_related_zs)
+        assert rmin > umax  # this corpus separates cleanly on the z scale too
+        assert profile.specificity_z_cutoff == pytest.approx((umax + rmin) / 2)
+        assert "separated cleanly" in profile.cutoff_method
+
+    def test_asymmetric_representation_differs_from_symmetric(self) -> None:
+        """The same corpus, scored through embed_query (bare name, no type
+        anchor) instead of embed_document("[concept] name") -- a different
+        representation must be able to disagree (this is the whole point of
+        cross-checking both in theloom.synthesis.fidelity)."""
+        vectors = _corpus_vectors_for_specificity()
+        # Give the ASYMMETRIC (embed_query, bare-name) form of one entity a
+        # deliberately different vector from its symmetric form.
+        vectors["cu1"] = _vector_for_cosine(0.5)
+        vectors["cu2"] = _vector_for_cosine(0.5)
+        vectors["cu3"] = _vector_for_cosine(0.5)
+        vectors["cr1"] = _vector_for_cosine(0.5)
+        vectors["cr2"] = _vector_for_cosine(0.5)
+        embedder = _MappedEmbedder(vectors)
+
+        symmetric = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=_SPECIFICITY_RELATED,
+            representation="symmetric",
+            use_cache=False,
+        )
+        asymmetric = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=_SPECIFICITY_RELATED,
+            representation="asymmetric",
+            use_cache=False,
+        )
+
+        assert symmetric.specificity_z_cutoff != pytest.approx(asymmetric.specificity_z_cutoff)
+
+
+class TestSpecificityIsCorpusDerived:
+    def test_editing_the_corpus_changes_the_cutoff(self) -> None:
+        embedder = _MappedEmbedder(_corpus_vectors_for_specificity())
+
+        original = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=_SPECIFICITY_RELATED,
+            representation="symmetric",
+            use_cache=False,
+        )
+        edited = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=(("cr1", "crd1"),),  # drop one related pair
+            representation="symmetric",
+            use_cache=False,
+        )
+
+        assert original.related_z_range.sample_size == 2
+        assert edited.related_z_range.sample_size == 1
+        assert original.specificity_z_cutoff != pytest.approx(edited.specificity_z_cutoff)
+
+
+class TestSpecificityCaching:
+    def test_representation_is_part_of_the_cache_key(self) -> None:
+        """Calling with representation="symmetric" then "asymmetric" must
+        not silently reuse the wrong cached profile."""
+        vectors = _corpus_vectors_for_specificity()
+        vectors["cu1"] = _vector_for_cosine(0.5)
+        vectors["cu2"] = _vector_for_cosine(0.5)
+        vectors["cu3"] = _vector_for_cosine(0.5)
+        vectors["cr1"] = _vector_for_cosine(0.5)
+        vectors["cr2"] = _vector_for_cosine(0.5)
+        embedder = _MappedEmbedder(vectors)
+
+        symmetric = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=_SPECIFICITY_RELATED,
+            representation="symmetric",
+        )
+        asymmetric = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=_SPECIFICITY_RELATED,
+            representation="asymmetric",
+        )
+        symmetric_again = measure_specificity(
+            embedder,
+            unrelated_pairs=_SPECIFICITY_UNRELATED,
+            related_pairs=_SPECIFICITY_RELATED,
+            representation="symmetric",
+        )
+
+        assert symmetric.specificity_z_cutoff != pytest.approx(asymmetric.specificity_z_cutoff)
+        assert symmetric is symmetric_again
