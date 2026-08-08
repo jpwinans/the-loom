@@ -261,7 +261,7 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
                 {"limit": gap_limit, "minSimilarity": min_similarity, "graph": graph}
             ),
             multi,
-        )
+        )["items"]
         state["detectedGaps"] = gap_results
         return {"count": len(gap_results), "gaps": gap_results}
 

@@ -144,15 +144,15 @@ def test_list_dead_letters_reports_error_entities_with_their_reason(
     result = list_dead_letters(GraphArgInput(), multi)
 
     assert result["count"] == 1
-    assert len(result["deadLetters"]) == 1
-    entry = result["deadLetters"][0]
+    assert len(result["items"]) == 1
+    entry = result["items"][0]
     assert entry["entityId"] == failed_id
     assert entry["embeddingError"] == "embedding backend unavailable"
 
 
 def test_list_dead_letters_is_empty_with_no_failures(multi: MultiGraph) -> None:
     _create(multi, "fine")
-    assert list_dead_letters(GraphArgInput(), multi) == {"deadLetters": [], "count": 0}
+    assert list_dead_letters(GraphArgInput(), multi) == {"items": [], "count": 0}
 
 
 # =============================================================================

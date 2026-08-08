@@ -39,6 +39,7 @@ from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
 from theloom.model import ALL_RELATION_TYPES, EmbeddingStatus, EntityFilter, EntityType
 from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.notices import list_envelope
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_VERSION,
@@ -484,7 +485,7 @@ def list_dead_letters(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any
         }
         for e in errored
     ]
-    return {"deadLetters": dead_letters, "count": len(dead_letters)}
+    return list_envelope(dead_letters)
 
 
 def embedding_reconcile(params: EmbeddingReconcileInput, multi: MultiGraph) -> dict[str, Any]:
@@ -549,7 +550,7 @@ def _keyword_scores(
     return matches
 
 
-def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     results = _search_similar(
         store,
@@ -558,18 +559,20 @@ def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict
         min_score=params.min_score,
         entity_types=_as_type_list(params.entity_type),
     )
-    return [
-        {
-            "entityId": r["id"],
-            "name": r["metadata"]["name"],
-            "entityType": r["metadata"]["entityType"],
-            "score": r["score"],
-            "scores": {"vector": r["score"], "keyword": 0, "graph": 0},
-            "matchSource": "semantic",
-            "entryType": r["metadata"]["entryType"],
-        }
-        for r in results
-    ]
+    return list_envelope(
+        [
+            {
+                "entityId": r["id"],
+                "name": r["metadata"]["name"],
+                "entityType": r["metadata"]["entityType"],
+                "score": r["score"],
+                "scores": {"vector": r["score"], "keyword": 0, "graph": 0},
+                "matchSource": "semantic",
+                "entryType": r["metadata"]["entryType"],
+            }
+            for r in results
+        ]
+    )
 
 
 def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any]:
@@ -676,7 +679,7 @@ def _connected_ids(store: FalkorGraphStore, entity_id: str) -> set[str]:
     return connected
 
 
-def semantic_neighbors(params: SemanticNeighborsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def semantic_neighbors(params: SemanticNeighborsInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     entity = store.read_entity(params.entity_id)
     if entity is None:
@@ -705,7 +708,7 @@ def semantic_neighbors(params: SemanticNeighborsInput, multi: MultiGraph) -> lis
         if r["id"] not in connected
     ]
     neighbors.sort(key=lambda n: -float(n["similarity"]))
-    return neighbors[:limit]
+    return list_envelope(neighbors[:limit])
 
 
 def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any]:
@@ -781,14 +784,14 @@ def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any
     }
 
 
-def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     limit = params.limit or 20
     min_similarity = params.min_similarity if params.min_similarity is not None else 0.6
     max_entities = params.max_entities or 200
     entities = _spread_sample(_entity_docs(store), max_entities, params.seed)
     if not entities:
-        return []
+        return list_envelope([])
     index = {
         e["id"]: {"id": e["id"], "name": e["name"], "entityType": e["entityType"]} for e in entities
     }
@@ -822,10 +825,10 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str
                 }
             )
     gaps.sort(key=lambda g: -float(g["similarity"]))
-    return gaps[:limit]
+    return list_envelope(gaps[:limit])
 
 
-def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     entity = store.read_entity(params.entity_id)
     if entity is None:
@@ -849,7 +852,7 @@ def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> list[
             }
         ),
         multi,
-    )
+    )["items"]
 
     id_to_type = {e["id"]: e["entityType"] for e in _entity_docs(store)}
     pair_freq: dict[str, dict[str, Any]] = {}
@@ -892,7 +895,7 @@ def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> list[
             row["suggestedRelationType"] = suggested
         suggestions.append(row)
     suggestions.sort(key=lambda s: -float(s["confidence"]))
-    return suggestions[:limit]
+    return list_envelope(suggestions[:limit])
 
 
 def resolve_gaps(params: ResolveGapsInput, multi: MultiGraph) -> dict[str, Any]:
@@ -920,7 +923,7 @@ def resolve_gaps(params: ResolveGapsInput, multi: MultiGraph) -> dict[str, Any]:
     )
     resolved: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    for gap in gaps:
+    for gap in gaps["items"]:
         similarity = float(gap["similarity"])
         if similarity < threshold:
             continue

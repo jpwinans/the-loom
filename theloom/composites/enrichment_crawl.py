@@ -263,7 +263,7 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             ),
             multi,
         )
-        return [(n["entity"]["id"], float(n["similarity"])) for n in neighbors]
+        return [(n["entity"]["id"], float(n["similarity"])) for n in neighbors["items"]]
 
     def _crawl() -> Doc:
         graph: LoomGraph = state["graph"]

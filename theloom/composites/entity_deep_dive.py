@@ -248,7 +248,7 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
                     "entityType": r["entityType"],
                     "score": r["score"],
                 }
-                for r in results
+                for r in results["items"]
                 if r["entityId"] != entity_id
             ]
         except Exception:  # noqa: BLE001 — degrade to [] on any failure.

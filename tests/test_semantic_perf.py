@@ -74,7 +74,7 @@ def test_search_similar_never_fetches_every_vector(
 
     monkeypatch.setattr(FalkorGraphStore, "get_entity_vectors", _boom)
 
-    results = semantic_search(SemanticSearchInput(query="q", limit=2), multi)
+    results = semantic_search(SemanticSearchInput(query="q", limit=2), multi)["items"]
     assert [r["name"] for r in results] == ["close-a", "close-b"]
     assert results[0]["score"] > results[1]["score"]
 
@@ -102,7 +102,7 @@ def test_search_similar_respects_entity_type_filter_via_overfetch(
     results = semantic_search(
         SemanticSearchInput.model_validate({"query": "q", "limit": 5, "entityType": "concept"}),
         multi,
-    )
+    )["items"]
     assert {r["name"] for r in results} == {"concept-a", "concept-b"}
 
 
@@ -127,7 +127,7 @@ def test_search_similar_escalates_candidates_until_a_rare_type_is_found(
     results = semantic_search(
         SemanticSearchInput.model_validate({"query": "q", "limit": 1, "entityType": "claim"}),
         multi,
-    )
+    )["items"]
     assert [r["name"] for r in results] == ["rare-claim"]
 
 
@@ -144,7 +144,7 @@ def test_search_similar_excludes_non_active_entities(
         "theloom.operations.semantic.get_embedder", lambda: FakeEmbedder([1.0, 0.0])
     )
 
-    results = semantic_search(SemanticSearchInput(query="q", limit=10), multi)
+    results = semantic_search(SemanticSearchInput(query="q", limit=10), multi)["items"]
     assert [r["name"] for r in results] == ["live"]
 
 
@@ -175,7 +175,7 @@ def test_search_similar_min_score_stops_at_first_below_threshold(
     results = semantic_search(
         SemanticSearchInput.model_validate({"query": "q", "limit": 10, "minScore": 0.9}),
         multi,
-    )
+    )["items"]
     assert [r["name"] for r in results] == ["near"]
     assert len(reads) == 1  # the sub-threshold candidate was never resolved
 
@@ -303,7 +303,7 @@ def test_semantic_gaps_reports_partners_outside_the_sample(
         lambda: FakeEmbedder(vectors),
     )
 
-    gaps = semantic_gaps(SemanticGapsInput.model_validate({"maxEntities": 2}), multi)
+    gaps = semantic_gaps(SemanticGapsInput.model_validate({"maxEntities": 2}), multi)["items"]
 
     pairs = {frozenset([g["entityA"]["id"], g["entityB"]["id"]]) for g in gaps}
     assert frozenset([ids["pair-a"], ids["pair-b"]]) in pairs
@@ -492,6 +492,6 @@ def test_search_similar_recovers_when_the_knn_window_is_inverted(
     results = semantic_search(
         SemanticSearchInput.model_validate({"query": "q", "limit": 2, "minScore": 0.5}),
         multi,
-    )
+    )["items"]
     assert sorted(r["name"] for r in results) == ["near-c", "near-d"]
     assert len(windows) > 1, "the window must have grown past the inverted first read"
