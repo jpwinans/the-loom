@@ -1,5 +1,17 @@
 """Fidelity verification.
 
+Entity grounding (desire 10, claude-desires.md): an exact (case-insensitive)
+substring match is always "exact" grounding — cheap and unambiguous, kept as
+the fast path. Anything short of that is decided SEMANTICALLY when an
+embedder is available: the entity name is compared, by embedding, against
+sentence-level spans of ``text``, and a match counts only when it clears the
+embedder's own live-measured "meaningfully related" cutoff (see
+``theloom.semantic.landscape`` — desire 8's machinery, reused rather than a
+fresh magic number). Only when NO embedder is supplied does this fall back to
+the legacy "any significant word overlaps" heuristic — the one that credited
+an unrelated claim for sharing a single word with an entity's name. Every
+grounding decision discloses its ``matchBasis`` alongside ``mentionedAs``.
+
 Structural mode is positional: both entity names must appear as substrings
 (first-occurrence indices decide preserved vs inverted); narrative mode
 matches relation-type cue phrases anywhere, then falls back to a 500-char
@@ -11,8 +23,11 @@ from __future__ import annotations
 
 import math
 import re
-from typing import Any
+from typing import Any, Protocol
 
+from theloom.semantic.embed import cosine_similarity
+from theloom.semantic.landscape import measure_landscape
+from theloom.semantic.search import l2_similarity
 from theloom.synthesis.llm import SynthesisLlmClient
 from theloom.synthesis.prompts import sanitize_for_prompt, strip_code_fences
 
@@ -26,6 +41,20 @@ MAX_LLM_REFINEMENT_ENTITIES = 20
 MAX_LLM_TEXT_LENGTH = 5000
 MIN_PARTIAL_MATCH_WORD_LENGTH = 4
 NARRATIVE_PROXIMITY_THRESHOLD = 500
+MAX_SEMANTIC_MENTION_SPANS = 60
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+class SupportsMentionEmbedding(Protocol):
+    """The slice of the embedder semantic grounding needs."""
+
+    def embed_query(self, text: str) -> list[float]: ...
+
+    def embed_document(self, text: str) -> list[float]: ...
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
+
 
 RELATION_NARRATIVE_CUES: dict[str, list[str]] = {
     "causes": [
@@ -98,44 +127,164 @@ def _find_partial_match_index(text_lower: str, name_lower: str) -> int:
     return -1
 
 
+def _candidate_mention_spans(text: str) -> list[str]:
+    """Sentence-level spans of ``text`` considered as mention candidates for
+    semantic grounding. Deduplicated and capped at
+    ``MAX_SEMANTIC_MENTION_SPANS`` — ``text`` can be up to 1,000,000 chars
+    (the command's own input schema), and one embedding call per sentence in
+    a document that large would turn a single verify-fidelity call into
+    thousands of embedding calls.
+
+    Deliberately sentence-level only, with no whole-text catch-all span:
+    for unsegmented input (no ``.!?`` at all) the regex below already
+    returns ``text`` itself as the sole "sentence", so a separate whole-text
+    span is redundant there — and for genuinely multi-sentence input it is
+    actively harmful. Live-tested against the real embedder: a two-sentence
+    text (one sentence a faithful paraphrase of entity A, the other an
+    unrelated claim merely sharing one word with entity B's name) blended
+    into a single whole-text embedding scored high enough on entity B's name
+    to falsely ground it — the same false-positive shape this feature exists
+    to eliminate, just smuggled back in through a coarser span. Comparing
+    only individual sentences avoids diluting one sentence's topic into
+    another's.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return []
+    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(stripped) if s.strip()]
+    spans: list[str] = []
+    seen: set[str] = set()
+    for span in sentences:
+        if span in seen:
+            continue
+        seen.add(span)
+        spans.append(span)
+        if len(spans) >= MAX_SEMANTIC_MENTION_SPANS:
+            break
+    return spans
+
+
+_MENTION_PREVIEW_CHARS = 200
+
+
+def _mention_preview(span: str) -> str:
+    if len(span) <= _MENTION_PREVIEW_CHARS:
+        return span
+    return span[:_MENTION_PREVIEW_CHARS] + "…"
+
+
+def _semantic_grounding(
+    text: str, entities: list[Doc], embedder: SupportsMentionEmbedding
+) -> dict[str, Doc]:
+    """Semantic match basis for ``entities`` (already known not to appear as
+    an exact substring of ``text``): the entity name — short, name-shaped —
+    is embedded as a query; each candidate span of ``text`` — passage-shaped
+    — is embedded as a document, batched in one call. A match counts only
+    when the best-scoring span clears this embedder's own live-measured
+    "meaningfully related" cutoff (``theloom.semantic.landscape`` — desire
+    8's calibration, reused rather than a fresh magic number), so the two
+    desires share one number instead of inventing a second one.
+
+    Returns a dict keyed by entity id — only entities that cleared the
+    cutoff appear in it; the caller decides what "not present" means.
+    """
+    if not entities:
+        return {}
+    spans = _candidate_mention_spans(text)
+    if not spans:
+        return {}
+    cutoff = measure_landscape(embedder).meaningfully_related_cutoff
+    span_vectors = embedder.embed_documents(spans)
+
+    results: dict[str, Doc] = {}
+    for entity in entities:
+        name_vector = embedder.embed_query(entity["name"])
+        best_span = spans[0]
+        best_score = -1.0
+        for span, span_vector in zip(spans, span_vectors, strict=True):
+            score = l2_similarity(cosine_similarity(name_vector, span_vector))
+            if score > best_score:
+                best_score = score
+                best_span = span
+        if best_score > cutoff:
+            results[entity["id"]] = {
+                "entityId": entity["id"],
+                "entityName": entity["name"],
+                "status": "grounded",
+                "mentionedAs": _mention_preview(best_span),
+                "matchBasis": "semantic",
+                "matchScore": best_score,
+            }
+    return results
+
+
 def check_entity_grounding(
-    text: str, entities: list[Doc], llm_client: SynthesisLlmClient | None
+    text: str,
+    entities: list[Doc],
+    llm_client: SynthesisLlmClient | None,
+    embedder: SupportsMentionEmbedding | None = None,
 ) -> list[Doc]:
+    """Ground each of ``entities`` against ``text``.
+
+    An exact (case-insensitive) name match is always ``"exact"`` grounding —
+    unambiguous, no embedder needed. Anything else is decided semantically
+    when ``embedder`` is supplied (see :func:`_semantic_grounding`) —
+    desire 10's fix, and what ``theloom.operations.synthesis.verify_fidelity``
+    always passes. Without an embedder (a caller that has none available),
+    this falls back to the legacy "any significant word overlaps" heuristic,
+    kept only for that case — it is the exact mechanism that used to credit
+    an unrelated claim for sharing one word with an entity's name, which is
+    why the semantic path replaces it whenever an embedder exists.
+    """
     text_lower = text.lower()
-    groundings: list[Doc] = []
+    results: dict[str, Doc] = {}
+    unresolved: list[Doc] = []
     for entity in entities:
         name_lower = entity["name"].lower()
         if name_lower in text_lower:
-            groundings.append(
-                {
-                    "entityId": entity["id"],
-                    "entityName": entity["name"],
-                    "status": "grounded",
-                    "mentionedAs": entity["name"],
-                }
-            )
+            results[entity["id"]] = {
+                "entityId": entity["id"],
+                "entityName": entity["name"],
+                "status": "grounded",
+                "mentionedAs": entity["name"],
+                "matchBasis": "exact",
+                "matchScore": None,
+            }
+        else:
+            unresolved.append(entity)
+
+    if embedder is not None and unresolved:
+        results.update(_semantic_grounding(text, unresolved, embedder))
+
+    for entity in unresolved:
+        if entity["id"] in results:
             continue
-        matched_word = next(
-            (w for w in _significant_words(name_lower) if _word_match(text_lower, w)), None
-        )
-        if matched_word is not None:
-            groundings.append(
-                {
+        if embedder is None:
+            entity_name_lower = entity["name"].lower()
+            matched_word = next(
+                (w for w in _significant_words(entity_name_lower) if _word_match(text_lower, w)),
+                None,
+            )
+            if matched_word is not None:
+                results[entity["id"]] = {
                     "entityId": entity["id"],
                     "entityName": entity["name"],
                     "status": "grounded",
                     "mentionedAs": matched_word,
+                    "matchBasis": "partial_word",
+                    "matchScore": None,
                 }
-            )
-        else:
-            groundings.append(
-                {
-                    "entityId": entity["id"],
-                    "entityName": entity["name"],
-                    "status": "omitted",
-                    "mentionedAs": None,
-                }
-            )
+                continue
+        results[entity["id"]] = {
+            "entityId": entity["id"],
+            "entityName": entity["name"],
+            "status": "omitted",
+            "mentionedAs": None,
+            "matchBasis": None,
+            "matchScore": None,
+        }
+
+    groundings = [results[entity["id"]] for entity in entities]
 
     if llm_client is not None:
         omitted = [g for g in groundings if g["status"] == "omitted"]
@@ -205,6 +354,8 @@ def _refine_grounding_with_llm(
                     "mentionedAs": item.get("mentionedAs")
                     if isinstance(item.get("mentionedAs"), str)
                     else match["entityName"],
+                    "matchBasis": "llm",
+                    "matchScore": None,
                 }
             )
     return refined
@@ -426,6 +577,7 @@ def verify_fidelity(
     entity_ids: list[str] | None = None,
     mode: str | None = None,
     llm_client: SynthesisLlmClient | None = None,
+    embedder: SupportsMentionEmbedding | None = None,
 ) -> Doc:
     if entity_ids:
         subset = set(entity_ids)
@@ -436,7 +588,7 @@ def verify_fidelity(
     ]
     entity_map = {e["id"]: e["name"] for e in entities}
 
-    entity_groundings = check_entity_grounding(text, entities, llm_client)
+    entity_groundings = check_entity_grounding(text, entities, llm_client, embedder)
     if (mode or "structural") == "narrative":
         relation_preservations = check_relation_preservation_narrative(
             text, relevant_relations, entity_map
