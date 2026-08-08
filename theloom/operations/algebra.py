@@ -29,6 +29,7 @@ from theloom.algebra.core import (
 from theloom.errors import NotFoundError, OperationError
 from theloom.model import EntityType, RelationType
 from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.notices import notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
@@ -36,6 +37,21 @@ MAX_DEPTH_LIMIT = 10
 _PATH_MODES = ("WALK", "TRAIL", "ACYCLIC", "SIMPLE")
 _SEMIRING_NAMES = ("boolean", "tropical", "tropical-uniform", "viterbi", "counting", "capacity")
 _CATEGORY_NAMES = ("structural", "epistemic", "causal")
+
+# Public direction values (wire contract) -> engine values (theloom.algebra.core).
+_ENGINE_DIRECTION = {"out": "outgoing", "in": "incoming", "both": "both"}
+
+_DIRECTION_DESC = (
+    "Which edges to traverse from `source`. 'out' follows outgoing edges "
+    "(source is the cause; the default when omitted). 'in' follows incoming "
+    "edges (source is the effect — walked backward, so results are "
+    "predecessors, not successors). 'both' unions outgoing and incoming. "
+    "If the traversal touches zero edges from `source` in the searched "
+    "direction, the response carries an EMPTY_TRAVERSAL notice with the "
+    "real edge counts in each direction and, when the other direction has "
+    "edges, a hint to retry with it — an empty `distances` list alone never "
+    "distinguishes 'no causal reach' from 'wrong direction'."
+)
 
 
 def _require_source(store: FalkorGraphStore, entity_id: str) -> None:
@@ -80,6 +96,7 @@ class MetapathSpec(CommandInput):
 
 SemiringName = Literal["boolean", "tropical", "tropical-uniform", "viterbi", "counting", "capacity"]
 PathMode = Literal["WALK", "TRAIL", "ACYCLIC", "SIMPLE"]
+TraversalDirection = Literal["out", "in", "both"]
 
 
 class SemiringTraverseInput(CommandInput):
@@ -100,7 +117,7 @@ class SemiringDistancesInput(CommandInput):
     mode: PathMode | None = None
     limit: int | None = Field(default=None, ge=1)
     graph: str | None = None
-    direction: str | None = None
+    direction: TraversalDirection | None = Field(default=None, description=_DIRECTION_DESC)
 
 
 class SourceTargetInput(CommandInput):
@@ -215,10 +232,46 @@ def semiring_traverse(params: SemiringTraverseInput, multi: MultiGraph) -> Doc |
     }
 
 
+def _direction_sink_notice(store: FalkorGraphStore, source_id: str, direction: str) -> Doc | None:
+    """Diagnose a traversal that touched zero edges from ``source_id`` in the
+    searched ``direction`` (public 'out'/'in'/'both' value). Counts come
+    straight from the store — never fabricated — so a genuine sink/source is
+    told apart from "no relations at all" or (when the other direction is
+    also empty) a truly isolated entity."""
+    out_count = len(store.get_relations(source_id, "outgoing"))
+    in_count = len(store.get_relations(source_id, "incoming"))
+    if direction == "both":
+        if out_count or in_count:
+            return None
+        return notice(
+            "EMPTY_TRAVERSAL",
+            f"Searched direction 'both': 0 outgoing and 0 incoming edges "
+            f"from '{source_id}' — this entity has no relations to traverse.",
+        )
+    searched, other = (out_count, in_count) if direction == "out" else (in_count, out_count)
+    if searched > 0:
+        return None
+    searched_label = "outgoing" if direction == "out" else "incoming"
+    other_label = "incoming" if direction == "out" else "outgoing"
+    other_direction = "in" if direction == "out" else "out"
+    other_plural = "" if other == 1 else "s"
+    message = (
+        f"Searched direction '{direction}': 0 {searched_label} edges from "
+        f"'{source_id}'; {other} {other_label} edge{other_plural}."
+    )
+    hint = (
+        f"Try direction '{other_direction}' — it has {other} edge{other_plural}."
+        if other > 0
+        else None
+    )
+    return notice("EMPTY_TRAVERSAL", message, hint)
+
+
 def semiring_distances(params: SemiringDistancesInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     semiring, extractor = _resolve_named(params.semiring)
     _require_source(store, params.source)
+    direction = params.direction or "out"
     results = core.lazy_single_source(
         store,
         params.source,
@@ -227,7 +280,7 @@ def semiring_distances(params: SemiringDistancesInput, multi: MultiGraph) -> Doc
         mode=params.mode or "ACYCLIC",
         max_depth=params.max_depth if params.max_depth is not None else 10,
         relation_types=_relation_type_values(params.relation_types),
-        direction=params.direction or "outgoing",
+        direction=_ENGINE_DIRECTION[direction],
     )
     distances = []
     for entity_id, result in results.items():
@@ -247,7 +300,12 @@ def semiring_distances(params: SemiringDistancesInput, multi: MultiGraph) -> Doc
     distances.sort(key=lambda d: float(str(d["value"])) if ascending else -float(str(d["value"])))
     if params.limit is not None and params.limit < len(distances):
         distances = distances[: params.limit]
-    return {"source": params.source, "semiring": params.semiring, "distances": distances}
+    result_doc: Doc = {"source": params.source, "semiring": params.semiring, "distances": distances}
+    if not distances:
+        sink_notice = _direction_sink_notice(store, params.source, direction)
+        if sink_notice is not None:
+            result_doc = with_notices(result_doc, [sink_notice])
+    return result_doc
 
 
 def semiring_reachable(params: SourceTargetInput, multi: MultiGraph) -> Doc:
