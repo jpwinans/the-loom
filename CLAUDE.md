@@ -78,19 +78,32 @@ pyproject.toml               project + tooling config (ruff, mypy, pytest)
 This repo is mapped into the FalkorDB graph **`codebase-the-loom`** (built by
 `/map-codebase`, requires `docker compose up -d falkordb`). Query it before
 grepping — every symbol, call edge, import, invariant, risk and pattern is in
-there, anchored to file and line.
+there, anchored to file and line. Your first query needs nothing beyond this
+section:
 
-- **[docs/architecture/QUERYING.md](docs/architecture/QUERYING.md)** — the recipe
-  sheet: `loom explore` (symbol → definition + callers/callees/imports),
-  `find-callers` / `find-callees`, `blast-radius` (what breaks if I change this),
-  `hybrid-search` (semantic), and the written layer — invariants (`claim`),
-  risks (`tension`), conventions (`pattern`).
-- **[docs/architecture/ARCHITECTURE-MAP.md](docs/architecture/ARCHITECTURE-MAP.md)**
-  — the written walkthrough: subsystem narratives, load-bearing modules,
-  dependency cycles, risks.
-- **[docs/architecture/map-manifest.json](docs/architecture/map-manifest.json)**
-  — the commit the graph describes. If it trails `HEAD` materially, re-run
-  `/map-codebase` (incremental — only changed groups re-enrich).
+```bash
+uv run loom explore '{"name": "run_handler (registry)", "graph": "codebase-the-loom"}'
+# → definition, callers, callees, imports, and the written notes, in one call
+```
+
+Record names take two forms: `file:<repo-relative-path>` for files
+(`file:theloom/store/falkor.py`) and `<symbol> (<module stem>)` for symbols
+(`create_entity (falkor)`); an unambiguous substring resolves, an ambiguous one
+lists the candidates.
+
+When `explore` isn't enough, go deeper in this order:
+
+1. **[docs/architecture/QUERYING.md](docs/architecture/QUERYING.md)** — the recipe
+   sheet: one command per question — `find-callers` / `find-callees`,
+   `blast-radius` (what breaks if I change this), `hybrid-search` (by meaning),
+   and the written layer — invariants (`claim`), risks (`tension`), conventions
+   (`pattern`).
+2. **[docs/architecture/ARCHITECTURE-MAP.md](docs/architecture/ARCHITECTURE-MAP.md)**
+   — the written walkthrough: subsystem narratives, load-bearing modules,
+   dependency cycles, risks.
+3. **[docs/architecture/map-manifest.json](docs/architecture/map-manifest.json)**
+   — the commit the graph describes. If it trails `HEAD` materially, re-run
+   `/map-codebase` (incremental — only changed groups re-enrich).
 
 Before touching a load-bearing symbol, check its `blast-radius` and the
 `claim` / `tension` notes for its module. The visualization
