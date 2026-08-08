@@ -57,6 +57,7 @@ from theloom.operations import inference as inference_ops
 from theloom.operations import merge as merge_ops
 from theloom.operations import multigraph as multigraph_ops
 from theloom.operations import portability as portability_ops
+from theloom.operations import receipts as receipt_ops
 from theloom.operations import reification as reification_ops
 from theloom.operations import relations as relation_ops
 from theloom.operations import semantic as semantic_ops
@@ -1310,6 +1311,27 @@ def _consumption_commands() -> list[CommandDescriptor]:
     )
 
 
+def _event_log_commands() -> list[CommandDescriptor]:
+    """Event Log: the read surface over the append-only event stream —
+    write-receipts' other half (desire 1). Mutating commands report the event
+    ids they appended (see ``theloom.store.receipts``); ``what-changed``
+    replays any span of those ids, or a raw stream range, as a compact
+    field-level diff."""
+    return _build(
+        [
+            _Spec(
+                "what-changed",
+                "Event Log",
+                "Replay a span of the event log as a compact diff: entity/relation, field, "
+                "old, new, and the command that caused it.",
+                receipt_ops.WhatChangedInput,
+                receipt_ops.what_changed,
+                True,
+            ),
+        ]
+    )
+
+
 def _work_memory_commands() -> list[CommandDescriptor]:
     """Work Memory: the experiential layer — what was tried, how it turned out,
     and the standing lessons that fall out of it."""
@@ -1652,6 +1674,7 @@ COMMANDS: list[CommandDescriptor] = [
     *_inference_commands(),
     *_verification_commands(),
     *_consumption_commands(),
+    *_event_log_commands(),
     *_work_memory_commands(),
     *_composite_commands(),
     *_tail_commands(),
