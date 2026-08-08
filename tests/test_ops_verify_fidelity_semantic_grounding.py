@@ -2,12 +2,20 @@
 (``theloom.operations.synthesis.verify_fidelity`` — what ``loom
 verify-fidelity`` actually calls), not just fidelity's internal core. Same
 scenario as tests/test_synthesis_fidelity_semantic_grounding.py: a paraphrase
-with no shared words must ground, an unrelated claim sharing one word with an
-entity's name must not.
+that reuses one word from the entity name must ground, and a coincidental
+word-overlap claim sharing that SAME word with a different entity must not —
+both via the residual (word-stripped) check, since (round 2, blind critic
+finding) the raw score alone clears the cutoff for both on this embedder's
+real geometry.
 
 Uses explicit ``entityIds`` throughout so this stays a pure grounding test —
 TL-484's auto-scope/relevance-floor machinery (tests/test_synthesis_fidelity_
 scoping.py) is exercised elsewhere and is untouched by desire 10.
+
+Vectors are sized to the real measured geometry (cosine ~0.35 unrelated,
+~0.6-0.7 word-inflated/related — see theloom/semantic/landscape.py's own
+probe corpus), not an arbitrary 0.95, per the round-2 critic finding that
+0.95 mocks proved nothing about the real path.
 """
 
 from __future__ import annotations
@@ -22,9 +30,11 @@ from theloom.operations.synthesis import verify_fidelity as verify_fidelity_op
 from theloom.semantic import landscape
 from theloom.store.multigraph import MultiGraph
 
-PARAPHRASE_SENTENCE = "There's a lag before the correction actually lands."
-UNRELATED_SENTENCE = "The orchestra performed a silent movie score."
-TEXT = f"{PARAPHRASE_SENTENCE} {UNRELATED_SENTENCE}"
+PARAPHRASE_SENTENCE = "The lag in the feedback loop meant corrections always arrived too late."
+FALSE_FRIEND_SENTENCE = "The orchestra performed a silent movie score."
+TEXT = f"{PARAPHRASE_SENTENCE} {FALSE_FRIEND_SENTENCE}"
+FEEDBACK_STRIPPED = "The lag in the loop meant corrections always arrived too late."
+SILENT_STRIPPED = "The orchestra performed a movie score."
 
 
 def _entity(name: str) -> EntityCreate:
@@ -52,17 +62,41 @@ def _vec(dim: int, primary: int, cosine: float, secondary: int) -> list[float]:
     return v
 
 
+# One reserved axis pair per entity so unrelated (entity, span) pairs stay
+# exactly orthogonal (cosine 0) instead of accidentally sharing a "spare"
+# axis with a different entity's engineered vector.
+_DIM = 6
+_CALIBRATION_AXES = (0, 1)
+_FEEDBACK_AXES = (2, 3)
+_SILENT_AXES = (4, 5)
+
+
 def _build_vectors() -> dict[str, list[float]]:
+    calibration_primary, calibration_spare = _CALIBRATION_AXES
+    feedback_primary, feedback_spare = _FEEDBACK_AXES
+    silent_primary, silent_spare = _SILENT_AXES
+
+    def unit(axis: int) -> list[float]:
+        v = [0.0] * _DIM
+        v[axis] = 1.0
+        return v
+
     return {
-        "cu": [1.0, 0.0, 0.0],
-        "cud": _vec(3, 0, 0.1, 1),
-        "cr": [1.0, 0.0, 0.0],
-        "crd": _vec(3, 0, 0.9, 1),
-        "Feedback Delay": [1.0, 0.0, 0.0],
-        PARAPHRASE_SENTENCE: _vec(3, 0, 0.95, 2),
-        "Silent Failure Mode": [0.0, 1.0, 0.0],
-        UNRELATED_SENTENCE: _vec(3, 1, 0.05, 2),
-        TEXT: [0.0, 0.0, 1.0],
+        "cu": unit(calibration_primary),
+        "cud": _vec(_DIM, calibration_primary, 0.35, calibration_spare),
+        "cr": unit(calibration_primary),
+        "crd": _vec(_DIM, calibration_primary, 0.70, calibration_spare),
+        # "Feedback Delay": genuine paraphrase reusing "feedback". Raw
+        # cosine 0.69, stripped of "feedback" still 0.58 -- survives.
+        "Feedback Delay": unit(feedback_primary),
+        PARAPHRASE_SENTENCE: _vec(_DIM, feedback_primary, 0.69, feedback_spare),
+        FEEDBACK_STRIPPED: _vec(_DIM, feedback_primary, 0.58, feedback_spare),
+        # "Silent Failure Mode": false friend sharing "silent". Raw cosine
+        # 0.62 clears the cutoff alone; stripped of "silent" it collapses
+        # to 0.20 -- the exact case the residual check exists to catch.
+        "Silent Failure Mode": unit(silent_primary),
+        FALSE_FRIEND_SENTENCE: _vec(_DIM, silent_primary, 0.62, silent_spare),
+        SILENT_STRIPPED: _vec(_DIM, silent_primary, 0.20, silent_spare),
     }
 
 

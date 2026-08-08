@@ -15,11 +15,9 @@ underneath it, nothing re-checks it.
 This module is the substrate saying that geometry out loud, live, every time
 it is asked, against a small fixed probe corpus:
 
-- :data:`UNRELATED_PROBE_PAIRS` — mostly pairs of texts drawn from disjoint
-  topical domains that share no real content, plus a few deliberate "false
-  friends" that reuse a literal word in an unrelated sense (see that data's
-  own comment). Their scores are the embedder's anisotropic noise floor —
-  including the inflated floor a shared word alone can produce.
+- :data:`UNRELATED_PROBE_PAIRS` — pairs of texts drawn from disjoint topical
+  domains that share no real content. Their scores are the embedder's
+  general anisotropic noise floor.
 - :data:`RELATED_PROBE_PAIRS` — a short, entity-name-shaped phrase paired
   with a longer paraphrase or definition of the *same* concept, spanning
   tight restatements to loose thematic kinship. Their scores are what
@@ -39,6 +37,24 @@ longer, passage-like side through ``embed_document`` — the same asymmetry
 :mod:`theloom.semantic.search` uses for retrieval, so a cutoff measured here
 is valid on the same shared ``1/(1+L2)`` score scale everything else in this
 package reports on.
+
+A note on what this cutoff is NOT good for on its own: this repo's local
+embedder inflates similarity almost independent of true relatedness whenever
+a candidate shares a literal word or stem with the query — a coincidental
+"false friend" (a wine decanter's *bottleneck*, not a throughput constraint)
+can score as high as a weak genuine paraphrase. Live-measured proof: two
+pairs sharing a word/stem but meaning something else entirely both cleared
+this module's own cutoff (``Bottleneck``/"the narrow bottleneck of the wine
+decanter made pouring slow" and ``Onboarding Friction``/"the new hire's
+onboarding paperwork took all morning to finish", scored against the probe
+corpus below). A single scalar threshold over a mixed corpus cannot both
+accept most genuine (often word-sharing) paraphrases and reject every
+coincidental word-sharing false friend — those two distributions overlap on
+this embedder for this task shape. This module answers "how related does a
+genuine pair typically score, and where does unrelated content typically
+sit" honestly; a caller that also needs to distinguish a false friend from a
+real match (``theloom.synthesis.fidelity``) layers an additional check on
+top rather than asking this module for a single number that can't exist.
 """
 
 from __future__ import annotations
@@ -67,22 +83,16 @@ class SupportsLandscapeEmbedding(Protocol):
 # either list changes what the next measurement reports; nothing downstream
 # hard-codes a count or a value from it.
 #
-# UNRELATED_PROBE_PAIRS mixes two shapes deliberately: most pairs are
-# topically disjoint (no shared vocabulary at all — the "obviously
-# unrelated" case), but three ("Bottleneck", "Onboarding Friction",
-# "Escalation Of Commitment" below) are "false friends": the document reuses
-# a literal word or stem from the query while meaning something else
-# entirely (a wine decanter's *bottleneck*, not a throughput constraint; new-
-# hire paperwork's *onboarding*, not product friction; a support ticket's
-# *escalation*, not sunk-cost investment). Measured live against this
-# module's own probe corpus (see the docstring above), this repo's local
-# embedder scores literal word/stem overlap as a strong similarity signal
-# almost independent of whether the underlying MEANING actually matches —
-# exactly the failure mode substring/keyword matching had (crediting "Silent
-# Failure Mode" for an unrelated sentence that merely contains "silent").
-# Leaving false friends out of the calibration corpus would let that same
-# failure mode back in through the embedder instead of the keyword matcher;
-# including them means the measured cutoff already accounts for it.
+# UNRELATED_PROBE_PAIRS is topically disjoint pairs only (no shared
+# vocabulary at all) — the general "how high can pure noise score" question.
+# It deliberately does NOT try to also encode the "false friend" (shared
+# word, wrong sense) failure mode: mixing that in inflates this band's
+# variance enough to push the cutoff above most genuine (often word-sharing)
+# paraphrases, trading a recall collapse on RELATED_PROBE_PAIRS for a
+# precision gain against an adversarial case that a single scalar threshold
+# can't cleanly separate from real matches anyway (see the module docstring).
+# ``theloom.synthesis.fidelity`` handles false friends with a second,
+# targeted check instead of asking this corpus to do double duty.
 # =============================================================================
 
 UNRELATED_PROBE_PAIRS: tuple[tuple[str, str], ...] = (
@@ -95,12 +105,11 @@ UNRELATED_PROBE_PAIRS: tuple[tuple[str, str], ...] = (
     ("Technical Debt", "the geology of limestone caves in a national park"),
     ("Market Saturation", "the overwintering habits of monarch butterflies"),
     ("Groupthink", "the tuning process for a twelve-string guitar"),
+    ("Bottleneck", "a watercolor technique for painting cloud reflections"),
     ("Feedback Loop", "the history of Byzantine mosaic tilework"),
+    ("Onboarding Friction", "the anatomy of a deep-sea anglerfish"),
+    ("Escalation Of Commitment", "a walking tour of medieval cathedral architecture"),
     ("Thermostat", "the etiquette of a formal tea ceremony in Kyoto"),
-    # False friends (see the block comment above): same word or stem, wrong sense.
-    ("Bottleneck", "the narrow bottleneck of the wine decanter made pouring slow"),
-    ("Onboarding Friction", "the new hire's onboarding paperwork took all morning to finish"),
-    ("Escalation Of Commitment", "the support ticket required escalation to a senior engineer"),
 )
 
 RELATED_PROBE_PAIRS: tuple[tuple[str, str], ...] = (

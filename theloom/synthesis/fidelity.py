@@ -4,12 +4,33 @@ Entity grounding (desire 10, claude-desires.md): an exact (case-insensitive)
 substring match is always "exact" grounding — cheap and unambiguous, kept as
 the fast path. Anything short of that is decided SEMANTICALLY when an
 embedder is available: the entity name is compared, by embedding, against
-sentence-level spans of ``text``, and a match counts only when it clears the
-embedder's own live-measured "meaningfully related" cutoff (see
-``theloom.semantic.landscape`` — desire 8's machinery, reused rather than a
-fresh magic number). Only when NO embedder is supplied does this fall back to
-the legacy "any significant word overlaps" heuristic — the one that credited
-an unrelated claim for sharing a single word with an entity's name. Every
+sentence-level spans of ``text``, and a match counts only when the
+best-scoring span clears the embedder's own live-measured "meaningfully
+related" cutoff (see ``theloom.semantic.landscape`` — desire 8's machinery,
+reused rather than a fresh magic number). Only when NO embedder is supplied
+does this fall back to the legacy "any significant word overlaps"
+heuristic — the one that credited an unrelated claim for sharing a single
+word with an entity's name.
+
+Clearing the cutoff is necessary but not sufficient when the matched span
+shares a literal word with the entity name: live-measured against this
+repo's local embedder, a coincidental word/stem overlap alone (a wine
+decanter's "bottleneck", not a throughput constraint; a support ticket's
+"escalation", not sunk-cost investment) inflates similarity almost
+independent of whether the span is actually ABOUT the entity — enough that
+some such "false friends" clear the same cutoff a genuine paraphrase does
+(see ``theloom.semantic.landscape``'s module docstring; a single scalar
+threshold cannot cleanly separate the two populations on this embedder).
+So whenever the winning span shares a significant word with the entity
+name, grounding additionally requires the match to SURVIVE having that word
+removed: the entity name is re-scored against the span with every shared
+word stripped out, and that residual score must ALSO clear the cutoff — a
+match built only from the shared word collapses back toward the noise floor
+once the word is gone, while a genuine paraphrase that merely happens to
+reuse a word keeps most of its similarity (measured: "Feedback Delay" vs
+"the lag in the feedback loop..." drops only from 0.559 to 0.519, still
+clear of the ~0.488 cutoff; "Silent Failure Mode" vs the "silent movie
+score" false friend drops from 0.499 to 0.473, falling below it). Every
 grounding decision discloses its ``matchBasis`` alongside ``mentionedAs``.
 
 Structural mode is positional: both entity names must appear as substrings
@@ -173,6 +194,22 @@ def _mention_preview(span: str) -> str:
     return span[:_MENTION_PREVIEW_CHARS] + "…"
 
 
+def _strip_shared_words(span: str, name_lower: str) -> str:
+    """``span`` with every significant word of ``name_lower`` removed
+    (case-insensitively, word-bounded — the same notion of "significant
+    word" :func:`_significant_words`/:func:`_word_match` already use for the
+    legacy heuristic), collapsing whitespace left behind. Re-embedding this
+    residual text against the entity name measures whatever relatedness
+    survives once the literal lexical overlap is taken away — the check
+    that tells a false friend (all its similarity came from the shared
+    word) apart from a genuine paraphrase that merely happens to reuse one.
+    """
+    stripped = span
+    for word in _significant_words(name_lower):
+        stripped = re.sub(rf"\b{re.escape(word)}\b", " ", stripped, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
 def _semantic_grounding(
     text: str, entities: list[Doc], embedder: SupportsMentionEmbedding
 ) -> dict[str, Doc]:
@@ -185,8 +222,15 @@ def _semantic_grounding(
     8's calibration, reused rather than a fresh magic number), so the two
     desires share one number instead of inventing a second one.
 
-    Returns a dict keyed by entity id — only entities that cleared the
-    cutoff appear in it; the caller decides what "not present" means.
+    Clearing the cutoff is necessary but not sufficient when the winning
+    span shares a significant word with the entity name: see this module's
+    docstring for why (a false friend can clear the same cutoff a genuine
+    paraphrase does on this embedder) and :func:`_strip_shared_words` for
+    the residual-similarity check that guards against it — the match must
+    ALSO clear the cutoff with the shared word(s) removed.
+
+    Returns a dict keyed by entity id — only entities that cleared both
+    checks appear in it; the caller decides what "not present" means.
     """
     if not entities:
         return {}
@@ -195,26 +239,47 @@ def _semantic_grounding(
         return {}
     cutoff = measure_landscape(embedder).meaningfully_related_cutoff
     span_vectors = embedder.embed_documents(spans)
+    span_lowers = [s.lower() for s in spans]
 
     results: dict[str, Doc] = {}
     for entity in entities:
+        name_lower = entity["name"].lower()
         name_vector = embedder.embed_query(entity["name"])
         best_span = spans[0]
+        best_span_lower = span_lowers[0]
         best_score = -1.0
-        for span, span_vector in zip(spans, span_vectors, strict=True):
+        for span, span_lower, span_vector in zip(spans, span_lowers, span_vectors, strict=True):
             score = l2_similarity(cosine_similarity(name_vector, span_vector))
             if score > best_score:
                 best_score = score
                 best_span = span
-        if best_score > cutoff:
-            results[entity["id"]] = {
-                "entityId": entity["id"],
-                "entityName": entity["name"],
-                "status": "grounded",
-                "mentionedAs": _mention_preview(best_span),
-                "matchBasis": "semantic",
-                "matchScore": best_score,
-            }
+                best_span_lower = span_lower
+        if best_score <= cutoff:
+            continue
+
+        shared_words = [
+            w for w in _significant_words(name_lower) if _word_match(best_span_lower, w)
+        ]
+        if shared_words:
+            residual_span = _strip_shared_words(best_span, name_lower)
+            residual_score = (
+                l2_similarity(
+                    cosine_similarity(name_vector, embedder.embed_document(residual_span))
+                )
+                if residual_span
+                else -1.0
+            )
+            if residual_score <= cutoff:
+                continue  # similarity doesn't survive removing the shared word(s)
+
+        results[entity["id"]] = {
+            "entityId": entity["id"],
+            "entityName": entity["name"],
+            "status": "grounded",
+            "mentionedAs": _mention_preview(best_span),
+            "matchBasis": "semantic",
+            "matchScore": best_score,
+        }
     return results
 
 
