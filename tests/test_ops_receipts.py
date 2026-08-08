@@ -134,6 +134,9 @@ def test_relation_created_diff_carries_from_to_names(multi: MultiGraph) -> None:
     relation_type_rows = [row for row in rows if row["field"] == "relationType"]
     assert relation_type_rows[0]["old"] is None
     assert relation_type_rows[0]["new"] == "causes"
+    # from/to are immutable and already surfaced at the row level (above) —
+    # they must not also show up as noisy field-level diff rows.
+    assert not any(row["field"] in ("from", "to") for row in rows)
 
 
 def test_relation_invalidated_diffs_every_field_to_none(multi: MultiGraph) -> None:

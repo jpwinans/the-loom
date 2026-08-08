@@ -46,6 +46,12 @@ from theloom.store.multigraph import MultiGraph
 # meaningful "what changed" rows on their own.
 _SKIP_FIELDS = frozenset({"id", "created_at", "updated_at"})
 
+# Relation/bridge endpoints are immutable once created and are already
+# surfaced on every relation-kind row as from/to/fromName/toName — repeating
+# them as field-level diff rows on creation (old=None, new=<id>) would be
+# pure noise, not information the row-level from/to doesn't already carry.
+_ENDPOINT_FIELDS = frozenset({"from", "to"})
+
 _DEFAULT_LIMIT = 500
 
 
@@ -81,11 +87,13 @@ class WhatChangedInput(CommandInput):
     )
 
 
-def _field_diffs(old: Doc | None, new: Doc | None) -> list[tuple[str, Any, Any]]:
+def _field_diffs(
+    old: Doc | None, new: Doc | None, *, skip: frozenset[str] = _SKIP_FIELDS
+) -> list[tuple[str, Any, Any]]:
     old = old or {}
     new = new or {}
     rows: list[tuple[str, Any, Any]] = []
-    for field in sorted({*old.keys(), *new.keys()} - _SKIP_FIELDS):
+    for field in sorted({*old.keys(), *new.keys()} - skip):
         old_value, new_value = old.get(field), new.get(field)
         if old_value != new_value:
             rows.append((field, old_value, new_value))
@@ -113,9 +121,10 @@ class _RawRow:
 
 def _rows_for(kind: str, record_id: str, old: Doc | None, new: Doc | None) -> list[_RawRow]:
     record = new or old or {}
+    skip = _SKIP_FIELDS | _ENDPOINT_FIELDS if kind in ("relation", "bridge") else _SKIP_FIELDS
     return [
         _RawRow(record_id, kind, field, old_value, new_value, record)
-        for field, old_value, new_value in _field_diffs(old, new)
+        for field, old_value, new_value in _field_diffs(old, new, skip=skip)
     ]
 
 
