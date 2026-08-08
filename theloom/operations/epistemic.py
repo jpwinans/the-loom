@@ -27,6 +27,7 @@ from theloom.model import (
     confidence_label,
 )
 from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.notices import notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.filters import matches_session
 from theloom.store.multigraph import MultiGraph
@@ -167,6 +168,19 @@ class PostmortemEvaluateInput(CommandInput):
     dry_run: bool | None = Field(default=None, alias="dryRun")
 
 
+_PROPAGATE_CREDIT_DRY_RUN_DESC = (
+    "Preview the propagation without persisting anything. Defaults to "
+    "false: a call with no dryRun (or dryRun: false) computes AND "
+    "PERSISTS the propagated confidence changes immediately — this is a "
+    "mutating command by default, consistent with the other mutating "
+    "epistemic commands (postmortem-evaluate, session-changelog). Pass "
+    "dryRun: true to compute the would-be newConfidence values without "
+    "writing them. Either way the response carries an `applied` marker "
+    "(true iff a write actually happened) and, on a simulated run, a "
+    "DRY_RUN notice."
+)
+
+
 class PropagateCreditInput(CommandInput):
     # The input schema REQUIRES entityIds; the op-level entityId
     # fallback is unreachable from the CLI.
@@ -175,7 +189,9 @@ class PropagateCreditInput(CommandInput):
     damping_factor: float | None = Field(default=None, alias="dampingFactor")
     max_depth: int | None = Field(default=None, ge=1, alias="maxDepth")
     min_delta: float | None = Field(default=None, ge=0, alias="minDelta")
-    dry_run: bool | None = Field(default=None, alias="dryRun")
+    dry_run: bool | None = Field(
+        default=None, alias="dryRun", description=_PROPAGATE_CREDIT_DRY_RUN_DESC
+    )
     relation_types: list[str] | None = Field(default=None, alias="relationTypes")
     propagation_mode: str | None = Field(default=None, alias="propagationMode")
     graph: str | None = None
@@ -780,12 +796,27 @@ def cross_session_contradictions(
 # =============================================================================
 
 
+def _dry_run_notice() -> Doc:
+    return notice(
+        "DRY_RUN",
+        "Propagation was simulated; no confidence changes were persisted.",
+        hint="Omit dryRun, or pass dryRun: false (the default), to persist the changes.",
+    )
+
+
 def _propagate_one(
     store: FalkorGraphStore,
     trigger_id: str,
     trigger_delta: float,
     options: dict[str, Any],
 ) -> Doc:
+    # Default persists — consistent with the other mutating epistemic
+    # commands (postmortem-evaluate, session-changelog) — so "the default
+    # path" a caller exercises without reading past --help does not silently
+    # simulate. See PropagateCreditInput.dry_run for the documented contract.
+    dry_run = options.get("dryRun", False)
+    dry_notices = [_dry_run_notice()] if dry_run else []
+
     trigger = _read(store, trigger_id)
     if trigger is None:
         raise NotFoundError(f"Trigger entity not found: {trigger_id}")
@@ -798,17 +829,16 @@ def _propagate_one(
         "maxDepthReached": 0,
     }
     if not trigger.get("confidence"):
-        return empty
+        return with_notices(empty, dry_notices, applied=False)
     damping = options.get("dampingFactor", 0.5)
     if not 0 <= damping <= 1:
         raise ValidationError(f"dampingFactor must be between 0 and 1 (inclusive), got {damping}")
     max_depth = min(options.get("maxDepth", 3), MAX_DEPTH_LIMIT)
     min_delta = options.get("minDelta", 0.01)
-    dry_run = options.get("dryRun", True)
     relation_types = options.get("relationTypes", ["supports", "contradicts"])
     mode = options.get("propagationMode", "signal")
     if trigger_delta == 0:
-        return empty
+        return with_notices(empty, dry_notices, applied=False)
 
     changes: list[Doc] = []
     skipped_no_confidence = 0
@@ -884,6 +914,10 @@ def _propagate_one(
                 }
             )
 
+    # `applied` tracks actual writes, not just "was this a dry run" — a real
+    # run with nothing to persist (e.g. every change below minDelta) is
+    # exactly as un-applied as a simulated one, and the response must say so.
+    applied_count = 0
     if not dry_run:
         now = iso_now()
         for change in changes:
@@ -910,8 +944,9 @@ def _propagate_one(
                     "changeReason": change["reason"],
                 },
             )
+            applied_count += 1
 
-    return {
+    result: Doc = {
         "triggerId": trigger_id,
         "triggerDelta": trigger_delta,
         "changes": changes,
@@ -919,6 +954,7 @@ def _propagate_one(
         "totalEntitiesAffected": len(changes),
         "maxDepthReached": max_depth_reached,
     }
+    return with_notices(result, dry_notices, applied=applied_count > 0)
 
 
 def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> list[Doc]:

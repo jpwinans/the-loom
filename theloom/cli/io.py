@@ -70,9 +70,17 @@ def format_success(result: Any) -> str:
 
 
 def format_error(error: BaseException) -> str:
-    """One-line {error, code} document, code from the typed exception."""
+    """One-line {error, code} document, code from the typed exception.
+
+    ``details`` is included as a third key only when the raising error set
+    one (see ``LoomError.details``) — an additive field, so an error that
+    never populates it keeps the exact ``{error, code}`` shape.
+    """
     if isinstance(error, LoomError):
-        return json.dumps({"error": error.message, "code": error.code}, ensure_ascii=False)
+        doc: dict[str, Any] = {"error": error.message, "code": error.code}
+        if error.details:
+            doc["details"] = error.details
+        return json.dumps(doc, ensure_ascii=False)
     return json.dumps({"error": str(error), "code": "OPERATION_ERROR"}, ensure_ascii=False)
 
 

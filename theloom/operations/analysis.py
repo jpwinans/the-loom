@@ -47,6 +47,7 @@ from theloom.model import (
     RelationType,
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
+from theloom.operations.notices import notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
@@ -85,7 +86,19 @@ class DetectCyclesInput(CommandInput):
 
 class DetectLoopsInput(CommandInput):
     graph: str | None = None
-    persist: bool | None = None
+    persist: bool | None = Field(
+        default=None,
+        description=(
+            "Persist detected loops as loop entities (plus part_of member relations) so "
+            "list-loops and loop-details can find them afterward. Defaults to false: a "
+            "detect-loops call with no persist key still returns full loop data "
+            "(each loop has id: null and persisted: false) but writes nothing to the "
+            "graph -- a following list-loops call will NOT see these loops until you "
+            're-run detect-loops with "persist": true. When results are not persisted, '
+            "the response carries applied: false and a NOT_PERSISTED notice naming this "
+            "flag as the fix."
+        ),
+    )
     min_size: int | None = Field(default=None, alias="minSize")
     max_size: int | None = Field(default=None, alias="maxSize")
 
@@ -235,16 +248,33 @@ def detect_cycles(params: DetectCyclesInput, multi: MultiGraph) -> dict[str, Any
 
 
 def detect_loops(params: DetectLoopsInput, multi: MultiGraph) -> dict[str, Any]:
+    """Detect and classify feedback loops. Unless ``persist`` is true, nothing
+    is written to the graph -- the response says so explicitly (``applied:
+    false`` plus a NOT_PERSISTED notice) so a caller can't read a populated
+    ``loops`` array here and then wrongly assume a later list-loops call will
+    see the same loops (TL-481)."""
     store = multi.get_store(params.graph)
     entities, relations = _docs(store)
-    return detect_loops_core(
+    persist = params.persist or False
+    result = detect_loops_core(
         entities,
         relations,
         store,
         min_size=params.min_size,
         max_size=params.max_size,
-        persist=params.persist or False,
+        persist=persist,
     )
+    notices: list[dict[str, Any]] = []
+    if not persist and result["loopCount"] > 0:
+        notices.append(
+            notice(
+                "NOT_PERSISTED",
+                f"Found {result['loopCount']} loop(s) but did not persist them as loop "
+                "entities. list-loops will not see them until they are persisted.",
+                hint='Re-run detect-loops with "persist": true to materialize these loops.',
+            )
+        )
+    return with_notices(result, notices, applied=persist)
 
 
 def analyze_centrality(params: AnalyzeCentralityInput, multi: MultiGraph) -> dict[str, Any]:
@@ -302,12 +332,20 @@ def detect_components(params: DetectComponentsInput, multi: MultiGraph) -> dict[
 # =============================================================================
 
 
-def list_loops(params: ListLoopsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def list_loops(params: ListLoopsInput, multi: MultiGraph) -> dict[str, Any]:
+    """List persisted loop entities. An empty result is ambiguous on its own --
+    it could mean the graph truly has no feedback loops, or that detect-loops
+    simply hasn't been run with ``persist`` yet (TL-481). When zero loop
+    entities exist in the graph at all (before any of this command's own
+    filters are applied), the response carries a NONE_PERSISTED notice that
+    says so plainly instead of leaving that discrepancy for the caller to
+    infer from silence."""
     store = multi.get_store(params.graph)
     loops = [
         e.model_dump(by_alias=True, exclude_unset=True)
         for e in store.list_entities(EntityFilter.model_validate({"entityType": "loop"}))
     ]
+    none_persisted = len(loops) == 0
     with_metadata = [{**loop, "_metadata": parse_loop_observations(loop)} for loop in loops]
     if params.classification is not None:
         with_metadata = [
@@ -329,7 +367,22 @@ def list_loops(params: ListLoopsInput, multi: MultiGraph) -> list[dict[str, Any]
         with_metadata = [
             lp for lp in with_metadata if lp["_metadata"]["memberCount"] <= params.max_size
         ]
-    return with_metadata
+    result = {"count": len(with_metadata), "loops": with_metadata}
+    if none_persisted:
+        return with_notices(
+            result,
+            [
+                notice(
+                    "NONE_PERSISTED",
+                    "No loop entities have been persisted in this graph yet. This does "
+                    "not mean no feedback loops exist -- it means detect-loops has not "
+                    "been run with persist, or has not found any yet.",
+                    hint='Run detect-loops with "persist": true to detect and persist '
+                    "loops before listing them.",
+                )
+            ],
+        )
+    return result
 
 
 def loop_details(params: LoopDetailsInput, multi: MultiGraph) -> dict[str, Any]:

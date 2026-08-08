@@ -15,7 +15,9 @@ import typer
 from theloom import __version__
 from theloom.cli.io import output_error, output_success, parse_json_input
 from theloom.cli.registry import COMMANDS, CommandDescriptor, run_handler
+from theloom.cli.schema import top_level_required
 from theloom.config import load_config
+from theloom.errors import InputRequiredError, ParseError
 from theloom.store.multigraph import MultiGraph
 
 app = typer.Typer(
@@ -86,15 +88,44 @@ def _build_multigraph() -> MultiGraph:
     return MultiGraph(db, db.connection, default_graph=config.default_graph)
 
 
+def _schema_hint(descriptor: CommandDescriptor) -> str:
+    """The pointer appended to PARSE_ERROR/INPUT_REQUIRED messages: no field
+    has been parsed yet at that point, so the most useful "expected shape" is
+    a pointer to the full schema plus the top-level fields the caller owes."""
+    hint = f"Run `loom {descriptor.name} --schema` for the complete input schema."
+    required = top_level_required(descriptor.input_model)
+    if required:
+        hint += f" Required fields: {', '.join(required)}."
+    return hint
+
+
 def _make_command(descriptor: CommandDescriptor) -> None:
     def command(
         json_input: Annotated[
             str | None,
             typer.Argument(help="JSON input (or pipe via stdin)", show_default=False),
         ] = None,
+        schema: Annotated[
+            bool,
+            typer.Option(
+                "--schema",
+                help="Print this command's input JSON Schema (from its Pydantic model) and exit.",
+                is_eager=True,
+            ),
+        ] = False,
     ) -> None:
+        if schema:
+            output_success(descriptor.input_model.model_json_schema())
+            return
         try:
             input_doc = parse_json_input(json_input, allow_empty=descriptor.allow_empty)
+        except (ParseError, InputRequiredError) as error:
+            output_error(type(error)(f"{error.message} {_schema_hint(descriptor)}"))
+            raise typer.Exit(1) from error
+        except Exception as error:
+            output_error(error)
+            raise typer.Exit(1) from error
+        try:
             result = run_handler(descriptor.name, input_doc, _build_multigraph())
         except Exception as error:
             output_error(error)

@@ -25,6 +25,7 @@ from theloom.model import (
     RelationType,
 )
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -40,31 +41,128 @@ TRACE_DATA_PREFIX = "__trace_json:"
 # =============================================================================
 
 
+_RULE_VAR_EXAMPLE = (
+    'Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, '
+    '{"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion '
+    '{"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new '
+    '"enables" relation whenever two chained "enables" relations share a middle entity.'
+)
+
+_CONDITION_FROM_DESC = (
+    "The pattern this condition matches against each existing relation's `from` "
+    "(source) endpoint. Either a rule variable — a string starting with '?' "
+    "(e.g. '?a') — bound at match time to whatever entity id satisfies the "
+    "pattern, or a literal entity id, matched only against relations whose "
+    "endpoint is exactly that id. IMPORTANT: a bare string that is not a real "
+    "entity id (a display name, or a variable typo missing the '?', e.g. 'a' "
+    "instead of '?a') validates with no error and creates the rule, but the "
+    "rule can then never match anything — a silently inert rule, not a "
+    "rejected one (TL-495 tracks warning about this case; not enforced here). "
+    "The same variable name must bind to the same entity everywhere it "
+    "appears across a rule's conditions, and any variable used in the "
+    "conclusion must appear in at least one condition (checked at rule-"
+    f"creation time). {_RULE_VAR_EXAMPLE}"
+)
+
+_CONDITION_TO_DESC = (
+    "The pattern this condition matches against each existing relation's `to` "
+    "(target) endpoint — same '?var' (rule variable, bound at match time) vs. "
+    "literal-entity-id semantics as `from`: see that field's description for "
+    "the full syntax, the inert-rule pitfall of a bare non-id string, and a "
+    f"worked example. {_RULE_VAR_EXAMPLE}"
+)
+
+_CONDITION_RELATION_TYPE_DESC = (
+    "The relation type this condition must match among the graph's existing "
+    "relations (ANDed together with every other condition in the rule)."
+)
+
+_CONCLUSION_FROM_DESC = (
+    "The `from` (source) endpoint of the relation to derive when every "
+    "condition matches. Either a rule variable already bound by a condition "
+    "(its bound entity id is substituted in) or a literal entity id used "
+    "as-is. Every variable referenced here must appear in at least one "
+    "condition — an unbound variable is rejected at rule-creation time. See "
+    f"RuleCondition's `from` field for the full '?var' syntax. {_RULE_VAR_EXAMPLE}"
+)
+
+_CONCLUSION_TO_DESC = (
+    "The `to` (target) endpoint of the relation to derive when every "
+    "condition matches — same bound-variable-or-literal-id rule as "
+    "`conclusion.from`; see RuleCondition's `from` field for the full "
+    "'?var' syntax and a worked example."
+)
+
+_CONCLUSION_RELATION_TYPE_DESC = "The relation type to create for the derived relation."
+
+
 class RuleCondition(CommandInput):
-    from_: str = Field(alias="from")
-    to: str
-    relation_type: RelationType = Field(alias="relationType")
+    from_: str = Field(alias="from", description=_CONDITION_FROM_DESC)
+    to: str = Field(description=_CONDITION_TO_DESC)
+    relation_type: RelationType = Field(
+        alias="relationType", description=_CONDITION_RELATION_TYPE_DESC
+    )
 
 
 class RuleConclusion(CommandInput):
-    from_: str = Field(alias="from")
-    to: str
-    relation_type: RelationType = Field(alias="relationType")
+    from_: str = Field(alias="from", description=_CONCLUSION_FROM_DESC)
+    to: str = Field(description=_CONCLUSION_TO_DESC)
+    relation_type: RelationType = Field(
+        alias="relationType", description=_CONCLUSION_RELATION_TYPE_DESC
+    )
     strength: str
     evidence: str
     polarity: str | None = None
 
 
 class RuleSpec(CommandInput):
-    name: str = Field(min_length=1)
-    description: str
-    conditions: list[RuleCondition] = Field(min_length=1)
-    conclusion: RuleConclusion
-    enabled: bool | None = None
+    name: str = Field(
+        min_length=1,
+        description=(
+            "A human-readable name for the rule, used in derived-relation and "
+            "trace output (e.g. `ruleName`) — not itself matched against anything."
+        ),
+    )
+    description: str = Field(
+        description=(
+            "A human-readable description of what the rule captures; stored "
+            "and returned as-is, not used for matching."
+        )
+    )
+    conditions: list[RuleCondition] = Field(
+        min_length=1,
+        description=(
+            "The AND-conjunction of relation patterns that must all match "
+            "simultaneously, with consistent variable bindings across them, "
+            "for the rule to fire. See each condition's `from`/`to` field "
+            "descriptions for the rule-variable ('?var') syntax and a worked "
+            f"multi-hop example. {_RULE_VAR_EXAMPLE}"
+        ),
+    )
+    conclusion: RuleConclusion = Field(
+        description=(
+            "The relation derived when every condition matches, with each "
+            "`?var` replaced by its bound entity id. See conclusion.from's "
+            "description for the variable-binding rules."
+        )
+    )
+    enabled: bool | None = Field(
+        default=None,
+        description=(
+            "Whether run-inference evaluates this rule at all; a rule created "
+            "without `enabled: true` is stored but never fires."
+        ),
+    )
 
 
 class InferenceRuleCreateInput(CommandInput):
-    rule: RuleSpec
+    rule: RuleSpec = Field(
+        description=(
+            "The rule specification: conditions to match and the relation to "
+            "derive when they do. See the nested field descriptions "
+            "(rule.conditions[].from, etc.) for the '?var' rule-variable syntax."
+        )
+    )
     graph: str | None = None
 
 
@@ -77,9 +175,32 @@ class InferenceRuleDeleteInput(CommandInput):
     graph: str | None = None
 
 
+_RUN_INFERENCE_DRY_RUN_DESC = (
+    "Preview a run without persisting anything. Defaults to false: a call "
+    "with no dryRun (or dryRun: false) matches rules AND PERSISTS the "
+    "derived relations plus an inference_trace entity recording the run. "
+    "Pass dryRun: true to preview the derived relations without writing "
+    "an inference_trace entity or any derived relations — the would-be "
+    "trace payload is still returned, unpersisted, as `tracePreview` "
+    "(traceId stays null since nothing was written). Either way the "
+    "response carries an `applied` marker (true only on a real, persisted "
+    "run) and, on a simulated run, a DRY_RUN notice."
+)
+
+
 class RunInferenceInput(CommandInput):
-    dry_run: bool | None = Field(default=None, alias="dryRun")
-    rule_id: str | None = Field(default=None, alias="ruleId")
+    dry_run: bool | None = Field(
+        default=None, alias="dryRun", description=_RUN_INFERENCE_DRY_RUN_DESC
+    )
+    rule_id: str | None = Field(
+        default=None,
+        alias="ruleId",
+        description=(
+            "Restrict this run to one rule, by its inference_rule entity id "
+            "(see inference-rule-create's `id` response field, or "
+            "inference-rule-list). Omitted: evaluate every enabled rule."
+        ),
+    )
     graph: str | None = None
 
 
@@ -100,7 +221,16 @@ class InferenceTraceForFactInput(CommandInput):
 
 
 class ExplainInferenceInput(CommandInput):
-    relation_id: str = Field(alias="relationId")
+    relation_id: str = Field(
+        alias="relationId",
+        description=(
+            "The id of a derived relation to explain (from run-inference's "
+            "`derivedRelations`, or an inference_trace's steps via "
+            "inference-trace-get). Only relations created by run-inference "
+            "have a trace to walk; a manually-created relation fails with "
+            "NOT_FOUND."
+        ),
+    )
     graph: str | None = None
 
 
@@ -286,6 +416,14 @@ def _resolve(pattern: str, bindings: dict[str, str]) -> str:
     return pattern
 
 
+def _dry_run_notice() -> Doc:
+    return notice(
+        "DRY_RUN",
+        "This was a preview run; no inference_trace entity or derived relations were persisted.",
+        hint="Omit dryRun, or pass dryRun: false (the default), to persist the run.",
+    )
+
+
 def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
     store = _store(multi, params.graph)
     dry_run = params.dry_run or False
@@ -345,6 +483,7 @@ def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
             )
 
     trace_id: str | None = None
+    trace_preview: Doc | None = None
     if trace_steps or enabled_rules:
         trace_data = {
             "timestamp": timestamp,
@@ -355,24 +494,30 @@ def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
             "derivedFactCount": len(trace_steps),
             "skippedDuplicates": skipped,
         }
-        trace_entity = store.create_entity(
-            EntityCreate.model_validate(
-                {
-                    "name": f"[Trace] inference-run-{timestamp}",
-                    "entityType": "inference_trace",
-                    "observations": [
-                        TRACE_DATA_PREFIX + json.dumps(trace_data),
-                        (
-                            f"Inference run: {len(enabled_rules)} rules evaluated, "
-                            f"{len(trace_steps)} facts derived, {skipped} duplicates skipped"
-                        ),
-                    ],
-                }
+        if dry_run:
+            # A preview run must not mutate the graph at all — not even to
+            # record that it happened (TL-472: trace creation used to sit
+            # above this guard). Return the payload the entity would have
+            # held, without ever writing it.
+            trace_preview = trace_data
+        else:
+            trace_entity = store.create_entity(
+                EntityCreate.model_validate(
+                    {
+                        "name": f"[Trace] inference-run-{timestamp}",
+                        "entityType": "inference_trace",
+                        "observations": [
+                            TRACE_DATA_PREFIX + json.dumps(trace_data),
+                            (
+                                f"Inference run: {len(enabled_rules)} rules evaluated, "
+                                f"{len(trace_steps)} facts derived, {skipped} duplicates skipped"
+                            ),
+                        ],
+                    }
+                )
             )
-        )
-        trace_id = trace_entity.id
+            trace_id = trace_entity.id
 
-        if not dry_run:
             from theloom.model import RelationCreate
 
             wrote_ids = False
@@ -416,13 +561,21 @@ def run_inference(params: RunInferenceInput, multi: MultiGraph) -> Doc:
                     },
                 )
 
-    return {
+    result: Doc = {
         "rulesEvaluated": len(enabled_rules),
         "derivedRelations": derived,
         "skippedDuplicates": skipped,
         "dryRun": dry_run,
         "traceId": trace_id,
     }
+    if trace_preview is not None:
+        result["tracePreview"] = trace_preview
+
+    # `applied` tracks whether this call actually persisted a trace entity
+    # (and, with it, any derived relations) — true exactly when trace_id was
+    # assigned, which only happens on the non-dry-run branch above.
+    dry_notices = [_dry_run_notice()] if dry_run else []
+    return with_notices(result, dry_notices, applied=trace_id is not None)
 
 
 # =============================================================================
