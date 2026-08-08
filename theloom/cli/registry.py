@@ -66,6 +66,7 @@ from theloom.operations import synthesis as synthesis_ops
 from theloom.operations import verification as verification_ops
 from theloom.operations import work_memory as work_memory_ops
 from theloom.operations.common import CommandInput
+from theloom.store import receipts
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import cegis as cegis_module
 from theloom.viz import serve as viz_serve
@@ -1664,13 +1665,30 @@ def get_command(name: str) -> CommandDescriptor:
 
 
 def run_handler(name: str, input_doc: dict[str, Any], multi: MultiGraph) -> Any:
-    """Validate the input against the command's model and run its handler."""
+    """Validate the input against the command's model and run its handler.
+
+    Wraps the call in one write-receipts scope (``theloom.store.receipts``):
+    every event id any store commit appends anywhere during the handler —
+    including inside a composite's nested calls — is collected under this
+    command's name and folded onto the response as ``eventIds`` (desire 1).
+    A read-only handler that commits nothing collects nothing, so its
+    response is untouched.
+    """
     descriptor = _BY_NAME[name]
     if descriptor.raw_handler is not None:
-        return descriptor.raw_handler(input_doc, multi)
-    try:
-        params = descriptor.input_model.model_validate(input_doc)
-    except pydantic.ValidationError as exc:
-        raise describe_validation_error(descriptor.input_model, exc, command=name) from exc
-    assert descriptor.handler is not None
-    return descriptor.handler(params, multi)
+        with receipts.collecting(name) as event_ids:
+            result = descriptor.raw_handler(input_doc, multi)
+    else:
+        try:
+            params = descriptor.input_model.model_validate(input_doc)
+        except pydantic.ValidationError as exc:
+            raise describe_validation_error(descriptor.input_model, exc, command=name) from exc
+        assert descriptor.handler is not None
+        with receipts.collecting(name) as event_ids:
+            result = descriptor.handler(params, multi)
+    assert not isinstance(result, list), (
+        f"command '{name}' returned a bare top-level array — every list-returning "
+        "command must use the {items, count, notices?} envelope (theloom.operations."
+        "notices.list_envelope)"
+    )
+    return receipts.attach(result, event_ids)

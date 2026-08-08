@@ -58,6 +58,7 @@ from falkordb.query_result import QueryResult
 from redis import Redis
 
 from theloom.errors import OperationError
+from theloom.store import receipts
 from theloom.store.events import EventLog
 
 Step = tuple[str, dict[str, Any]]
@@ -111,6 +112,12 @@ def commit_steps(
         raise query_failure
     failed_at = next((i for i, response in enumerate(event_responses) if is_error(response)), None)
     if failed_at is None:
+        # This is the choke point every FalkorDB mutation passes through
+        # (CLAUDE.md invariant 1) — recording here, rather than in each of the
+        # dozens of store methods that call commit_steps, is what lets
+        # write-receipts (theloom.store.receipts) attach to a command's
+        # response without those methods' return types changing.
+        receipts.record(event_ids)
         return [QueryResult(graph, response) for response in query_responses], event_ids
     # The mutation did happen and cannot be undone, so the events it earned are
     # true. Everything from the first failure on is re-appended in order — the
@@ -121,9 +128,11 @@ def commit_steps(
         for event, response in zip(events[failed_at:], event_responses[failed_at:], strict=True)
     ]
     kept = [stream_id(response) for response in event_responses[:failed_at]]
+    final_ids = kept + repair_log(events_log, suffix)
+    receipts.record(final_ids)
     return (
         [QueryResult(graph, response) for response in query_responses],
-        kept + repair_log(events_log, suffix),
+        final_ids,
     )
 
 

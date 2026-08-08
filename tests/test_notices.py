@@ -17,7 +17,7 @@ from theloom.cli.io import format_success
 from theloom.cli.registry import _BY_NAME as REGISTRY_BY_NAME
 from theloom.cli.registry import CommandDescriptor, run_handler
 from theloom.operations.common import CommandInput
-from theloom.operations.notices import notice, with_notices
+from theloom.operations.notices import list_envelope, notice, with_notices
 
 
 def test_notice_builds_a_structured_code_message_hint_doc() -> None:
@@ -62,6 +62,36 @@ def test_with_notices_does_not_mutate_the_input_dict() -> None:
     result = {"count": 1}
     with_notices(result, notices=[notice("X", "y")], applied=False)
     assert result == {"count": 1}
+
+
+# =============================================================================
+# list_envelope: the uniform {items, count, notices} shape (desire 9)
+# =============================================================================
+
+
+def test_list_envelope_wraps_items_with_their_count() -> None:
+    rows = [{"id": "a"}, {"id": "b"}]
+    assert list_envelope(rows) == {"items": rows, "count": 2}
+
+
+def test_list_envelope_of_an_empty_list_has_zero_count_and_no_notices_key() -> None:
+    out = list_envelope([])
+    assert out == {"items": [], "count": 0}
+    assert "notices" not in out
+
+
+def test_list_envelope_attaches_notices_only_when_non_empty() -> None:
+    n = [notice("NONE_PERSISTED", "nothing here yet")]
+    out = list_envelope([], notices=n)
+    assert out == {"items": [], "count": 0, "notices": n}
+    assert "notices" not in list_envelope([], notices=[])
+
+
+def test_list_envelope_copies_rather_than_aliases_the_input_sequence() -> None:
+    rows = [{"id": "a"}]
+    out = list_envelope(rows)
+    rows.append({"id": "b"})
+    assert out["items"] == [{"id": "a"}]  # unaffected by the later mutation
 
 
 # =============================================================================

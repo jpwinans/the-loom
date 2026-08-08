@@ -32,6 +32,10 @@ from typing import Any
 from redis import Redis
 from redis.client import Pipeline
 
+from theloom.store import receipts
+
+CAUSED_BY_FIELD = "causedBy"
+
 
 @dataclass(frozen=True)
 class Event:
@@ -45,6 +49,11 @@ class Event:
     # side of the seam, so callers (theloom.viz.temporal) never need to know
     # the stream id encodes a timestamp at all.
     timestamp: str
+    # The CLI command whose dispatch was active when this event was appended
+    # (see theloom.store.receipts), or None for an event appended outside any
+    # command dispatch (a direct store call in a test, a migration script) or
+    # written before this field existed — always optional, never inferred.
+    caused_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,10 +76,20 @@ class EventLog:
         self._redis = redis
         self.key = f"{key_prefix}:{graph_name}:events"
 
+    def _fields(self, event_type: str, payload: dict[str, Any]) -> dict[str, str]:
+        """The XADD field map for one event, stamped with the causing
+        command's name when a ``receipts.collecting()`` scope is active
+        (omitted, not sent as a literal null, when none is)."""
+        fields = {"type": event_type, "payload": json.dumps(payload)}
+        caused_by = receipts.current_command()
+        if caused_by is not None:
+            fields[CAUSED_BY_FIELD] = caused_by
+        return fields
+
     def append(self, event_type: str, payload: dict[str, Any]) -> str:
         """Append one event; returns the stream entry id."""
-        entry_id = self._redis.xadd(self.key, {"type": event_type, "payload": json.dumps(payload)})
-        return entry_id if isinstance(entry_id, str) else entry_id.decode()
+        entry_id = self._redis.xadd(self.key, self._fields(event_type, payload))
+        return _decode_id(entry_id)
 
     def queue(self, pipe: Pipeline, event_type: str, payload: dict[str, Any]) -> None:
         """Buffer an append onto an open transaction instead of sending it now.
@@ -79,17 +98,21 @@ class EventLog:
         belongs to, or — if anything raises while the transaction is still
         being built — neither ever reaches the server.
         """
-        pipe.xadd(self.key, {"type": event_type, "payload": json.dumps(payload)})
+        pipe.xadd(self.key, self._fields(event_type, payload))
 
     def discard(self, entry_ids: Sequence[str]) -> None:
         """Remove already-appended entries (compensation for a failed mutation).
 
         Redis has no rollback: every command queued in a transaction runs even
         when an earlier one errors, so an event appended alongside a mutation
-        that the server rejected has to be deleted after the fact.
+        that the server rejected has to be deleted after the fact. Also
+        scrubs the ids from any active write-receipts collector
+        (``theloom.store.receipts``): an id discarded here was never earned,
+        so a response must never claim it.
         """
         if entry_ids:
             self._redis.xdel(self.key, *entry_ids)
+            receipts.forget(entry_ids)
 
     def repair(self, events: Sequence[tuple[str, dict[str, Any]]]) -> RepairResult:
         """Re-append events whose queued XADD errored at ``EXEC``.
@@ -118,36 +141,72 @@ class EventLog:
                 return RepairResult(appended=appended, error=exc)
         return RepairResult(appended=appended, error=None)
 
-    def append_many(self, events: list[tuple[str, dict[str, Any]]]) -> None:
-        """Append a batch of events in one pipelined round trip (batch mutations)."""
+    def append_many(self, events: list[tuple[str, dict[str, Any]]]) -> list[str]:
+        """Append a batch of events in one pipelined round trip (batch
+        mutations); returns their stream entry ids, in the same order."""
         if not events:
-            return
+            return []
         with self._redis.pipeline(transaction=False) as pipe:
             for event_type, payload in events:
-                pipe.xadd(self.key, {"type": event_type, "payload": json.dumps(payload)})
-            pipe.execute()
+                pipe.xadd(self.key, self._fields(event_type, payload))
+            replies = pipe.execute()
+        return [_decode_id(reply) for reply in replies]
 
     def read_all(self) -> list[Event]:
         """All events in append order."""
         entries = self._redis.xrange(self.key) or []
-        events: list[Event] = []
-        for entry_id, fields in entries:
-            if entry_id is None or fields is None:
-                continue
-            entry_id = entry_id if isinstance(entry_id, str) else entry_id.decode()
-            events.append(
-                Event(
-                    id=entry_id,
-                    type=_field(fields, "type"),
-                    payload=json.loads(_field(fields, "payload")),
-                    timestamp=_entry_id_to_iso(entry_id),
-                )
-            )
-        return events
+        return _build_events(entries)
+
+    def read_range(
+        self, start: str | None = None, end: str | None = None, count: int | None = None
+    ) -> list[Event]:
+        """Events whose stream id falls in ``[start, end]`` (both inclusive),
+        append order. ``start``/``end`` default to the stream's own bounds
+        (Redis ``-``/``+``); ``count`` caps how many entries are read, same as
+        ``XRANGE ... COUNT``."""
+        entries = self._redis.xrange(self.key, min=start or "-", max=end or "+", count=count) or []
+        return _build_events(entries)
+
+    def read_ids(self, entry_ids: Sequence[str]) -> list[Event]:
+        """The events named by ``entry_ids``, in the ids' own order (not
+        stream order — the caller may be replaying a specific receipt).
+
+        An id absent from the stream (trimmed, or simply wrong) is silently
+        skipped rather than raised on, the same tolerance ``read_all`` has for
+        a compacted stream: a span is whatever of it still exists.
+        """
+        events_by_id: dict[str, Event] = {}
+        for entry_id in entry_ids:
+            entries = self._redis.xrange(self.key, min=entry_id, max=entry_id) or []
+            for event in _build_events(entries):
+                events_by_id[event.id] = event
+        return [events_by_id[entry_id] for entry_id in entry_ids if entry_id in events_by_id]
 
     def delete(self) -> None:
         """Drop the stream (graph deletion / reseeding)."""
         self._redis.delete(self.key)
+
+
+def _build_events(entries: Sequence[tuple[Any, Any]]) -> list[Event]:
+    events: list[Event] = []
+    for entry_id, fields in entries:
+        if entry_id is None or fields is None:
+            continue
+        entry_id = _decode_id(entry_id)
+        events.append(
+            Event(
+                id=entry_id,
+                type=_field(fields, "type"),
+                payload=json.loads(_field(fields, "payload")),
+                timestamp=_entry_id_to_iso(entry_id),
+                caused_by=_optional_field(fields, CAUSED_BY_FIELD),
+            )
+        )
+    return events
+
+
+def _decode_id(value: Any) -> str:
+    return value if isinstance(value, str) else value.decode()
 
 
 def _entry_id_to_iso(entry_id: str) -> str:
@@ -164,3 +223,10 @@ def _field(fields: dict[Any, Any], name: str) -> str:
     if isinstance(value, bytes):
         return value.decode()
     raise KeyError(name)
+
+
+def _optional_field(fields: dict[Any, Any], name: str) -> str | None:
+    value = fields.get(name, fields.get(name.encode()))
+    if value is None:
+        return None
+    return value if isinstance(value, str) else value.decode()

@@ -68,6 +68,7 @@ from theloom.model import (
     RelationFilter,
     is_valid_transition,
 )
+from theloom.store import receipts
 from theloom.store.base import Direction, GraphStore
 from theloom.store.filters import (
     apply_entity_filters,
@@ -861,7 +862,12 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             ("entity_created", {"entity": dict(doc)}) for doc in entity_docs
         ]
         events += [("relation_created", {"relation": dict(doc)}) for doc in relation_docs]
-        self._events.append_many(events)
+        event_ids = self._events.append_many(events)
+        # Not routed through commit_steps (this is the bulk-import replay
+        # path, documented above as writing docs verbatim/unlogged and then
+        # appending their creation events as one separate batch) — so it
+        # records its own receipt rather than inheriting commit_steps'.
+        receipts.record(event_ids)
         return len(events)
 
     def _edge_rows(

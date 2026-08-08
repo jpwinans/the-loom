@@ -34,13 +34,30 @@ handler — nothing here touches ``CommandInput``, the registry, or the CLI
 layer, so adopting the convention is a pure addition to a handler's return
 value. (This ticket only builds the mechanism; wiring it into detect-loops,
 propagate-credit, run-inference, etc. is the sibling tickets' job.)
+
+``list_envelope(items, notices=None)`` is the structural completion of the
+same idea: one uniform ``{"items": [...], "count": len(items)[, "notices"]}``
+shape for every list-returning command, replacing the three attachment
+strategies that grew up independently (a bare top-level array, a bare array
+with notices smeared onto every element because there was nowhere else to put
+one, and an ad hoc ``{"count", "<listName>"}`` pair whose list key differed
+per command). ``count`` is always ``len(items)`` — the number of rows the
+response actually carries, never a separate "total available before a filter"
+figure (a command that truncates says so via a notice, not a second number
+with an ambiguous relationship to the first).
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 Doc = dict[str, Any]
+
+
+def list_envelope(items: Sequence[Doc], notices: list[Doc] | None = None) -> Doc:
+    """The uniform list-command response: ``{"items", "count"[, "notices"]}``."""
+    return with_notices({"items": list(items), "count": len(items)}, notices)
 
 
 def notice(code: str, message: str, hint: str | None = None) -> Doc:
