@@ -1,4 +1,6 @@
-"""Document operations: typed-error classification.
+"""Document operations: typed-error classification, and the TL-485
+`PARAMETER_IGNORED` notice for the `graph` field every command in this module
+accepts and ignores (documents are global, never graph-scoped).
 
 ingest/delete/reingest translate `theloom.documents.ingestion.IngestionError`
 into the CLI's typed error hierarchy by exception class
@@ -14,17 +16,28 @@ from pathlib import Path
 
 import pytest
 
-from tests.fakes import FailingEmbedder
+from tests.fakes import FailingEmbedder, FakeEmbedder
 from theloom import config as config_module
 from theloom.documents.ingestion import IngestionError
 from theloom.errors import NotFoundError, OperationError, ValidationError
+from theloom.operations.common import CommandInput
 from theloom.operations.documents import (
+    AnalyzeCategoryInput,
     DeleteDocumentInput,
+    IngestContentInput,
+    IngestDirectoryInput,
     IngestDocumentInput,
+    IngestUrlInput,
+    ListDocumentsInput,
     ReingestDocumentInput,
     _translate,
+    analyze_category,
     delete_document,
+    ingest_content,
+    ingest_directory,
     ingest_document,
+    ingest_url,
+    list_documents,
     reingest_document,
 )
 from theloom.store.multigraph import MultiGraph
@@ -124,3 +137,290 @@ def test_translate_classifies_by_exception_class_not_message_text() -> None:
     translated = _translate(misleading)
     assert isinstance(translated, OperationError)
     assert not isinstance(translated, NotFoundError)
+
+
+# =============================================================================
+# TL-485: `graph` is accepted-and-ignored on every command in this module (the
+# module's own docstring says so) — a caller supplying it could reasonably
+# believe the document was scoped to that graph, when scoping actually only
+# happens later, at extract-from-documents time. Silent acceptance hid that.
+# Every command below is exercised twice: once with `graph` supplied (the
+# `PARAMETER_IGNORED` notice appears), once without (no `notices` key at all,
+# so a caller who never passes `graph` sees the exact response shape it
+# already had — this is additive, not a breaking change to a clean call).
+# =============================================================================
+
+_GRAPH_IGNORED_NOTICE = {
+    "code": "PARAMETER_IGNORED",
+    "message": "documents are global; the graph parameter was not applied",
+    "hint": "Graph scoping happens later, at extract-from-documents time.",
+}
+
+
+def test_ingest_document_with_graph_carries_a_parameter_ignored_notice(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nSome content.")
+    result = ingest_document(
+        IngestDocumentInput.model_validate(
+            {"file_path": str(doc_file), "graph": "tl477-acceptance"}
+        ),
+        multi,
+    )
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+
+
+def test_ingest_document_without_graph_carries_no_notices(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nSome content.")
+    result = ingest_document(
+        IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi
+    )
+    assert "notices" not in result
+
+
+def test_ingest_content_with_graph_carries_a_parameter_ignored_notice(multi: MultiGraph) -> None:
+    result = ingest_content(
+        IngestContentInput.model_validate(
+            {
+                "source_id": "tl485-content-source",
+                "content": "Some content.",
+                "format": "txt",
+                "graph": "tl477-acceptance",
+            }
+        ),
+        multi,
+    )
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+
+
+def test_ingest_content_without_graph_carries_no_notices(multi: MultiGraph) -> None:
+    result = ingest_content(
+        IngestContentInput.model_validate(
+            {
+                "source_id": "tl485-content-source-clean",
+                "content": "Some content.",
+                "format": "txt",
+            }
+        ),
+        multi,
+    )
+    assert "notices" not in result
+
+
+def test_ingest_url_with_graph_carries_a_parameter_ignored_notice(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "theloom.documents.ingestion.fetch_url",
+        lambda url, **kwargs: (url, "<html><body>Hello world.</body></html>"),
+    )
+    result = ingest_url(
+        IngestUrlInput.model_validate(
+            {"url": "https://example.com/tl485", "graph": "tl477-acceptance"}
+        ),
+        multi,
+    )
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+
+
+def test_ingest_url_without_graph_carries_no_notices(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "theloom.documents.ingestion.fetch_url",
+        lambda url, **kwargs: (url, "<html><body>Hello world again.</body></html>"),
+    )
+    result = ingest_url(
+        IngestUrlInput.model_validate({"url": "https://example.com/tl485-clean"}), multi
+    )
+    assert "notices" not in result
+
+
+def test_reingest_document_with_graph_carries_a_parameter_ignored_notice(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nOriginal content.")
+    first = ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
+    doc_file.write_text("# Title\n\nChanged content.")
+    result = reingest_document(
+        ReingestDocumentInput.model_validate(
+            {"source_id": first["sourceId"], "graph": "tl477-acceptance"}
+        ),
+        multi,
+    )
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+
+
+def test_reingest_document_without_graph_carries_no_notices(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nOriginal content.")
+    first = ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
+    doc_file.write_text("# Title\n\nChanged content again.")
+    result = reingest_document(
+        ReingestDocumentInput.model_validate({"source_id": first["sourceId"]}), multi
+    )
+    assert "notices" not in result
+
+
+def test_delete_document_with_graph_carries_a_parameter_ignored_notice(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nContent to delete.")
+    ingested = ingest_document(
+        IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi
+    )
+    result = delete_document(
+        DeleteDocumentInput.model_validate(
+            {"source_id": ingested["sourceId"], "graph": "tl477-acceptance"}
+        ),
+        multi,
+    )
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+
+
+def test_delete_document_without_graph_carries_no_notices(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nContent to delete.")
+    ingested = ingest_document(
+        IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi
+    )
+    result = delete_document(
+        DeleteDocumentInput.model_validate({"source_id": ingested["sourceId"]}), multi
+    )
+    assert "notices" not in result
+
+
+def test_ingest_directory_with_graph_attaches_a_notice_to_every_ingested_document(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    (tmp_path / "one.md").write_text("# One\n\nFirst file.")
+    (tmp_path / "two.md").write_text("# Two\n\nSecond file.")
+    results = ingest_directory(
+        IngestDirectoryInput.model_validate(
+            {"dir_path": str(tmp_path), "graph": "tl477-acceptance"}
+        ),
+        multi,
+    )
+    assert len(results) == 2
+    assert all(item["notices"] == [_GRAPH_IGNORED_NOTICE] for item in results)
+
+
+def test_ingest_directory_without_graph_carries_no_notices(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    (tmp_path / "one.md").write_text("# One\n\nFirst file.")
+    results = ingest_directory(
+        IngestDirectoryInput.model_validate({"dir_path": str(tmp_path)}), multi
+    )
+    assert len(results) == 1
+    assert all("notices" not in item for item in results)
+
+
+def test_list_documents_with_graph_attaches_a_notice_to_every_listed_document(
+    multi: MultiGraph, tmp_path: Path
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nSome content.")
+    ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
+    results = list_documents(
+        ListDocumentsInput.model_validate({"graph": "tl477-acceptance"}), multi
+    )
+    assert results
+    assert all(item["notices"] == [_GRAPH_IGNORED_NOTICE] for item in results)
+
+
+def test_list_documents_without_graph_carries_no_notices(multi: MultiGraph, tmp_path: Path) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nSome content.")
+    ingest_document(IngestDocumentInput.model_validate({"file_path": str(doc_file)}), multi)
+    results = list_documents(ListDocumentsInput.model_validate({}), multi)
+    assert results
+    assert all("notices" not in item for item in results)
+
+
+@pytest.fixture()
+def fake_embedder() -> Iterator[None]:
+    """A fixed-vector embedder for analyze-category: clustering only needs
+    *some* vector on every chunk, and a real fastembed call would be slower
+    and non-deterministic for no benefit here."""
+    config_module.set_embedder_override(FakeEmbedder([1.0, 0.0]))
+    yield
+    config_module.set_embedder_override(None)
+
+
+def test_analyze_category_with_graph_carries_a_parameter_ignored_notice(
+    multi: MultiGraph, tmp_path: Path, fake_embedder: None
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nSome content for category clustering.")
+    ingest_document(
+        IngestDocumentInput.model_validate(
+            {"file_path": str(doc_file), "category": "tl485-category"}
+        ),
+        multi,
+    )
+    result = analyze_category(
+        AnalyzeCategoryInput.model_validate(
+            {"category": "tl485-category", "graph": "tl477-acceptance"}
+        ),
+        multi,
+    )
+    assert result["notices"] == [_GRAPH_IGNORED_NOTICE]
+
+
+def test_analyze_category_without_graph_carries_no_notices(
+    multi: MultiGraph, tmp_path: Path, fake_embedder: None
+) -> None:
+    doc_file = tmp_path / "notes.md"
+    doc_file.write_text("# Title\n\nSome other content for category clustering.")
+    ingest_document(
+        IngestDocumentInput.model_validate(
+            {"file_path": str(doc_file), "category": "tl485-category-clean"}
+        ),
+        multi,
+    )
+    result = analyze_category(
+        AnalyzeCategoryInput.model_validate({"category": "tl485-category-clean"}), multi
+    )
+    assert "notices" not in result
+
+
+# =============================================================================
+# The schema surface must say the same thing an agent would learn from the
+# notice at runtime: --schema/COMMANDS.md are the only things a caller reads
+# before ever invoking the command, so the field description carries the
+# truth ("documents are global") independently of the notice mechanism.
+# =============================================================================
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        IngestDocumentInput,
+        IngestDirectoryInput,
+        IngestUrlInput,
+        IngestContentInput,
+        ListDocumentsInput,
+        DeleteDocumentInput,
+        ReingestDocumentInput,
+        AnalyzeCategoryInput,
+    ],
+    ids=lambda m: m.__name__,
+)
+def test_graph_field_schema_description_states_documents_are_global(
+    model: type[CommandInput],
+) -> None:
+    description = model.model_fields["graph"].description
+    assert description is not None
+    assert "global" in description.lower()
+    assert "ignored" in description.lower()

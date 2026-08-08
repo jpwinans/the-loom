@@ -1,10 +1,16 @@
 """Document operations.
 
-Documents are global (not graph-scoped): the ingest/list/delete/reingest
-commands take no graph param. Chunks live in FalkorDB. analyze-category
-uses threshold Union-Find clustering; because embeddings come from fastembed,
-cluster *membership* is embedding-ranked rather than exact — the error/empty
-paths are fully deterministic.
+Documents are global (not graph-scoped): every command in this module accepts
+a `graph` field for schema compatibility but never applies it — real scoping
+only happens later, when entities are extracted from an ingested document via
+extract-from-documents. Supplying `graph` here used to vanish with no trace
+(TL-485); every handler now attaches a `PARAMETER_IGNORED` notice instead, and
+each field's schema description says the same thing, so an agent reading
+--schema/COMMANDS.md never has to discover this by trial and error. Chunks
+live in FalkorDB. analyze-category uses threshold Union-Find clustering;
+because embeddings come from fastembed, cluster *membership* is
+embedding-ranked rather than exact — the error/empty paths are fully
+deterministic.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from theloom.documents.ingestion import (
 )
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import notice, with_notices
 from theloom.semantic.embed import cosine_similarity
 from theloom.store.multigraph import MultiGraph
 
@@ -51,6 +58,46 @@ MAX_TOP_SOURCES = 5
 MAX_ADAPTIVE_THRESHOLD = 0.95
 ADAPTIVE_THRESHOLD_START = 500
 MAX_CLUSTER_FRACTION = 0.5
+
+_GRAPH_FIELD_DESCRIPTION = (
+    "Ignored: documents are global, not graph-scoped, so this has no effect "
+    "on where the document is stored or which chunks are returned. Graph "
+    "scoping happens later, when entities are extracted from the document "
+    "via extract-from-documents. Supplying this returns a PARAMETER_IGNORED "
+    "notice in the response."
+)
+
+_GRAPH_IGNORED_NOTICE_HINT = "Graph scoping happens later, at extract-from-documents time."
+
+
+def _graph_ignored_notices(params: Any) -> list[Doc]:
+    """A `PARAMETER_IGNORED` notice iff the caller supplied `graph` (TL-485).
+
+    Documents are global, so `graph` is accepted for schema compatibility but
+    never consulted; silently accepting it would let a caller believe the
+    document was scoped to that graph when it never was. Returns `[]` (never
+    added to a response — see `with_notices`) when `graph` was not supplied,
+    so a clean call's response shape is unchanged.
+    """
+    if params.graph is None:
+        return []
+    return [
+        notice(
+            "PARAMETER_IGNORED",
+            "documents are global; the graph parameter was not applied",
+            hint=_GRAPH_IGNORED_NOTICE_HINT,
+        )
+    ]
+
+
+def _attach_graph_notices(items: list[Doc], params: Any) -> list[Doc]:
+    """`_graph_ignored_notices` for a list-returning command: the notice is
+    attached to every item since the response itself is a bare array with no
+    top-level slot for one (`ingest-directory`, `list-documents`)."""
+    notices = _graph_ignored_notices(params)
+    if not notices:
+        return items
+    return [with_notices(item, notices=notices) for item in items]
 
 
 def _engine(multi: MultiGraph) -> DocumentIngestion:
@@ -82,7 +129,7 @@ class IngestDocumentInput(CommandInput):
     chunk_strategy: ChunkStrategy | None = None
     target_chunk_size: int | None = Field(default=None, gt=0)
     overlap: int | None = Field(default=None, ge=0)
-    graph: str | None = None  # accepted and ignored (documents are global)
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 class IngestDirectoryInput(CommandInput):
@@ -92,7 +139,7 @@ class IngestDirectoryInput(CommandInput):
     chunk_strategy: ChunkStrategy | None = None
     target_chunk_size: int | None = Field(default=None, gt=0)
     overlap: int | None = Field(default=None, ge=0)
-    graph: str | None = None
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 class IngestUrlInput(CommandInput):
@@ -102,7 +149,7 @@ class IngestUrlInput(CommandInput):
     chunk_strategy: ChunkStrategy | None = None
     target_chunk_size: int | None = Field(default=None, gt=0)
     overlap: int | None = Field(default=None, ge=0)
-    graph: str | None = None
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 class IngestContentInput(CommandInput):
@@ -114,17 +161,17 @@ class IngestContentInput(CommandInput):
     chunk_strategy: ChunkStrategy | None = None
     target_chunk_size: int | None = Field(default=None, gt=0)
     overlap: int | None = Field(default=None, ge=0)
-    graph: str | None = None
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 class ListDocumentsInput(CommandInput):
     category: str | None = None
-    graph: str | None = None
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 class DeleteDocumentInput(CommandInput):
     source_id: str
-    graph: str | None = None
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 class ReingestDocumentInput(CommandInput):
@@ -133,7 +180,7 @@ class ReingestDocumentInput(CommandInput):
     chunk_strategy: ChunkStrategy | None = None
     target_chunk_size: int | None = Field(default=None, gt=0)
     overlap: int | None = Field(default=None, ge=0)
-    graph: str | None = None
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 class AnalyzeCategoryInput(CommandInput):
@@ -144,7 +191,7 @@ class AnalyzeCategoryInput(CommandInput):
     )
     min_cluster_size: int | None = Field(default=None, gt=0, alias="minClusterSize")
     max_chunks: int | None = Field(default=None, gt=0, le=10000, alias="maxChunks")
-    graph: str | None = None
+    graph: str | None = Field(default=None, description=_GRAPH_FIELD_DESCRIPTION)
 
 
 # =============================================================================
@@ -170,17 +217,19 @@ def ingest_document(params: IngestDocumentInput, multi: MultiGraph) -> Doc:
         "chunkOptions": _chunk_options(params),
     }
     try:
-        return _engine(multi).ingest_from_file(params.file_path, options)
+        result = _engine(multi).ingest_from_file(params.file_path, options)
     except IngestionError as exc:
         raise _translate(exc) from exc
+    return with_notices(result, notices=_graph_ignored_notices(params))
 
 
 def ingest_directory(params: IngestDirectoryInput, multi: MultiGraph) -> list[Doc]:
     options = {"category": params.category, "chunkOptions": _chunk_options(params)}
     try:
-        return _engine(multi).ingest_directory(params.dir_path, params.pattern, options)
+        results = _engine(multi).ingest_directory(params.dir_path, params.pattern, options)
     except IngestionError as exc:
         raise _translate(exc) from exc
+    return _attach_graph_notices(results, params)
 
 
 def ingest_url(params: IngestUrlInput, multi: MultiGraph) -> Doc:
@@ -190,9 +239,10 @@ def ingest_url(params: IngestUrlInput, multi: MultiGraph) -> Doc:
         "chunkOptions": _chunk_options(params),
     }
     try:
-        return _engine(multi).ingest_url(params.url, options)
+        result = _engine(multi).ingest_url(params.url, options)
     except IngestionError as exc:
         raise _translate(exc) from exc
+    return with_notices(result, notices=_graph_ignored_notices(params))
 
 
 def ingest_content(params: IngestContentInput, multi: MultiGraph) -> Doc:
@@ -202,30 +252,34 @@ def ingest_content(params: IngestContentInput, multi: MultiGraph) -> Doc:
         "chunkOptions": _chunk_options(params),
     }
     try:
-        return _engine(multi).ingest_content(
+        result = _engine(multi).ingest_content(
             params.source_id, params.content, params.format, options
         )
     except IngestionError as exc:
         raise _translate(exc) from exc
+    return with_notices(result, notices=_graph_ignored_notices(params))
 
 
 def list_documents(params: ListDocumentsInput, multi: MultiGraph) -> list[Doc]:
-    return _engine(multi).list_documents(params.category)
+    results = _engine(multi).list_documents(params.category)
+    return _attach_graph_notices(results, params)
 
 
 def delete_document(params: DeleteDocumentInput, multi: MultiGraph) -> Doc:
     try:
-        return _engine(multi).delete_document(params.source_id)
+        result = _engine(multi).delete_document(params.source_id)
     except IngestionError as exc:
         raise _translate(exc) from exc
+    return with_notices(result, notices=_graph_ignored_notices(params))
 
 
 def reingest_document(params: ReingestDocumentInput, multi: MultiGraph) -> Doc:
     options = {"chunkOptions": _chunk_options(params)}
     try:
-        return _engine(multi).reingest(params.source_id, options)
+        result = _engine(multi).reingest(params.source_id, options)
     except IngestionError as exc:
         raise _translate(exc) from exc
+    return with_notices(result, notices=_graph_ignored_notices(params))
 
 
 # =============================================================================
@@ -446,7 +500,7 @@ def analyze_category(params: AnalyzeCategoryInput, multi: MultiGraph) -> Doc:
     for i, theme in enumerate(top_themes):
         theme["rank"] = i + 1
 
-    return {
+    result = {
         "category": params.category,
         "totalDocuments": total_documents,
         "totalChunks": total_chunks,
@@ -454,3 +508,4 @@ def analyze_category(params: AnalyzeCategoryInput, multi: MultiGraph) -> Doc:
         "themes": top_themes,
         "unclustered": unclustered,
     }
+    return with_notices(result, notices=_graph_ignored_notices(params))
