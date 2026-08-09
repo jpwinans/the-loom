@@ -473,6 +473,14 @@ def _semantic_commands() -> list[CommandDescriptor]:
                 True,
             ),
             _Spec(
+                "embedder-profile",
+                "Embeddings",
+                "The configured embedder's live-measured similarity landscape.",
+                s.EmbedderProfileInput,
+                s.embedder_profile,
+                True,
+            ),
+            _Spec(
                 "flush-pending-embeddings",
                 "Embeddings",
                 "Flush the pending embedding queue.",

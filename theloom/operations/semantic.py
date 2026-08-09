@@ -40,6 +40,7 @@ from theloom.graph.metadata import coerce_observation
 from theloom.model import ALL_RELATION_TYPES, EmbeddingStatus, EntityFilter, EntityType
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.operations.notices import list_envelope
+from theloom.semantic import landscape
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_VERSION,
@@ -229,6 +230,10 @@ class WarmEmbedderInput(CommandInput):
     pass
 
 
+class EmbedderProfileInput(CommandInput):
+    pass
+
+
 class EmbeddingReconcileInput(CommandInput):
     dry_run: bool | None = Field(default=None, alias="dryRun")
     clean_orphans: bool | None = Field(default=None, alias="cleanOrphans")
@@ -365,6 +370,34 @@ def warm_embedder(params: WarmEmbedderInput, multi: MultiGraph) -> dict[str, Any
         "model": EMBEDDING_VERSION,
         "dimensions": EMBEDDING_DIMENSIONS,
         "cacheDir": load_config().model_cache_dir,
+    }
+
+
+def embedder_profile(params: EmbedderProfileInput, multi: MultiGraph) -> dict[str, Any]:
+    """Desire 8 (claude-desires.md): the configured embedder's own empirical
+    similarity landscape, measured live against a small fixed probe corpus
+    (see theloom.semantic.landscape) — never a hard-coded constant. Every
+    number below is computed fresh from this invocation's embedder; editing
+    the probe corpus in theloom/semantic/landscape.py changes what the next
+    call reports."""
+    embedder = get_embedder()
+    profile = landscape.measure_landscape(embedder)
+    # Live-measured, not the EMBEDDING_DIMENSIONS constant: a swapped-in
+    # embedder (a test double, or a future model behind the same override
+    # point) may not share that constant's width.
+    dimensions = len(embedder.embed_query("dimension probe"))
+    return {
+        "model": EMBEDDING_VERSION,
+        "dimensions": dimensions,
+        "probeCorpus": {
+            "unrelatedPairCount": sum(1 for p in profile.pairs if p.relation == "unrelated"),
+            "relatedPairCount": sum(1 for p in profile.pairs if p.relation == "related"),
+            "pairs": [landscape.pair_doc(p) for p in profile.pairs],
+        },
+        "unrelatedPairBaseline": landscape.band_stats_doc(profile.unrelated_baseline),
+        "relatedPairRange": landscape.band_stats_doc(profile.related_range),
+        "meaningfullyRelatedCutoff": profile.meaningfully_related_cutoff,
+        "cutoffMethod": profile.cutoff_method,
     }
 
 

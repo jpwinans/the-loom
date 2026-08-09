@@ -658,6 +658,7 @@ def verify_fidelity(params: VerifyFidelityInput, multi: MultiGraph) -> Doc:
         entity_ids=entity_ids,
         mode=params.mode,
         llm_client=llm_client,
+        embedder=get_embedder(),
     )
     return with_notices(result, notices)
 
