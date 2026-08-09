@@ -35,6 +35,7 @@ The Loom were resold as a managed service exposing FalkorDB. This project is ISC
 | **python-graphblas** | Apache-2.0 | Semiring path algebra over SuiteSparse:GraphBLAS (tropical / max-times / plus-times, custom via Numba; `mxm`, `reduce_*`). |
 | **fastembed** (Qdrant) | Apache-2.0 | ONNX in-process embeddings, no torch. `nomic-ai/nomic-embed-text-v1.5` (768-dim). |
 | **scipy** / **POT** | BSD / MIT | Sparse numerics and optimal transport (far-analogy sliced-Wasserstein). |
+| **numpy** | BSD-3-Clause | Dense array numerics beneath the embedding, extraction and projection paths — including the PCA projection that backs the visualization's Semantic Map. |
 
 **Note on python-graphblas:** small community and infrequent releases. The
 semirings used (Boolean/Tropical/Viterbi/Counting/Capacity) are small enough to
@@ -63,3 +64,10 @@ implement directly over `scipy.sparse` if it ever stalls.
 | **sympy** | symbolic math (imported natively) |
 | **z3-solver** | optional CEGIS backend |
 | **tree-sitter** (+ python/javascript/typescript/go/rust grammars) | codebase extraction |
+| **fastapi** / **uvicorn** | optional extra `viz-serve` — the read-only live visualization server (`loom serve`) |
+| **umap-learn** | optional extra `viz-umap` — alternative projection for the Semantic Map; PCA (numpy) is the default |
+
+**Declared but unused:** `readability-lxml` (`pyproject.toml:41`) is a runtime
+dependency with no import anywhere in the tree. It is a candidate for removal
+rather than a library this project relies on; it is listed here so the gap
+between the declared set and the used set stays visible.

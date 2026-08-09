@@ -9,7 +9,9 @@ Until 2026-08-09 the canonical tracker was **Jira Cloud**, project `TL` at
 agent memory, and docs point there; open TL issues (e.g. TL-502) remain in Jira unless
 individually migrated. New work is tracked here, on GitHub Issues. When a skill
 encounters a `TL-…` reference it should treat it as historical context, not as a ticket
-it can fetch with `gh`.
+it can fetch with `gh`. It is still resolvable by a human at
+`https://hiereus-studios.atlassian.net/browse/TL-<n>` — there is no `gh` equivalent, and
+a `TL-…` identifier never denotes a GitHub issue number.
 
 ## Conventions
 
