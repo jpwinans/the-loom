@@ -39,7 +39,7 @@ from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
 from theloom.model import ALL_RELATION_TYPES, EmbeddingStatus, EntityFilter, EntityType
 from theloom.operations.common import CommandInput, UuidStr
-from theloom.operations.notices import list_envelope
+from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.semantic import landscape
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
@@ -330,6 +330,31 @@ _EMBED_TYPES_MSG = (
 )
 
 
+def _world_partial_notices(params: CommandInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): a world's overlay
+    reconstructs entities/relations from the event log, but a vector
+    attached via ``set_entity_vector`` is a direct Cypher property write
+    outside it (see ``theloom.store.falkor.FalkorGraphStore``'s module
+    docstring — updates snapshot, but ``_embedding`` is not part of the
+    versioned ``_doc``), so ``adopt_entity``'s copy-on-write never carries
+    it: a fork's vector index reflects only what was embedded *inside* that
+    fork, never what its parent already had embedded. An inherited entity
+    can therefore still report ``embeddingStatus: "completed"`` (a doc
+    field, correctly forked) while genuinely unsearchable in this world —
+    this notice says so instead of a command silently searching (or
+    reporting on) less than it appears to.
+    """
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's embeddings — this reflects "
+            "only entities embedded inside this world, not the ones inherited from its parent.",
+        )
+    ]
+
+
 def _embed_one(store: FalkorGraphStore, entity: Doc, skip_hash_check: bool) -> dict[str, Any]:
     """The pipeline's embedEntity: hash-skip, embed, store vector + metadata.
 
@@ -355,9 +380,10 @@ def embed_entity(params: EmbedEntityInput, multi: MultiGraph) -> dict[str, Any]:
     entity = store.read_entity(params.id)
     if entity is None:
         raise NotFoundError(f"Entity not found with ID: {params.id}")
-    return _embed_one(
+    result = _embed_one(
         store, entity.model_dump(by_alias=True, exclude_unset=True), skip_hash_check=False
     )
+    return with_notices(result, _world_partial_notices(params))
 
 
 def warm_embedder(params: WarmEmbedderInput, multi: MultiGraph) -> dict[str, Any]:
@@ -431,7 +457,7 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
         "totalBatches": max(1, math.ceil(total / batch_size)),
     }
     if total == 0:
-        return progress
+        return with_notices(progress, _world_partial_notices(params))
     for start in range(0, total, batch_size):
         progress["currentBatch"] += 1
         for entity in entities[start : start + batch_size]:
@@ -445,7 +471,7 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
                 progress["skipped"] += 1
             else:
                 progress["failed"] += 1
-    return progress
+    return with_notices(progress, _world_partial_notices(params))
 
 
 def _batch_embed(store: FalkorGraphStore, entities: list[Doc]) -> dict[str, Any]:
@@ -500,7 +526,10 @@ def embedding_status(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]
     entities = _entity_docs(store)
     counts = status_counts(entities)
     counts["total"] = len(entities)
-    return {"counts": counts, "pipelineStatus": _empty_pipeline_status()}
+    return with_notices(
+        {"counts": counts, "pipelineStatus": _empty_pipeline_status()},
+        _world_partial_notices(params),
+    )
 
 
 def list_dead_letters(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
@@ -604,7 +633,8 @@ def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> dict[str,
                 "entryType": r["metadata"]["entryType"],
             }
             for r in results
-        ]
+        ],
+        _world_partial_notices(params),
     )
 
 
@@ -641,7 +671,10 @@ def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any
         entity_types=_as_type_list(params.entity_type),
     )
     if not hits:
-        return {"results": [], "totalCandidates": 0, "qualityGroups": 0, "query": query_summary}
+        return with_notices(
+            {"results": [], "totalCandidates": 0, "qualityGroups": 0, "query": query_summary},
+            _world_partial_notices(params),
+        )
 
     vector_rows = [
         {
@@ -691,12 +724,15 @@ def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any
     if quality_grouping and results:
         results, quality_groups = assign_quality_groups(results, strategy)
 
-    return {
-        "results": results,
-        "totalCandidates": len(vector_rows) + len(graph_rows),
-        "qualityGroups": quality_groups,
-        "query": query_summary,
-    }
+    return with_notices(
+        {
+            "results": results,
+            "totalCandidates": len(vector_rows) + len(graph_rows),
+            "qualityGroups": quality_groups,
+            "query": query_summary,
+        },
+        _world_partial_notices(params),
+    )
 
 
 # =============================================================================
@@ -741,7 +777,7 @@ def semantic_neighbors(params: SemanticNeighborsInput, multi: MultiGraph) -> dic
         if r["id"] not in connected
     ]
     neighbors.sort(key=lambda n: -float(n["similarity"]))
-    return list_envelope(neighbors[:limit])
+    return list_envelope(neighbors[:limit], _world_partial_notices(params))
 
 
 def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any]:
@@ -928,7 +964,11 @@ def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> dict[
             row["suggestedRelationType"] = suggested
         suggestions.append(row)
     suggestions.sort(key=lambda s: -float(s["confidence"]))
-    return list_envelope(suggestions[:limit])
+    # suggest_relations calls semantic_neighbors directly (see above), which
+    # already computes and would otherwise silently drop this notice on the
+    # `["items"]` extraction above — emit it explicitly here too, since this
+    # command inherits the same partial-embeddings-in-a-fork exposure.
+    return list_envelope(suggestions[:limit], _world_partial_notices(params))
 
 
 def resolve_gaps(params: ResolveGapsInput, multi: MultiGraph) -> dict[str, Any]:
