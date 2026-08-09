@@ -1833,7 +1833,14 @@ def _create_graph(params: GraphNameInput, multi: MultiGraph) -> str:
 
 
 def _delete_graph(params: GraphNameInput, multi: MultiGraph) -> str:
-    multi.delete_graph(params.name)
+    reaped_worlds = multi.delete_graph(params.name)
+    if reaped_worlds:
+        return (
+            f"Graph '{params.name}' deleted successfully; "
+            f"{len(reaped_worlds)} world ref(s) forked from it were purged with it: "
+            + ", ".join(reaped_worlds)
+            + "."
+        )
     return f"Graph '{params.name}' deleted successfully."
 
 

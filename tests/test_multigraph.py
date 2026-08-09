@@ -295,3 +295,76 @@ def test_list_sessions_is_oldest_first(multi: MultiGraph) -> None:
     second = multi.begin_session("second", None)
     listed = multi.list_sessions()
     assert [s["sessionId"] for s in listed] == [first["sessionId"], second["sessionId"]]
+
+
+# =============================================================================
+# World-ref lifecycle on graph deletion (the "worldrefs" leak fix): a world
+# ref forked from a graph must not survive that graph's own deletion, however
+# the graph was deleted (end-session's per-member reap, or delete-graph
+# directly) -- it is permanently dangling the moment its baseGraph is gone.
+# =============================================================================
+
+
+def _world_ids(multi: MultiGraph) -> set[str]:
+    return {w["worldId"] for w in multi.list_worlds(include_reaped=True)}
+
+
+def test_end_session_purges_world_refs_forked_from_reaped_graphs(multi: MultiGraph) -> None:
+    session = multi.begin_session(None, None)
+    namespace = session["namespace"]
+    scratch = f"{namespace}scratch"
+    multi.get_store(scratch).create_entity(ent("x"))
+    doomed_world = multi.fork_world(
+        name="doomed", graph=scratch, from_world=None, as_of=None, ttl_seconds=None
+    )
+
+    multi.create_graph("kept")
+    kept_world = multi.fork_world(
+        name="kept-fork", graph="kept", from_world=None, as_of=None, ttl_seconds=None
+    )
+
+    result = multi.end_session(session["sessionId"])
+    assert result["reapedGraphs"] == [scratch]
+    # The purge is disclosed, not silent: end-session names the worlds it
+    # destroyed along with the graphs they were forked from.
+    assert result["reapedWorlds"] == [doomed_world["worldId"]]
+
+    remaining = _world_ids(multi)
+    assert doomed_world["worldId"] not in remaining, (
+        "a world ref forked from a graph end-session just reaped must not survive it"
+    )
+    assert kept_world["worldId"] in remaining, (
+        "a world forked from an untouched graph is not ours to touch"
+    )
+    assert multi.has_graph("kept")
+
+
+def test_end_session_twice_purges_world_refs_only_once_no_phantom_events(
+    multi: MultiGraph,
+) -> None:
+    session = multi.begin_session(None, None)
+    scratch = f"{session['namespace']}scratch"
+    multi.get_store(scratch).create_entity(ent("x"))
+    world = multi.fork_world(
+        name="doomed", graph=scratch, from_world=None, as_of=None, ttl_seconds=None
+    )
+
+    first = multi.end_session(session["sessionId"])
+    assert first["alreadyReaped"] is False
+    assert world["worldId"] not in _world_ids(multi)
+
+    second = multi.end_session(session["sessionId"])
+    assert second["alreadyReaped"] is True
+    assert second["reapedGraphs"] == []
+    # Nothing left to prune the second time either -- the ref is already
+    # gone, not re-touched, and no event is fabricated for either action.
+    assert world["worldId"] not in _world_ids(multi)
+
+
+def test_delete_graph_directly_also_purges_world_refs(multi: MultiGraph) -> None:
+    multi.create_graph("standalone")
+    world = multi.fork_world(
+        name="scratch", graph="standalone", from_world=None, as_of=None, ttl_seconds=None
+    )
+    multi.delete_graph("standalone")
+    assert world["worldId"] not in _world_ids(multi)

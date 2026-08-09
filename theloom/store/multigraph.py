@@ -132,8 +132,9 @@ class MultiGraph:
         """Register without the exists-check (migration path)."""
         self._redis.sadd(self._registry_key, name)
 
-    def delete_graph(self, name: str) -> None:
-        """Delete a registered graph and its data.
+    def delete_graph(self, name: str) -> list[str]:
+        """Delete a registered graph and its data; returns the ids of every
+        world ref purged along with it (see ``_purge_world_refs_for_graph``).
 
         Two properties, both about not half-applying: validation happens
         entirely before any mutation, and the mutations themselves (data,
@@ -171,6 +172,65 @@ class MultiGraph:
             )
         self.plain_store(name).delete_graph_data()
         self._redis.srem(self._registry_key, name)
+        return self._purge_world_refs_for_graph(name)
+
+    def _purge_world_refs_for_graph(self, graph_name: str) -> list[str]:
+        """Purge every world ref whose ``baseGraph`` is ``graph_name`` —
+        called from ``delete_graph``, the one funnel every graph-deletion
+        path already goes through (``end_session``'s per-member reap, the
+        standalone ``delete-graph`` command, ``theloom.operations.
+        verification``'s temp-graph cleanup), so a world ref can never
+        outlive the graph it was forked from regardless of which caller
+        deleted it.
+
+        A world ref surviving its base graph's deletion is permanently
+        dangling — its ``worldId``/``diffWorldsHandle`` can never be used
+        again, the base graph ``theloom.store.worlds.resolve_layers`` needs
+        to answer any read is gone — so this purges the ref outright
+        (``purge_world``, not ``abandon_world``) rather than merely marking
+        it reaped: ``list_worlds(include_reaped=True)`` must not keep
+        showing something nothing can act on. Every world whose
+        ``metadata["baseGraph"]`` matches is caught regardless of fork
+        depth — ``theloom.store.worlds.fork_world`` always propagates the
+        ROOT base graph onto a fork-of-a-fork's own ref, never just the
+        immediate parent's — so no ancestor-chain walk is needed here.
+
+        Already-``reaped`` refs (abandoned or merged) are purged too:
+        ``reaped`` only ever meant "no segment left to replay," not "no
+        longer dangling" — a merged dream's history is meaningless to query
+        once the graph it was about no longer exists. This does not
+        conflict with ``since-last-session``/``consolidate``'s own reliance
+        on ``list_worlds(include_reaped=True)`` for merged/abandoned dream
+        history (``ALL_DREAMS_REVIEWED``, ``find_reports``'s credit-pass
+        diff boundary): both filter by ``baseGraph`` themselves and are only
+        ever asked about a graph that still exists, so they never observe
+        a ref this method has pruned — the graph they'd be asking about is,
+        by construction, exactly the one just deleted.
+
+        No event is appended for the purge, deliberately mirroring how
+        deleting the graph's own data is itself not evented
+        (``FalkorGraphStore.delete_graph_data`` appends nothing): the ref
+        going away is not a new fact being recorded, it is the ref
+        catching up to a fact (the graph's absence) that already happened.
+        ``end_session``'s own ``eventIds`` therefore stay exactly what they
+        were before this method existed — the session ref's own
+        ``ref_reaped`` event, nothing invented and nothing lost. The purge
+        is DISCLOSED, though, not silent: the purged world ids are returned
+        so ``delete_graph``'s callers (``end_session``'s ``reapedWorlds``,
+        the delete-graph command's success message) can tell the caller
+        which of their worlds just ceased to exist along with the graph.
+
+        A full ``refs.list(WORLD_KIND)`` scan per deleted graph, so
+        ``end_session`` is O(member graphs x world refs) — fine at today's
+        scale; revisit with a per-graph index if session workspaces ever
+        hold many member graphs against many live worlds.
+        """
+        purged: list[str] = []
+        for record in self.refs.list(self.WORLD_KIND):
+            if record.metadata.get("baseGraph") == graph_name:
+                self.purge_world(record.id)
+                purged.append(record.id)
+        return purged
 
     # -- store construction: the one resolution path for both `graph` and
     # `world` (desire 12 / Part 5) ------------------------------------------
@@ -317,15 +377,18 @@ class MultiGraph:
         if record.status == "reaped":
             doc = _session_doc(record, [])
             doc["reapedGraphs"] = []
+            doc["reapedWorlds"] = []
             doc["alreadyReaped"] = True
             return doc
         namespace = str(record.metadata.get("namespace", ""))
         members = [name for name in self.graph_names() if namespace and name.startswith(namespace)]
+        reaped_worlds: list[str] = []
         for graph_name in members:
-            self.delete_graph(graph_name)
+            reaped_worlds.extend(self.delete_graph(graph_name))
         reaped = self.refs.reap(self.SESSION_KIND, session_id)
         doc = _session_doc(reaped, [])
         doc["reapedGraphs"] = members
+        doc["reapedWorlds"] = reaped_worlds
         doc["alreadyReaped"] = False
         return doc
 
