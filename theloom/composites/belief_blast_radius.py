@@ -8,12 +8,30 @@ There is deliberately no second propagation implementation here — this
 composite calls ``theloom.operations.epistemic.propagate_credit`` directly
 (the very function the ``propagate-credit`` command registers), which is
 also how a caller can prove it: monkeypatching that one function is
-observable from here (see ``tests/test_belief_blast_radius.py``).
+observable from here (see ``tests/test_worlds.py``).
 
-The world it forks is always torn down (``abandon-world``, even when
-propagation or diffing raises) — the composite never leaves a stray world
-behind, and nothing it computes ever reaches ``main``: ``applied`` is always
-``false``, honestly, because nothing outside the discarded fork changed.
+The world it forks is always torn down, even when propagation or diffing
+raises — but torn down by *purge*, not ``abandon-world``: this composite
+owns the fork's entire lifecycle within one call, so reap-and-keep-as-
+history (what a caller-initiated ``abandon-world`` gives an ordinary fork)
+would just grow ``list-worlds`` forever with entries nobody will ever look
+up again — a real, observed leak of one ref plus its lifecycle events per
+call. ``multi.purge_world`` erases the ref's record outright instead, and —
+unlike ``abandon_world`` — commits no ref-lifecycle events of its own
+(nothing left to replay for a ref that, from every other caller's
+perspective, never existed).
+
+That still leaves the fork's *own* segment: propagate-credit's writes land
+in ``_world_<id>``'s own event stream, which purge deletes along with the
+graph data — a real dangling pointer if returned. Those, and only those,
+are isolated in a *nested* write-receipts scope
+(``theloom.store.receipts.collecting``) that this composite's own response
+never sees. ``fork-world``'s own ``ref_registered`` event is different: it
+lives in the shared, never-deleted ``_refs`` stream, so it stays genuinely
+replayable via ``what-changed`` even after the ref itself is purged — and
+is reported normally, not swept into the same nested scope. Nothing this
+composite computes ever reaches ``main``: ``applied`` is always ``false``,
+honestly.
 """
 
 from __future__ import annotations
@@ -24,7 +42,7 @@ from theloom.operations import epistemic as epistemic_ops
 from theloom.operations import worlds as worlds_ops
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.operations.notices import Doc, with_notices
-from theloom.store import worldctx
+from theloom.store import receipts, worldctx
 from theloom.store.multigraph import MultiGraph
 
 
@@ -45,6 +63,10 @@ class BeliefBlastRadiusInput(CommandInput):
 
 def belief_blast_radius(params: BeliefBlastRadiusInput, multi: MultiGraph) -> Doc:
     parent_label = params.world or "main"
+    # fork-world's own ref_registered event lives in the shared _refs
+    # stream, which purge_world never touches -- it stays genuinely
+    # replayable, so it is NOT isolated and reaches this response's own
+    # eventIds normally.
     fork = multi.fork_world(
         name=None,
         graph=params.graph,
@@ -67,11 +89,17 @@ def belief_blast_radius(params: BeliefBlastRadiusInput, multi: MultiGraph) -> Do
                 "dryRun": False,
             }
         )
-        with worldctx.active(world_id):
+        # Propagate-credit's writes land in the fork's OWN segment, which
+        # purge_world deletes below -- a nested collecting() scope isolates
+        # those event ids from the outer (this command's own) scope, the
+        # same mechanism receipts.py documents for a future "composite-of-
+        # composites", so a dangling pointer into a stream that no longer
+        # exists is never reported as a receipt.
+        with worldctx.active(world_id), receipts.collecting("belief-blast-radius:ephemeral-fork"):
             propagation = epistemic_ops.propagate_credit(propagate_input, multi)
         diff = worlds_ops.diff_worlds(worlds_ops.DiffWorldsInput(a=parent_label, b=world_id), multi)
     finally:
-        multi.abandon_world(world_id)
+        multi.purge_world(world_id)
     return with_notices(
         {"worldId": world_id, "propagation": propagation, "diff": diff},
         applied=False,
