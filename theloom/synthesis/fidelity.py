@@ -70,7 +70,7 @@ mention's stripped residual ended up statistically indistinguishable
 genuine mentions vs. roughly 1.11-2.87 for correctly-rejected false
 friends).
 
-**Round 5 (current): cut the ANCHOR's name, not the SPAN.** The
+**Round 5: cut the ANCHOR's name, not the SPAN.** The
 shared-word channel exists on BOTH sides of a name-vs-span comparison — the
 entity's own name, and the span that (by construction, in the trap this
 check exists for) also contains it. Only ONE side needs to be cut.
@@ -86,14 +86,85 @@ reuse. Stripping is kept ONLY on the degraded, no-observations path (below)
 — there, the comparison is still name-vs-span, and stripping the shared
 word from the span is still the right move for that weaker representation.
 
+Round 5 left one asymmetry standing: it reached for the entity's meaning
+only when the word-overlap trap was live, and kept round 3's bare
+name-vs-span dual check as the SOLE judge of every span that shared no word
+with the name — on the reasoning that "observations add nothing a bare name
+doesn't already carry for that direction". Live measurement says otherwise.
+A faithful restatement of an entity's OBSERVATION that happens to reuse none
+of its NAME's vocabulary is exactly the span the name cannot speak for: for
+a claim named ``envelope-invariant-holds`` observing "No command returns a
+bare top-level array", the paraphrase "The registry sweep confirmed that no
+command hands back an unwrapped list at the top level." missed the dual
+check on this machine (sym z 2.036 against a 2.173 cutoff — asym z 6.35
+cleared 1.39 easily, and both must clear), while the SAME span scored sense
+z 11.39 against the sense cutoff's 4.59. The name was the wrong instrument;
+the observation it restates was never consulted.
+
+**Round 6 (current): let the definition speak for no-shared-word spans
+too.** When a span shares no significant word with the entity name, the
+round-3 dual check still goes first and still decides on its own whenever it
+GROUNDS. Only once it has said no, and only when the entity has real
+observations, the sense anchor gets its own say on the same intact span —
+``observation_anchor`` + ``measure_sense_specificity``, byte-for-byte the
+mechanism and the cutoff the shared-word branch already uses. Strictly an
+ACCEPTANCE path: it can add a grounding the name-based check missed, never
+overturn one it made, and no cutoff anywhere moved. The safety argument is
+that the sense cutoff is the strictest in the module (live: 4.59 versus
+2.173 symmetric and 1.387 asymmetric) and is calibrated against
+false-friend documents rather than merely unrelated ones — a span that
+shares no word with the name has no lexical channel to inflate it, so
+clearing 4.59 against the observations requires genuinely being about what
+the entity means. Live-measured on the round-1-to-5 corpus of named false
+friends and on fresh no-shared-word non-mentions, that holds: postal
+envelope 1.60, hot soup 0.03, werewolf silver bullet 1.08, gardening "root"
+2.04, wine-decanter bottleneck 2.83, an off-topic bakery sentence 0.80, an
+adjacent-but-different sibling claim 3.51 — every one rejected BY THE SENSE
+ANCHOR, most by a wide margin, in kebab-case and space-separated name forms
+alike (the anchor never sees the name, so the two forms score identically
+and only the routing differs). Rejected by the sense anchor is not the same
+as rejected live: the hot-soup case never reaches the anchor at all — see
+the second limit below. (These figures use this docstring's own probe
+sentences; the repo's test cases for the same-named false friends use
+different sentences and carry their own, smaller figures.)
+
+Two honest limits of round 6, both measured, neither introduced by it:
+
+- The sense anchor admits cross-domain ANALOGY, which is a different
+  species from a lexical false friend. "The library discards its oldest
+  donated books whenever the shelves run out of space." scored sense z 4.64
+  against a ``cache-eviction-policy`` entity — 0.05 over the cutoff. That
+  span is not a mention of the entity, but note the space-separated form of
+  the same entity ALREADY grounded it through the dual check (sym z 2.31)
+  before round 6; the round-6 path makes the two name forms agree rather
+  than opening a new hole. A span that CONTRADICTS an observation
+  ("Several handlers still emit a naked list of rows") also grounds, at
+  sense z 5.33 — correctly, since entity grounding asks whether the text
+  discusses the entity at all; direction is
+  :func:`check_relation_preservation`'s question, not this one.
+- The no-shared-word dual check remains the loose end. It admits several
+  no-shared-word non-mentions the sense anchor correctly REJECTS (a
+  blameless-retrospective sentence against ``root-cause-analysis``: dual
+  grounds, sense z 1.98; a grocery-queue metaphor against
+  ``supply-chain-bottleneck``: dual grounds, sense z 4.13), and it grounds
+  the docstring's own "Hot Take" vs. hot-soup case, which reaches it
+  because "hot" is shorter than ``MIN_PARTIAL_MATCH_WORD_LENGTH`` and so
+  never registers as a shared word at all. Round 6 deliberately does not
+  touch that — replacing the dual check with the sense anchor there, rather
+  than adding to it, is a separate change with its own recall risk for
+  entities whose observations are thin, and it needs its own round.
+
 Every grounding decision — grounded **and omitted** — discloses the full
 audit trail: ``matchBasis`` (the mechanism used, or, when omitted, the
-mechanism ATTEMPTED — "an honest no must be as auditable as a yes"),
-``mentionedAs``, ``matchScore`` (the score the z-score was computed from),
-``nullMean``/``nullStdev`` (the baseline the z-score is relative to),
-``zScore``, and ``zCutoff`` (the live-calibrated cutoff ``zScore`` was
-judged against) — plus ``asymZScore``/``asymZCutoff`` when the round-3 dual
-check (not the sense anchor) made or attempted the decision. When several
+mechanism ATTEMPTED — "an honest no must be as auditable as a yes":
+``"semantic"`` for the dual name-based check, ``"semantic-sense"`` for a
+sense-anchored decision in either branch, ``"semantic-name-only"`` for the
+degraded no-observations fallback), ``mentionedAs``, ``matchScore`` (the
+score the z-score was computed from), ``nullMean``/``nullStdev`` (the
+baseline the z-score is relative to), ``zScore``, and ``zCutoff`` (the
+live-calibrated cutoff ``zScore`` was judged against) — plus
+``asymZScore``/``asymZCutoff`` when the round-3 dual check (not the sense
+anchor) made or attempted the decision. When several
 spans were examined and none grounded the entity, the disclosed evidence is
 the single BEST attempt across all of them — whichever mechanism came
 closest to clearing its own cutoff (largest z-score-minus-cutoff margin,
@@ -197,8 +268,29 @@ RELATION_NARRATIVE_CUES: dict[str, list[str]] = {
 }
 
 
+_WORD_SPLIT_RE = re.compile(r"[\W_]+")
+
+
 def _significant_words(name_lower: str) -> list[str]:
-    return [w for w in name_lower.split() if len(w) >= MIN_PARTIAL_MATCH_WORD_LENGTH]
+    """Tokenize on runs of non-word characters (plus underscore), not just
+    whitespace — kebab-case (``envelope-invariant-holds``), snake_case
+    (``envelope_invariant_holds``), and dotted (``config.max.retries``)
+    entity names all split into their component words this way, the same
+    as a space-separated name would. Whitespace-only splitting left an
+    entire hyphen/underscore/dot-separated name as ONE token that no
+    natural-language span could ever contain, silently disabling the
+    word-overlap trap for exactly the names agent ledgers use most.
+    ``\\W`` (not ``[^a-z0-9]``) so accented and non-Latin letters stay part
+    of their word — ``café-münster`` splits into its two words, not into
+    ASCII shrapnel. All-digit tokens are dropped: a bare numeral shared
+    with a name like ``sprint-2026`` is the weakest possible evidence of a
+    mention, and letting it count would ground the entity on any text that
+    mentions the year."""
+    return [
+        w
+        for w in _WORD_SPLIT_RE.split(name_lower)
+        if len(w) >= MIN_PARTIAL_MATCH_WORD_LENGTH and not w.isdigit()
+    ]
 
 
 def _word_match(text_lower: str, word: str) -> re.Match[str] | None:
@@ -325,8 +417,8 @@ def _semantic_grounding(
     text: str, entities: list[Doc], embedder: SupportsMentionEmbedding
 ) -> dict[str, Doc]:
     """Semantic match basis for ``entities`` (already known not to appear as
-    an exact substring of ``text``) — round 5 design; see this module's own
-    docstring for why rounds 1-4 each failed against fresh adversarial
+    an exact substring of ``text``) — round 6 design; see this module's own
+    docstring for why rounds 1-5 each fell short against fresh adversarial
     cases.
 
     For each candidate span, the round-2 guard (does it share a significant
@@ -347,8 +439,16 @@ def _semantic_grounding(
       tell a fully-anchored decision from a degraded one.
     - **No shared word**: the round-3 dual name-based z-score check
       (symmetric + asymmetric representations, both must clear their own
-      cutoff) on the intact span — unchanged, since it already works well
-      for genuine paraphrases that share no vocabulary with the name.
+      cutoff) on the intact span goes first and grounds on its own
+      authority. If it does NOT ground, round 6 gives the entity's own
+      definition a second, independent say on the same intact span — the
+      same ``observation_anchor`` + ``measure_sense_specificity`` mechanism
+      and the same (strictest-in-the-module) cutoff the shared-word branch
+      uses, when the entity has real observations. An ACCEPTANCE path only,
+      never a veto: a paraphrase of an entity's OBSERVATIONS can reuse none
+      of its NAME's words, and for that span the name is the wrong
+      instrument (see the module docstring's round-6 section for the live
+      numbers, and for the two measured limits this leaves standing).
 
     An entity grounds on the first span whose applicable check clears its
     cutoff (each span independently decides which check applies — a
@@ -436,7 +536,7 @@ def _semantic_grounding(
                     score = l2_similarity(cosine_similarity(anchor_vector, span_vector))
                     z = _z_score(score, sense_null_mean, sense_null_stdev)
                     attempt: Doc = {
-                        "matchBasis": "semantic",
+                        "matchBasis": "semantic-sense",
                         "matchScore": score,
                         "nullMean": sense_null_mean,
                         "nullStdev": sense_null_stdev,
@@ -485,9 +585,9 @@ def _semantic_grounding(
                     break
                 continue
 
-            # No shared word: the round-3 dual name-based check, unchanged,
-            # on the intact span (nothing to strip — it never shared a word
-            # with the name to begin with).
+            # No shared word: the round-3 dual name-based check, on the
+            # intact span (nothing to strip — it never shared a word with
+            # the name to begin with), tried FIRST.
             sym_score = l2_similarity(cosine_similarity(sym_name_vector, span_vector))
             sym_z = _z_score(sym_score, sym_null_mean, sym_null_stdev)
             asym_score = l2_similarity(cosine_similarity(asym_name_vector, span_vector))
@@ -507,6 +607,38 @@ def _semantic_grounding(
                 best_margin, best_attempt = margin, attempt
             if margin > 0:
                 grounding, grounded_span = attempt, span
+                break
+
+            if anchor_vector is None:
+                continue
+
+            # Round 6: the name-based check just said no, but a span sharing
+            # no word with the entity NAME can still be a faithful
+            # restatement of what the entity MEANS — the name is simply the
+            # wrong instrument for that span (see the module docstring's
+            # round-6 section). Give the entity's own definition its own
+            # say, through the same sense-anchor machinery (and the same
+            # strictest-in-the-module cutoff) the shared-word branch above
+            # uses. An ACCEPTANCE path only: it can never overturn a
+            # name-based grounding, because that already broke out above.
+            assert sense_cutoff is not None
+            sense_score = l2_similarity(cosine_similarity(anchor_vector, span_vector))
+            sense_z = _z_score(sense_score, sense_null_mean, sense_null_stdev)
+            sense_attempt: Doc = {
+                "matchBasis": "semantic-sense",
+                "matchScore": sense_score,
+                "nullMean": sense_null_mean,
+                "nullStdev": sense_null_stdev,
+                "zScore": sense_z,
+                "zCutoff": sense_cutoff,
+                "asymZScore": None,
+                "asymZCutoff": None,
+            }
+            sense_margin = sense_z - sense_cutoff
+            if best_margin is None or sense_margin > best_margin:
+                best_margin, best_attempt = sense_margin, sense_attempt
+            if sense_margin > 0:
+                grounding, grounded_span = sense_attempt, span
                 break
 
         if grounding is not None and grounded_span is not None:

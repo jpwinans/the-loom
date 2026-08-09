@@ -107,7 +107,7 @@ def test_a_genuine_paraphrase_grounds_via_the_real_embedder(real_embedder: objec
     )
 
     assert result[0]["status"] == "grounded"
-    assert result[0]["matchBasis"] == "semantic"
+    assert result[0]["matchBasis"] == "semantic-sense"
     assert isinstance(result[0]["matchScore"], float)
     assert isinstance(result[0]["zScore"], float)
 
@@ -130,7 +130,7 @@ def test_a_single_shared_word_false_friend_does_not_ground_via_the_real_embedder
     )
 
     assert result[0]["status"] == "omitted"
-    assert result[0]["matchBasis"] == "semantic"
+    assert result[0]["matchBasis"] == "semantic-sense"
     assert isinstance(result[0]["matchScore"], float)
     assert isinstance(result[0]["zScore"], float)
     assert isinstance(result[0]["zCutoff"], float)
@@ -821,3 +821,221 @@ def test_only_the_guard_placeholder_observation_also_degrades(real_embedder: obj
     )
 
     assert result[0]["matchBasis"] == "semantic-name-only"
+
+
+# =============================================================================
+# Round 6: a span sharing NO significant word with the entity NAME can still
+# be a faithful restatement of what the entity MEANS. The round-3 dual
+# name-based check still decides such a span first; when it says no, the
+# entity's own observations get their own say through the same sense-anchor
+# machinery (and the same strictest-in-the-module cutoff) the word-overlap
+# branch already uses. Live numbers for every case below are recorded in
+# theloom/synthesis/fidelity.py's own round-6 docstring section.
+#
+# Every case runs against BOTH name forms an agent ledger actually produces
+# -- kebab-case and space-separated. The sense anchor never sees the name at
+# all, so the two forms score IDENTICALLY on that path and only the routing
+# differs; running both is what proves the routing, not just the scoring.
+# The false-friend sentences are reworded rather than copied from
+# landscape.SENSE_ANCHOR_PROBE_PAIRS, so calibration and validation stay
+# independent (that corpus's own docstring asks for this).
+# =============================================================================
+
+ENVELOPE_OBSERVATIONS = ["No command returns a bare top-level array"]
+ENVELOPE_PARAPHRASE = (
+    "The registry sweep confirmed that no command hands back an unwrapped list at the top level."
+)
+CACHE_OBSERVATIONS = [
+    "the rule deciding which stored entries are discarded when the cache fills up"
+]
+
+
+def _both_name_forms(spaced: str) -> list[str]:
+    return [spaced.replace(" ", "-"), spaced.title()]
+
+
+@pytest.mark.parametrize("name", _both_name_forms("envelope invariant holds"))
+def test_a_paraphrase_of_the_observations_grounds_though_it_shares_no_name_word(
+    real_embedder: object, name: str
+) -> None:
+    """The acceptance walkthrough's own Stage 4 assertion, and round 6's
+    reason to exist: this span shares not one word with the entity name, so
+    the name-based dual check judged it (sym z 2.036 against a 2.173
+    cutoff -- it missed by 0.14) and nothing else was ever consulted. It is
+    a faithful restatement of the OBSERVATION, which scores sense z 11.39
+    against the 4.59 sense cutoff."""
+    result = check_entity_grounding(
+        ENVELOPE_PARAPHRASE,
+        [{"id": "x", "name": name, "observations": ENVELOPE_OBSERVATIONS}],
+        None,
+        real_embedder,  # type: ignore[arg-type]
+    )
+
+    assert result[0]["status"] == "grounded"
+    assert result[0]["matchBasis"] == "semantic-sense"
+    # The label itself now says the sense anchor decided; the null
+    # asymmetric evidence corroborates it.
+    assert result[0]["asymZScore"] is None
+    assert result[0]["asymZCutoff"] is None
+    assert isinstance(result[0]["zScore"], float)
+    assert isinstance(result[0]["zCutoff"], float)
+
+
+@pytest.mark.parametrize("name", _both_name_forms("cache eviction policy"))
+def test_a_fresh_no_shared_word_paraphrase_grounds_the_same_way(
+    real_embedder: object, name: str
+) -> None:
+    """Constructed after round 6 was designed, and deliberately not the
+    walkthrough's own sentence: generalization, not a replay. Shares no
+    significant word with the name ("cache"/"eviction"/"policy" are all
+    absent), misses the dual check (sym z 1.59/2.08 against 2.173), and
+    clears the sense cutoff at z 5.64."""
+    assert _grounds(
+        real_embedder,
+        name,
+        "Once the store is full, the least recently used records get dropped to make room.",
+        observations=CACHE_OBSERVATIONS,
+    )
+
+
+@pytest.mark.parametrize("name", _both_name_forms("envelope invariant holds"))
+def test_the_word_overlap_false_friend_for_that_same_entity_still_does_not_ground(
+    real_embedder: object, name: str
+) -> None:
+    """The other half of the walkthrough: the SAME entity against a sentence
+    that shares its "envelope" word and means something else entirely. That
+    span takes the word-overlap branch, which round 6 did not touch -- sense
+    z 1.60 against the 4.59 cutoff."""
+    assert not _grounds(
+        real_embedder,
+        name,
+        "The postal envelope was stamped and sealed before mailing.",
+        observations=ENVELOPE_OBSERVATIONS,
+    )
+
+
+@pytest.mark.parametrize("name", _both_name_forms("cache eviction policy"))
+def test_an_unrelated_no_shared_word_sentence_still_does_not_ground(
+    real_embedder: object, name: str
+) -> None:
+    """Round 6's acceptance path must not turn "no lexical overlap" into
+    "grounds by default": an off-topic sentence fails the dual check (sym z
+    -1.27) AND the sense anchor (z 0.80)."""
+    assert not _grounds(
+        real_embedder,
+        name,
+        "The bakery sold out of sourdough loaves before ten in the morning.",
+        observations=CACHE_OBSERVATIONS,
+    )
+
+
+class TestRound6DocumentedFalseFriendsStillRejected:
+    """Three of the false-friend cases named in fidelity.py's own round-1-to-5
+    failure history, each re-run under round 6 in both name forms with
+    plausible observations. All three share a significant word with their
+    entity name, so they route to the sense anchor and land far below its
+    cutoff -- round 6 adds an acceptance path only for spans that share NO
+    name word, and these show that path is not reachable from here."""
+
+    @pytest.mark.parametrize("name", _both_name_forms("silver bullet solution"))
+    def test_silver_bullet_solution_vs_a_werewolf_hunting_sentence(
+        self, real_embedder: object, name: str
+    ) -> None:
+        # Sense z 0.196 against the 4.59 cutoff.
+        assert not _grounds(
+            real_embedder,
+            name,
+            (
+                "Before stepping into the moonlit woods the hunter chambered one "
+                "silver bullet for the werewolf."
+            ),
+            observations=["a single simple fix believed to solve a complex problem completely"],
+        )
+
+    @pytest.mark.parametrize("name", _both_name_forms("root cause analysis"))
+    def test_root_cause_analysis_vs_a_gardening_sentence_sharing_only_root(
+        self, real_embedder: object, name: str
+    ) -> None:
+        # Sense z 1.370 against the 4.59 cutoff.
+        assert not _grounds(
+            real_embedder,
+            name,
+            (
+                "After the drought she dug down to inspect the shrub's root system "
+                "beneath the flowerbed."
+            ),
+            observations=[
+                "a structured method for tracing a problem back to its underlying "
+                "originating condition"
+            ],
+        )
+
+    @pytest.mark.parametrize("name", _both_name_forms("supply chain bottleneck"))
+    def test_supply_chain_bottleneck_vs_a_wine_decanter_sentence(
+        self, real_embedder: object, name: str
+    ) -> None:
+        # Sense z 2.134 against the 4.59 cutoff.
+        assert not _grounds(
+            real_embedder,
+            name,
+            "He tipped the decanter so the wine trickled out through its narrow bottleneck.",
+            observations=[
+                "the single slowest stage that limits how much product can move downstream"
+            ],
+        )
+
+
+# =============================================================================
+# Round 6's documented limit, pinned (post-merge review finding)
+# =============================================================================
+
+
+LIBRARY_ANALOGY_SENTENCE = (
+    "The library discards its oldest donated books whenever the shelves run out of space."
+)
+CACHE_EVICTION_OBSERVATIONS = [
+    "the rule deciding which stored entries are discarded when the cache fills up"
+]
+
+
+def _cache_eviction_entity(name: str) -> dict[str, object]:
+    return {"id": "x", "name": name, "observations": CACHE_EVICTION_OBSERVATIONS}
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_basis"),
+    [
+        # Kebab form: the dual name check says no (sym z 1.72 vs 2.17) and
+        # the round-6 sense path grounds it by a hair (sense z 4.64 vs 4.59
+        # — about 1% of the cutoff).
+        ("cache-eviction-policy", "semantic-sense"),
+        # Space-separated form: the dual name check ALREADY grounded it
+        # before round 6 existed (sym z 2.31 vs 2.17) — the round-6 path
+        # makes the two name forms agree rather than opening a new hole.
+        ("Cache Eviction Policy", "semantic"),
+    ],
+)
+def test_the_documented_cross_domain_analogy_limit_stays_where_the_docstring_says(
+    real_embedder: object, name: str, expected_basis: str
+) -> None:
+    """Pins the module docstring's first honest limit EXACTLY where it was
+    measured: the library-discards-old-books sentence is a cross-domain
+    ANALOGY of cache eviction, not a mention, yet both name forms ground —
+    each via a different mechanism, each by a small margin. This test
+    intentionally asserts the CURRENT behavior, not the desirable one, so
+    that any embedder/model/calibration drift that silently flips a
+    documented limit fails loudly here and forces the docstring — and this
+    pin — to be re-measured together. If this test starts failing, do not
+    delete the assertion: re-measure, update the docstring's figures, and
+    re-pin."""
+    result = check_entity_grounding(
+        LIBRARY_ANALOGY_SENTENCE,
+        [_cache_eviction_entity(name)],
+        None,
+        real_embedder,  # type: ignore[arg-type]
+    )
+
+    assert result[0]["status"] == "grounded"
+    assert result[0]["matchBasis"] == expected_basis
+    # The margin is small and that is the point: disclose it in the pin.
+    assert result[0]["zScore"] - result[0]["zCutoff"] < 1.0

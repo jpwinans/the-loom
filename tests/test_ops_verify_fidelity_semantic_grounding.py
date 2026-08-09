@@ -171,7 +171,7 @@ def test_verify_fidelity_command_grounds_paraphrase_and_rejects_word_overlap(
 
     feedback_grounding = by_id[feedback.id]
     assert feedback_grounding["status"] == "grounded"
-    assert feedback_grounding["matchBasis"] == "semantic"
+    assert feedback_grounding["matchBasis"] == "semantic-sense"
     assert feedback_grounding["mentionedAs"] == PARAPHRASE_SENTENCE
     assert isinstance(feedback_grounding["matchScore"], float)
     assert isinstance(feedback_grounding["zScore"], float)
@@ -186,7 +186,7 @@ def test_verify_fidelity_command_grounds_paraphrase_and_rejects_word_overlap(
     # ATTEMPTED (the sense anchor, since this entity carries observations)
     # and carries its full evidence -- "an honest no must be as auditable
     # as a yes" -- rather than nulling everything out.
-    assert silent_grounding["matchBasis"] == "semantic"
+    assert silent_grounding["matchBasis"] == "semantic-sense"
     assert isinstance(silent_grounding["matchScore"], float)
     assert isinstance(silent_grounding["zScore"], float)
     assert silent_grounding["zCutoff"] == 0.5

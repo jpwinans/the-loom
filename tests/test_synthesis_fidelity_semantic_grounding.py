@@ -33,7 +33,13 @@ from typing import Any
 import pytest
 
 from theloom.semantic import landscape
-from theloom.synthesis.fidelity import _strip_shared_words, check_entity_grounding, verify_fidelity
+from theloom.synthesis.fidelity import (
+    _significant_words,
+    _strip_shared_words,
+    check_entity_grounding,
+    is_entity_mentioned,
+    verify_fidelity,
+)
 from theloom.synthesis.llm import SynthesisLlmClient
 
 FEEDBACK_ENTITY = {"id": "e-feedback", "name": "Feedback Delay"}
@@ -219,6 +225,73 @@ class TestStrippingStillAppliesFirst:
         assert groundings[0]["mentionedAs"] == "silent"
 
 
+class TestSignificantWordsTokenizesOnNonWordBoundaries:
+    """Agent-ledger entity names are commonly kebab-case, snake_case, or
+    dotted -- whitespace-only splitting turns a whole such name into a
+    single token that no natural-language span can ever contain via
+    ``_word_match``, silently disabling the word-overlap trap (and thus
+    routing every span for that entity to the wrong check -- see the
+    routing-level regression below)."""
+
+    def test_kebab_case_name_splits_into_its_component_words(self) -> None:
+        assert _significant_words("envelope-invariant-holds") == [
+            "envelope",
+            "invariant",
+            "holds",
+        ]
+
+    def test_snake_case_name_splits_into_its_component_words(self) -> None:
+        assert _significant_words("envelope_invariant_holds") == [
+            "envelope",
+            "invariant",
+            "holds",
+        ]
+
+    def test_dotted_name_splits_into_its_component_words_and_still_applies_the_length_filter(
+        self,
+    ) -> None:
+        # "max" (3 letters) stays filtered by MIN_PARTIAL_MATCH_WORD_LENGTH
+        # even after the tokenization change -- the fix only widens what
+        # counts as a word boundary, not the minimum-length rule.
+        assert _significant_words("config.max.retries") == ["config", "retries"]
+
+    def test_space_separated_name_is_unaffected(self) -> None:
+        assert _significant_words("silent failure mode") == ["silent", "failure", "mode"]
+
+
+class TestKebabCaseEntityNameRoutesToTheWordOverlapCheck:
+    """Live regression: with a kebab-case entity name, a span sharing one
+    of its component words (here "envelope") must be routed through the
+    word-stripped residual check -- not the round-3 intact-span check meant
+    only for spans with NO lexical overlap at all. Under the whitespace-only
+    bug, the whole hyphenated name is one token, no span ever matches it,
+    and this false friend grounds on the raw (un-stripped) span instead."""
+
+    def test_word_overlap_false_friend_is_rejected_for_a_hyphenated_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _mock_specificity(monkeypatch, symmetric=0.5, asymmetric=0.5)
+        dim = 4
+        vectors = _battery_vectors(dim)
+        vectors["distractor one"] = _vec(dim, 0, 0.0, 1)
+        vectors["distractor two"] = _vec(dim, 0, 0.1, 1)
+        name = "envelope-invariant-holds"
+        span = "The postal envelope was stamped and sealed before mailing."
+        residual = "The postal was stamped and sealed before mailing."
+        vectors[f"[concept] {name}"] = [1.0, 0.0, 0.0, 0.0]
+        vectors[name] = [1.0, 0.0, 0.0, 0.0]
+        # Raw span scores high (shares "envelope")...
+        vectors[span] = _vec(dim, 0, 0.95, 1)
+        # ...but the residual (word stripped) collapses to the noise floor.
+        vectors[residual] = _vec(dim, 0, 0.05, 1)
+        embedder = _MappedEmbedder(vectors)
+        entity = {"id": "e-envelope", "name": name}
+
+        groundings = check_entity_grounding(span, [entity], None, embedder)
+
+        assert groundings[0]["status"] == "omitted"
+
+
 class TestStripSharedWords:
     def test_removes_the_shared_word_and_collapses_whitespace(self) -> None:
         assert _strip_shared_words(PARAPHRASE_SENTENCE, "feedback delay") == FEEDBACK_STRIPPED
@@ -229,6 +302,152 @@ class TestStripSharedWords:
 
     def test_stripping_every_word_leaves_the_empty_string(self) -> None:
         assert _strip_shared_words("Silent Failure Mode", "silent failure mode") == ""
+
+
+class TestRound6SenseAnchorAlsoAcceptsNoSharedWordSpans:
+    """Round 6: a span sharing NO significant word with the entity name is
+    still judged by the round-3 dual name-based check FIRST, but when that
+    check says no and the entity has real observations, the sense anchor
+    gets its own say on the same intact span. Strictly an ACCEPTANCE path:
+    it can add a grounding the name missed (a faithful restatement of the
+    entity's OBSERVATIONS need not reuse any of its NAME's vocabulary), and
+    it can never overturn one the name made.
+
+    The span below shares no word with the entity name, so the word-overlap
+    branch (and its stripping) is never reached at all -- the two mechanisms
+    under test here read the same INTACT span and differ only in what they
+    compare it against (the NAME axis versus the SENSE axis), which is what
+    lets one clear its mocked cutoff while the other fails.
+    """
+
+    DIM = 4
+    NAME_AXIS = 0
+    SENSE_AXIS = 2
+    ENTITY_NAME = "Copper Relay"
+    OBSERVATIONS = ["a formal working definition of this concept"]
+    # Shares neither "copper" nor "relay" -- verified by _significant_words.
+    SPAN = "The archivist filed every ledger before lunch."
+
+    def _vectors(self, name_cosine: float, sense_cosine: float) -> dict[str, list[float]]:
+        vectors = _battery_vectors(self.DIM)
+        vectors["distractor one"] = _shared_cosine_vec(
+            self.DIM, (self.NAME_AXIS, self.SENSE_AXIS), 0.0, 1
+        )
+        vectors["distractor two"] = _shared_cosine_vec(
+            self.DIM, (self.NAME_AXIS, self.SENSE_AXIS), 0.1, 1
+        )
+        name_unit = [0.0] * self.DIM
+        name_unit[self.NAME_AXIS] = 1.0
+        vectors[f"[concept] {self.ENTITY_NAME}"] = name_unit
+        vectors[self.ENTITY_NAME] = name_unit
+        # Keyed by the OBSERVATION-ONLY anchor text -- no entity name in it.
+        sense_unit = [0.0] * self.DIM
+        sense_unit[self.SENSE_AXIS] = 1.0
+        vectors[f"{self.OBSERVATIONS[0]}."] = sense_unit
+        # ONE span vector, carrying an independently chosen cosine to each
+        # axis: the dual check reads only its NAME-axis component, the sense
+        # anchor only its SENSE-axis component.
+        span_vector = [0.0] * self.DIM
+        span_vector[self.NAME_AXIS] = name_cosine
+        span_vector[self.SENSE_AXIS] = sense_cosine
+        span_vector[1] = math.sqrt(max(0.0, 1 - name_cosine**2 - sense_cosine**2))
+        vectors[self.SPAN] = span_vector
+        return vectors
+
+    def _entity(self, with_observations: bool) -> dict[str, object]:
+        return {
+            "id": "x",
+            "name": self.ENTITY_NAME,
+            "observations": self.OBSERVATIONS if with_observations else [],
+        }
+
+    def test_sense_anchor_grounds_a_no_shared_word_span_the_name_check_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The walkthrough's own shape (live numbers in the module
+        docstring's round-6 section): nothing about the NAME matches, but
+        the span restates the OBSERVATIONS. The identical call for an entity
+        with no observations must still be omitted -- proving the anchor,
+        not the vectors, is what decided this."""
+        _mock_specificity(monkeypatch, symmetric=1000.0, asymmetric=1000.0)  # impossible to clear
+        _mock_sense_specificity(monkeypatch, cutoff=0.1)  # easy to clear
+        embedder = _MappedEmbedder(self._vectors(name_cosine=0.0, sense_cosine=0.9))
+
+        with_observations = check_entity_grounding(
+            self.SPAN, [self._entity(with_observations=True)], None, embedder
+        )
+        assert with_observations[0]["status"] == "grounded"
+        assert with_observations[0]["matchBasis"] == "semantic-sense"
+        assert with_observations[0]["zCutoff"] == 0.1
+        # The sense anchor has no asymmetric representation, and since round
+        # 6 it also carries its own matchBasis label; both disclose WHICH
+        # mechanism grounded this.
+        assert with_observations[0]["asymZScore"] is None
+        assert with_observations[0]["asymZCutoff"] is None
+
+        without_observations = check_entity_grounding(
+            self.SPAN, [self._entity(with_observations=False)], None, embedder
+        )
+        assert without_observations[0]["status"] == "omitted"
+        # No shared word means the DEGRADED word-stripping path is not the
+        # fallback here -- the dual name check is, and it is disclosed with
+        # both of its representations.
+        assert without_observations[0]["matchBasis"] == "semantic"
+        assert isinstance(without_observations[0]["asymZScore"], float)
+
+    def test_the_sense_anchor_is_an_acceptance_path_and_never_a_veto(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The dual name-based check clears while the sense anchor could
+        never clear: the name's grounding stands, with the name's own
+        evidence. Round 6 only ever ADDS groundings."""
+        _mock_specificity(monkeypatch, symmetric=0.1, asymmetric=0.1)  # easy to clear
+        _mock_sense_specificity(monkeypatch, cutoff=1000.0)  # impossible to clear
+        embedder = _MappedEmbedder(self._vectors(name_cosine=0.6, sense_cosine=0.1))
+
+        groundings = check_entity_grounding(
+            self.SPAN, [self._entity(with_observations=True)], None, embedder
+        )
+
+        assert groundings[0]["status"] == "grounded"
+        assert groundings[0]["matchBasis"] == "semantic"
+        assert groundings[0]["zCutoff"] == 0.1
+        assert isinstance(groundings[0]["asymZScore"], float)
+        assert groundings[0]["asymZCutoff"] == 0.1
+
+    def test_an_omitted_no_shared_word_span_discloses_whichever_mechanism_came_closest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Round 5's disclosure rule now spans two mechanisms for the same
+        span: with both cutoffs equally out of reach, the disclosed evidence
+        is the one whose z-score got nearest, in either direction."""
+        _mock_specificity(monkeypatch, symmetric=1000.0, asymmetric=1000.0)
+        _mock_sense_specificity(monkeypatch, cutoff=1000.0)
+
+        sense_closer = check_entity_grounding(
+            self.SPAN,
+            [self._entity(with_observations=True)],
+            None,
+            _MappedEmbedder(self._vectors(name_cosine=0.0, sense_cosine=0.9)),
+        )
+        assert sense_closer[0]["status"] == "omitted"
+        assert sense_closer[0]["asymZScore"] is None  # the sense attempt
+
+        name_closer = check_entity_grounding(
+            self.SPAN,
+            [self._entity(with_observations=True)],
+            None,
+            _MappedEmbedder(self._vectors(name_cosine=0.9, sense_cosine=0.0)),
+        )
+        assert name_closer[0]["status"] == "omitted"
+        assert isinstance(name_closer[0]["asymZScore"], float)  # the dual attempt
+
+    def test_no_shared_word_span_is_never_stripped_before_the_sense_check(self) -> None:
+        """The premise the vectors above rely on: this span shares no
+        significant word with the entity name, so nothing is removed from it
+        by either mechanism."""
+        assert _significant_words(self.ENTITY_NAME.lower()) == ["copper", "relay"]
+        assert _strip_shared_words(self.SPAN, self.ENTITY_NAME.lower()) == self.SPAN
 
 
 class TestSenseAnchoredDecision:
@@ -318,7 +537,7 @@ class TestSenseAnchoredDecision:
         assert with_observations[0]["status"] == "omitted"
         # Round 5 disclosure: an omitted decision still names the mechanism
         # ATTEMPTED and carries its full evidence, not nulls.
-        assert with_observations[0]["matchBasis"] == "semantic"
+        assert with_observations[0]["matchBasis"] == "semantic-sense"
         assert isinstance(with_observations[0]["zScore"], float)
         assert with_observations[0]["zCutoff"] == 1000.0
 
@@ -347,7 +566,7 @@ class TestSenseAnchoredDecision:
             self.SPAN, [self._entity(with_observations=True)], None, embedder
         )
         assert with_observations[0]["status"] == "grounded"
-        assert with_observations[0]["matchBasis"] == "semantic"
+        assert with_observations[0]["matchBasis"] == "semantic-sense"
         assert isinstance(with_observations[0]["zScore"], float)
         assert with_observations[0]["zCutoff"] == 0.1
         assert with_observations[0]["asymZScore"] is None
@@ -544,3 +763,32 @@ class TestBothDirectionsInOneCall:
             FEEDBACK_ENTITY["id"],
             SILENT_ENTITY["id"],
         ]
+
+
+class TestSignificantWordsUnicodeAndDigits:
+    """Post-merge review findings on the tokenizer: ``[^a-z0-9]`` treated
+    every accented or non-Latin letter as a separator (``café münster`` ->
+    ``['nster']``, silently disabling the word-overlap trap for accented
+    names and breaking ``is_entity_mentioned`` for them), and splitting on
+    non-alphanumerics promoted bare numerals to significant words
+    (``sprint-2026`` -> a ``partial_word`` grounding on any text that
+    mentions the year)."""
+
+    def test_accented_words_survive_tokenization(self) -> None:
+        assert _significant_words("café münster") == ["café", "münster"]
+
+    def test_accented_kebab_name_keeps_its_accented_word(self) -> None:
+        assert _significant_words("naïve-cache") == ["naïve", "cache"]
+
+    def test_accented_name_is_still_mentioned_in_text(self) -> None:
+        assert is_entity_mentioned("the münster district stayed quiet", "café münster")
+
+    def test_all_digit_tokens_are_not_significant_words(self) -> None:
+        assert _significant_words("sprint-2026") == ["sprint"]
+
+    def test_a_bare_year_in_text_does_not_count_as_a_mention(self) -> None:
+        assert not is_entity_mentioned("we shipped it in 2026 finally", "sprint-2026")
+
+    def test_mixed_alphanumeric_tokens_still_count(self) -> None:
+        # "tl477" is not a bare numeral -- it stays a significant word.
+        assert _significant_words("tl477-followup") == ["tl477", "followup"]
