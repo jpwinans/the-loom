@@ -16,7 +16,7 @@ from theloom import __version__
 from theloom.cli.io import output_error, output_success, parse_json_input
 from theloom.cli.registry import COMMANDS, CommandDescriptor, run_handler
 from theloom.cli.schema import top_level_required
-from theloom.config import load_config
+from theloom.config import credential_kwargs, load_config
 from theloom.errors import InputRequiredError, ParseError
 from theloom.store.multigraph import MultiGraph
 
@@ -84,7 +84,7 @@ def _build_multigraph() -> MultiGraph:
     from falkordb import FalkorDB  # deferred: only commands that hit the store pay
 
     config = load_config()
-    db = FalkorDB(host=config.host, port=config.port)
+    db = FalkorDB(host=config.host, port=config.port, **credential_kwargs(config))
     return MultiGraph(db, db.connection, default_graph=config.default_graph)
 
 

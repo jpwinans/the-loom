@@ -11,12 +11,29 @@ services:
       # /data/data into the container filesystem), so mounting at /data
       # never captured the snapshot — a container removal lost everything.
       - falkordb-data:/var/lib/falkordb/data
+      # One stray instance-global command (FLUSHALL) from any connected
+      # client would destroy every graph at once, and the snapshot cycle
+      # above would overwrite the only RDB copy within a minute. Mount the
+      # restricted `default`-user ACL read-only so the server itself refuses
+      # FLUSHALL/FLUSHDB/CONFIG/etc — mechanism, not client good behavior.
+      # See docs/adr/0002-falkordb-acl-store-protection.md.
+      - ./users.acl:/var/lib/falkordb/users.acl:ro
     command: ["--save", "60", "1"]   # periodic snapshot persistence
     environment:
       # Uncap result sets: the default (10000) silently truncates reads.
       # Loom's store pages its own reads either way; this protects raw
       # queries (Browser UI, redis-cli) against the same silent truncation.
       FALKORDB_ARGS: "RESULTSET_SIZE -1"
+      # The image's entrypoint (/var/lib/falkordb/bin/run.sh) hardcodes
+      # `exec redis-server ${REDIS_ARGS} ... --loadmodule falkordb.so
+      # ${FALKORDB_ARGS}` and never reads the container's CMD — the
+      # `command:` array above is passed through Docker as that CMD, so
+      # anything placed there (verified empirically: even `--save 60 1`
+      # itself) never reaches redis-server. REDIS_ARGS is the only
+      # entrypoint-honored channel for extra redis-server flags, so
+      # --aclfile has to go here rather than in `command:`. See ADR 0002
+      # for the rehearsal that found this.
+      REDIS_ARGS: "--aclfile /var/lib/falkordb/users.acl"
     restart: unless-stopped
 
 volumes:

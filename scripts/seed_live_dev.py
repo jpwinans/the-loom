@@ -11,14 +11,14 @@ from __future__ import annotations
 
 from falkordb import FalkorDB
 
-from theloom.config import load_config
+from theloom.config import credential_kwargs, load_config
 from theloom.model import EntityCreate, RelationCreate
 from theloom.store.multigraph import MultiGraph
 
 
 def main() -> None:
     config = load_config()
-    db = FalkorDB(host=config.host, port=config.port)
+    db = FalkorDB(host=config.host, port=config.port, **credential_kwargs(config))
     multi = MultiGraph(db, db.connection, default_graph=config.default_graph)
 
     for name in ("tapestry-dev", "tapestry-alt"):

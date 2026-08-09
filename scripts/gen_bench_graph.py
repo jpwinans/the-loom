@@ -51,7 +51,7 @@ import time
 
 from falkordb import FalkorDB
 
-from theloom.config import load_config
+from theloom.config import credential_kwargs, load_config
 from theloom.model import (
     CAUSAL_POLARITY_DEFAULTS,
     CAUSAL_RELATION_TYPES,
@@ -156,7 +156,7 @@ def main() -> None:
     rng = random.Random(args.seed)
 
     config = load_config()
-    db = FalkorDB(host=config.host, port=config.port)
+    db = FalkorDB(host=config.host, port=config.port, **credential_kwargs(config))
     multi = MultiGraph(db, db.connection, default_graph=config.default_graph)
 
     if multi.has_graph(GRAPH_NAME):
