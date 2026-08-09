@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**176 registry commands** across 27 categories, plus the special `init` command.
+**178 registry commands** across 27 categories, plus the special `init` command.
 
 Each command lists its input fields below its summary: dotted paths (`confidence.score`) descend into nested objects, `[]` (`relations[].from`) marks an array of objects. `required`/`optional` is scoped to the field's immediate parent — a required field of an optional object only applies once that object is supplied at all. Run `loom <command> --schema` for the raw JSON Schema (with full `$defs`) behind any entry.
 
@@ -41,7 +41,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `source` — string; required
   - `metapath` — string | object; required
   - `maxDepth` — integer | null; optional
-  - `sourceEntityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `sourceEntityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
   - `target` — string | null; optional
   - `graph` — string | null; optional
 
@@ -72,6 +72,13 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `minDelta` — number | null; optional
   - `relationTypes` — array<string> | null; optional
   - `propagationMode` — string | null; optional
+
+- **`consolidate`** — The dreaming pass (desire 13): forks a dream world and runs contradiction (incl. transitive, via run-inference inside the fork), staleness, motif, structural-gap hypothesis, cross-domain analogy, and credit-propagation-replay passes, writing low-confidence insight/hypothesis/tension findings plus a consolidation_report entity into the dream. NEVER writes to main (composite).
+  - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
+  - `graph` — string | null; optional
+  - `budget` — integer | null; optional — Max findings a single pass writes (and the size of the report's topFindings). Defaults to 20.
+  - `passes` — array<enum(contradiction, staleness, motifs, hypothesis, analogy, credit)> | null; optional — Which passes to run, in any order (canonical order is always used when running them). Omitted runs all six.
+  - `articulate` — boolean | null; optional — Marks the report as a candidate for a future LLM articulation pass. No LLM call happens here either way -- this composite is pure deterministic graph computation.
 
 - **`creativity-loop`** — Run the autonomous creativity loop: explore, retrieve, transfer, score, accept/reject, learn (composite). Read-only and deterministic — no LLM; it stops early on consecutive empty cycles or a plateau. The analogy trigger queue is reported per cycle, never drained.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
@@ -211,6 +218,10 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `mutations[].world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `mutations[].type` — enum(createEntity, updateEntity, deleteEntity, createRelation, deleteRelation); required
   - `mutations[].payload` — object; required
+  - `graph` — string | null; optional
+
+- **`since-last-session`** — The waking surface (desire 13): the latest unreviewed consolidation report(s), a fresh diff-worlds summary for each, contradictions touching anything recently active, and calibration alerts -- one call, hard-capped to fit a context window (composite, read-only).
+  - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `graph` — string | null; optional
 
 - **`structural-survey`** — Structural analysis around an entity: ego subgraph, cycles, paths (composite).
@@ -379,7 +390,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `similarityThreshold` — number | null; optional
   - `minClusterSize` — integer | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `maxEntities` — integer | null; optional
   - `graph` — string | null; optional
 
@@ -407,7 +418,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `limit` — integer | null; optional
   - `minSimilarity` — number | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `maxEntities` — integer | null; optional
   - `seed` — integer | null; optional
   - `graph` — string | null; optional
@@ -417,7 +428,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `entityId` — string; required
   - `limit` — integer | null; optional
   - `minSimilarity` — number | null; optional
-  - `targetEntityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `targetEntityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `graph` — string | null; optional
 
 - **`warm-embedder`** — Pre-download and warm the embedding model.
@@ -436,7 +447,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 - **`create-entity`** — Create a new entity in the knowledge graph.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `name` — string; required
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session); required
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report); required
   - `observations` — array<string>; required
   - `confidence` — object | null; optional
   - `confidence.world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
@@ -470,7 +481,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 
 - **`list-entities`** — List entities with optional filtering.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
   - `name` — string | null; optional
   - `query` — string | null; optional
   - `sourcedFrom` — array<string> | null; optional
@@ -509,7 +520,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `id` — string; required
   - `name` — string | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
   - `observations` — array<string> | null; optional
   - `confidence` — object | null; optional
   - `confidence.world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
@@ -569,7 +580,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `includeAllStatuses` — boolean | null; optional
   - `graph` — string | null; optional
   - `session` — string | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
   - `minConfidence` — number | null; optional
   - `sessionIds` — array<string> | null; optional
   - `maxDepth` — integer | null; optional
@@ -580,7 +591,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `includeAllStatuses` — boolean | null; optional
   - `graph` — string | null; optional
   - `session` — string | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
 
 - **`most-certain`** — Find the highest-confidence entities.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
@@ -589,7 +600,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `graph` — string | null; optional
   - `session` — string | null; optional
   - `topK` — integer | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
 
 - **`needs-evidence`** — Find claims lacking supporting evidence.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
@@ -658,7 +669,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `graph` — string | null; optional
   - `session` — string | null; optional
   - `daysOld` — integer | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
 
 - **`trigger-status`** — Status of the analogy trigger queue.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
@@ -671,7 +682,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `graph` — string | null; optional
   - `session` — string | null; optional
   - `threshold` — number | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
 
 - **`unprovenanced`** — Find entities without provenance.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
@@ -679,7 +690,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `includeAllStatuses` — boolean | null; optional
   - `graph` — string | null; optional
   - `session` — string | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
 
 ## Event Log
 
@@ -1111,7 +1122,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `query` — string; required
   - `limit` — integer | null; optional
   - `minScore` — number | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `category` — string | array<string> | null; optional
   - `graph` — string | null; optional
   - `weights` — object | null; optional
@@ -1135,7 +1146,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `entityId` — string; required
   - `limit` — integer | null; optional
   - `minSimilarity` — number | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `graph` — string | null; optional
 
 - **`semantic-search`** — Vector-only semantic search.
@@ -1143,7 +1154,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `query` — string; required
   - `limit` — integer | null; optional
   - `minScore` — number | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `category` — string | array<string> | null; optional
   - `graph` — string | null; optional
 
@@ -1218,7 +1229,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `conceptId` — string; required
   - `temperature` — number | null; optional
   - `limit` — integer | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
   - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `structuralWeight` — number | null; optional
   - `proximityWeight` — number | null; optional
@@ -1241,7 +1252,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `mode` — string; required
   - `entityId` — string | null; optional
   - `depth` — integer | null; optional
-  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
+  - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report) | null; optional
   - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `output_mode` — string | null; optional
   - `graph` — string | null; optional
@@ -1341,7 +1352,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `maxEntities` — integer; required
   - `maxRelations` — integer; required
-  - `requiredTypes` — array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `requiredTypes` — array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `commit` — boolean | null; optional
   - `graph` — string | null; optional
   - `seed` — integer | null; optional
@@ -1355,9 +1366,9 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `constraints` — array<object>; required
   - `constraints[].world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
-  - `constraints[].sourceType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session); required
+  - `constraints[].sourceType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report); required
   - `constraints[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
-  - `constraints[].targetType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session); required
+  - `constraints[].targetType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report); required
   - `graph` — string | null; optional
 
 - **`validate-mutation-trace`** — Replay a mutation trace and check invariants at each step.
@@ -1414,7 +1425,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `graph` — string | null; optional
   - `output` — string; required
   - `includeSuperseded` — boolean; optional, default: false
-  - `entityTypes` — array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session)> | null; optional
+  - `entityTypes` — array<enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session, consolidation_report)> | null; optional
   - `force` — boolean; optional, default: false
 
 - **`serve`** — Serve the interactive visualization live over a read-only REST API.

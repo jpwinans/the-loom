@@ -81,6 +81,13 @@ NOTICE_CATALOG: dict[str, str] = {
         "a scope using its own retrieval (e.g. hybrid search) instead of "
         "grading or acting against the whole graph."
     ),
+    "CONSOLIDATION_PASS_SKIPPED": (
+        "A consolidation pass was skipped because the data it needs was not "
+        "available (e.g. no prior consolidation report to diff confidence "
+        "changes against, or too few distinct domains in the graph to compare "
+        "structurally) -- see the pass's own entry in the report for the exact "
+        "reason. Every other requested pass still ran."
+    ),
     "CONTESTED_ON_MERGE": (
         "merge-world found one or more entities or relations changed in "
         "both the source and target world since the fork. These conflicts "
@@ -103,6 +110,11 @@ NOTICE_CATALOG: dict[str, str] = {
         "generating command has not been run with persistence, or has not "
         "found any yet."
     ),
+    "NO_CONSOLIDATION_HISTORY": (
+        "No consolidation report has ever been generated for this graph, so "
+        "since-last-session has nothing to surface yet -- run 'consolidate' "
+        "first, then check back."
+    ),
     "NOT_PERSISTED": (
         "The command computed results but did not write them to the graph; a "
         "later read (e.g. a list command over the same entity kind) will not "
@@ -112,6 +124,13 @@ NOTICE_CATALOG: dict[str, str] = {
         "A supplied parameter was accepted for schema compatibility but was "
         "not applied -- the response reflects the command's real behavior, "
         "not the ignored parameter's implication."
+    ),
+    "SESSION_SURFACE_TRUNCATED": (
+        "since-last-session's response exceeded its fixed context-window size "
+        "budget and was trimmed -- lower-priority findings, contradictions, "
+        "and/or alerts were cut first; older dream-world reports are dropped "
+        "last. Call diff-worlds or read a specific dream world's report "
+        "directly for the untrimmed detail."
     ),
     "TRUNCATED": (
         "The result set was larger than the page returned in this response; "

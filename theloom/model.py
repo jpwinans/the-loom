@@ -73,6 +73,7 @@ class EntityType(StrEnum):
     INFERENCE_RULE = "inference_rule"
     INFERENCE_TRACE = "inference_trace"
     RESEARCH_SESSION = "research_session"
+    CONSOLIDATION_REPORT = "consolidation_report"
 
 
 class RelationType(StrEnum):

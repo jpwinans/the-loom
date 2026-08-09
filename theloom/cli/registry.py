@@ -31,6 +31,7 @@ from theloom.cli import notices_catalog as notices_catalog_ops
 from theloom.cli.schema import describe_validation_error
 from theloom.composites import analogy_transfer as analogy_transfer_composite
 from theloom.composites import belief_blast_radius as belief_blast_radius_composite
+from theloom.composites import consolidate as consolidate_composite
 from theloom.composites import creativity_loop as creativity_loop_composite
 from theloom.composites import enrichment_crawl as enrichment_crawl_composite
 from theloom.composites import entity_deep_dive as entity_deep_dive_composite
@@ -47,6 +48,7 @@ from theloom.composites import reflect as reflect_composite
 from theloom.composites import self_improve as self_improve_composite
 from theloom.composites import semantic_landscape as semantic_landscape_composite
 from theloom.composites import simulate_change as simulate_change_composite
+from theloom.composites import since_last_session as since_last_session_composite
 from theloom.composites import structural_survey as structural_survey_composite
 from theloom.composites import verified_extract as verified_extract_composite
 from theloom.operations import algebra as algebra_ops
@@ -1544,6 +1546,29 @@ def _composite_commands() -> list[CommandDescriptor]:
                 "guards (composite).",
                 explore_frontier_composite.ExploreFrontierInput,
                 explore_frontier_composite.explore_frontier,
+                True,
+            ),
+            _Spec(
+                "consolidate",
+                "Composites",
+                "The dreaming pass (desire 13): forks a dream world and runs contradiction "
+                "(incl. transitive, via run-inference inside the fork), staleness, motif, "
+                "structural-gap hypothesis, cross-domain analogy, and credit-propagation-replay "
+                "passes, writing low-confidence insight/hypothesis/tension findings plus a "
+                "consolidation_report entity into the dream. NEVER writes to main (composite).",
+                consolidate_composite.ConsolidateInput,
+                consolidate_composite.consolidate,
+                True,
+            ),
+            _Spec(
+                "since-last-session",
+                "Composites",
+                "The waking surface (desire 13): the latest unreviewed consolidation report(s), "
+                "a fresh diff-worlds summary for each, contradictions touching anything recently "
+                "active, and calibration alerts -- one call, hard-capped to fit a context window "
+                "(composite, read-only).",
+                since_last_session_composite.SinceLastSessionInput,
+                since_last_session_composite.since_last_session,
                 True,
             ),
         ]

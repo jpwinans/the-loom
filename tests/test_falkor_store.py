@@ -482,8 +482,8 @@ def test_get_stats_counts_and_distributions(store: FalkorGraphStore) -> None:
     assert stats["relationCount"] == 1
     assert stats["entityTypeDistribution"]["concept"] == 1
     assert stats["entityTypeDistribution"]["claim"] == 1
-    assert stats["entityTypeDistribution"]["loop"] == 0  # zero-filled, all 19 keys
-    assert len(stats["entityTypeDistribution"]) == 19
+    assert stats["entityTypeDistribution"]["loop"] == 0  # zero-filled, all 20 keys
+    assert len(stats["entityTypeDistribution"]) == 20
     assert stats["relationTypeDistribution"]["supports"] == 1
     assert stats["relationTypeDistribution"]["calls"] == 0  # zero-filled, all 17 keys
     assert stats["relationTypeDistribution"]["references"] == 0

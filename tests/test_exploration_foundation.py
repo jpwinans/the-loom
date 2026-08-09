@@ -285,20 +285,20 @@ def test_mvt_steady_state_leave_and_stay() -> None:
 
 
 def test_comfort_zone_fires_on_few_types() -> None:
-    # Two real EntityType values -> 2/19 represented, 17 missing.
+    # Two real EntityType values -> 2/20 represented, 18 missing.
     regions = [zeroed_region(["a", "b"]), zeroed_region(["c"])]
     entity_type_map = {"a": "concept", "b": "concept", "c": "claim"}
     result = detect_comfort_zone(regions, entity_type_map)
     assert result is not None
     assert result.pattern == "comfort_zone"
-    assert result.severity == "medium"  # 2/19 ~ 0.105 -> medium band
-    assert "only 2/19 entity types" in result.recommendation
+    assert result.severity == "medium"  # 2/20 = 0.1 -> medium band
+    assert "only 2/20 entity types" in result.recommendation
     assert "represented (claim, concept)" in result.recommendation  # present, sorted
-    assert "and 12 more" in result.recommendation  # 17 missing - 5 shown
+    assert "and 13 more" in result.recommendation  # 18 missing - 5 shown
 
 
 def test_comfort_zone_not_fires_when_diverse() -> None:
-    # 6 distinct types -> 6/19 ~ 0.316 >= 0.3 threshold -> no detection.
+    # 6 distinct types -> 6/20 = 0.3 >= 0.3 threshold -> no detection.
     entity_type_map = {
         "a": "concept",
         "b": "claim",
