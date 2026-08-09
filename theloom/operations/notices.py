@@ -72,13 +72,21 @@ Doc = dict[str, Any]
 
 NOTICE_CATALOG: dict[str, str] = {
     "ALREADY_REAPED": (
-        "The session workspace named in the request was already reaped; there "
-        "were no member graphs left to delete, so nothing further happened."
+        "The ref named in the request (a session workspace, or a belief "
+        "world) was already reaped; there was nothing left to delete, so "
+        "nothing further happened."
     ),
     "AUTO_SCOPED": (
         "A required scoping parameter was omitted, so the command auto-selected "
         "a scope using its own retrieval (e.g. hybrid search) instead of "
         "grading or acting against the whole graph."
+    ),
+    "CONTESTED_ON_MERGE": (
+        "merge-world found one or more entities revised in both the source "
+        "and target world since the fork. These conflicts were not "
+        "auto-resolved: the merge applied only the uncontested set, and the "
+        "contested entities are listed in the response's 'contested' field "
+        "for a caller to resolve manually (retry with strategy: 'select')."
     ),
     "DRY_RUN": (
         "The command ran as a simulation only: it computed what it would do "
@@ -107,6 +115,14 @@ NOTICE_CATALOG: dict[str, str] = {
     "TRUNCATED": (
         "The result set was larger than the page returned in this response; "
         "only a prefix is included."
+    ),
+    "WORLD_PROJECTION_PARTIAL": (
+        "This command ran against a non-main belief world, but the data it "
+        "operates on (embeddings, or other state written outside the event "
+        "log) is not forked -- it reflects only what was written inside "
+        "this world, not what the world inherited from its parent. The "
+        "command computed a real answer over that partial data rather than "
+        "silently pretending to see the whole projection."
     ),
 }
 

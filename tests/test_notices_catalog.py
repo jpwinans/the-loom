@@ -93,13 +93,26 @@ def test_catalog_matches_known_emission_sites() -> None:
     edge, following a spurious one) is caught even though the two tests
     above would only notice a total miss, not a wrong attribution."""
     catalog = {row["code"]: set(row["commands"]) for row in build_catalog()}
-    assert catalog["ALREADY_REAPED"] == {"end-session"}
+    # ALREADY_REAPED is the ref-lifecycle notice RefRegistry's docstring
+    # anticipated being shared: session workspaces and belief worlds are
+    # both kinds of the same generic ref, and both report it the same way.
+    assert catalog["ALREADY_REAPED"] == {"end-session", "abandon-world"}
     assert catalog["AUTO_SCOPED"] == {"verify-fidelity"}
+    assert catalog["CONTESTED_ON_MERGE"] == {"merge-world"}
     assert catalog["DRY_RUN"] == {"propagate-credit", "run-inference"}
     assert catalog["EMPTY_TRAVERSAL"] == {"semiring-distances"}
     assert catalog["NONE_PERSISTED"] == {"list-loops"}
     assert catalog["NOT_PERSISTED"] == {"detect-loops"}
     assert catalog["TRUNCATED"] == {"list-entities"}
+    assert catalog["WORLD_PROJECTION_PARTIAL"] == {
+        "embed-entity",
+        "embed-entities",
+        "embedding-status",
+        "semantic-search",
+        "hybrid-search",
+        "semantic-neighbors",
+        "suggest-relations",
+    }
     # documents.py's graph-ignored notice is shared by every document command
     # that accepts (and ignores) `graph` -- pin the full set so a command
     # silently dropped from that list is caught.
