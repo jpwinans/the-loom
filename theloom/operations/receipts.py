@@ -177,6 +177,33 @@ def _entities_merged(event: Event) -> list[_RawRow]:
     return rows
 
 
+_REF_EVENT_TYPES = frozenset(
+    {"ref_registered", "ref_touched", "ref_expired", "ref_reaped", "ref_metadata_updated"}
+)
+
+
+def _ref_lifecycle(event: Event, history: dict[str, Doc]) -> list[_RawRow]:
+    """Ref lifecycle events (``theloom.store.refs`` — session workspaces,
+    branchable belief worlds) carry their full doc verbatim as the payload,
+    the same "payload is the document" convention every other event here
+    follows, but with no explicit ``previous`` field the way an entity/
+    relation update has one. Replaying *in order* recovers it anyway:
+    ``history`` remembers the last doc seen per ref id within this replay's
+    own span, so a later lifecycle event (a world's ``abandon-world``, a
+    session's reap) diffs against what actually preceded it instead of
+    falling back to ``_unrecognized``'s ``old: null`` for every field —
+    the exact weakness Part 5's build was asked not to repeat. A ref whose
+    creation falls outside this replay's own span still reports ``old:
+    null`` for its first event here, honestly: there is nothing earlier in
+    the span to compare against.
+    """
+    doc = dict(event.payload)
+    record_id = str(doc.get("id") or "")
+    previous = history.get(record_id)
+    history[record_id] = doc
+    return _rows_for(f"ref:{doc.get('kind', 'ref')}", record_id, previous, doc)
+
+
 def _unrecognized(event: Event) -> list[_RawRow]:
     """A generic, honest fallback for an event type this module has no
     specific differ for (a bridge/chunk event type added after this was
@@ -265,8 +292,14 @@ def what_changed(params: WhatChangedInput, multi: MultiGraph) -> Doc:
         events = log.read_range(params.from_event_id, params.to_event_id, count=limit)
 
     pairs: list[tuple[Event, _RawRow]] = []
+    ref_history: dict[str, Doc] = {}
     for event in events:
-        for row in _diff_event(event):
+        rows = (
+            _ref_lifecycle(event, ref_history)
+            if event.type in _REF_EVENT_TYPES
+            else _diff_event(event)
+        )
+        for row in rows:
             pairs.append((event, row))
 
     names = _resolve_names(pairs, multi, params.graph)
