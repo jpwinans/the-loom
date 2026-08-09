@@ -190,7 +190,7 @@ def test_record_outcome_refuses_unknown_citations_without_writing(multi: MultiGr
             multi,
         )
     remaining = run_handler("list-entities", {"entityType": "evidence"}, multi)
-    assert remaining == []
+    assert remaining["items"] == []
 
 
 def test_record_outcome_collapses_a_repeated_citation_to_one_edge(multi: MultiGraph) -> None:
@@ -228,7 +228,7 @@ def test_record_outcome_leaves_no_evidence_behind_when_the_citations_cannot_land
             multi,
         )
 
-    assert run_handler("list-entities", {"entityType": "evidence"}, multi) == []
+    assert run_handler("list-entities", {"entityType": "evidence"}, multi)["items"] == []
 
 
 @pytest.mark.parametrize(

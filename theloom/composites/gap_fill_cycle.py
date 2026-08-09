@@ -116,19 +116,20 @@ def gap_fill_cycle(params: GapFillCycleInput, multi: MultiGraph) -> dict[str, An
 
     # -- Section 1: semantic gaps -------------------------------------------
     def _gaps() -> list[dict[str, Any]]:
-        return semantic_gaps(
+        items: list[dict[str, Any]] = semantic_gaps(
             SemanticGapsInput.model_validate(
                 {"limit": params.limit, "minSimilarity": params.min_similarity, "graph": graph}
             ),
             multi,
-        )
+        )["items"]
+        return items
 
     gaps_section = time_section(_gaps)
 
     # -- Section 2: relation suggestions ------------------------------------
     def _suggest_for(entity_id: str) -> Callable[[], list[dict[str, Any]]]:
         def _run() -> list[dict[str, Any]]:
-            return suggest_relations(
+            items: list[dict[str, Any]] = suggest_relations(
                 SuggestRelationsInput.model_validate(
                     {
                         "entityId": entity_id,
@@ -138,7 +139,8 @@ def gap_fill_cycle(params: GapFillCycleInput, multi: MultiGraph) -> dict[str, An
                     }
                 ),
                 multi,
-            )
+            )["items"]
+            return items
 
         return _run
 

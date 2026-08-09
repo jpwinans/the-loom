@@ -14,7 +14,9 @@ explicitly; there is no "defaults to False by omission" reading.
 Output shapes are fixed: list-graphs → sorted GraphInfo objects;
 create/delete-graph → success strings; list-bridges → bridge docs in insertion
 order; find-related-graphs → sorted names; graph-connections → pair counts
-sorted by from_graph then to_graph.
+sorted by from_graph then to_graph; begin/end-session and list-sessions →
+session docs (namespace, TTL, current member graphs) via
+``theloom.operations.sessions``.
 """
 
 from __future__ import annotations
@@ -25,8 +27,11 @@ from typing import Any
 
 import pydantic
 
+from theloom.cli import notices_catalog as notices_catalog_ops
 from theloom.cli.schema import describe_validation_error
 from theloom.composites import analogy_transfer as analogy_transfer_composite
+from theloom.composites import belief_blast_radius as belief_blast_radius_composite
+from theloom.composites import consolidate as consolidate_composite
 from theloom.composites import creativity_loop as creativity_loop_composite
 from theloom.composites import enrichment_crawl as enrichment_crawl_composite
 from theloom.composites import entity_deep_dive as entity_deep_dive_composite
@@ -43,11 +48,13 @@ from theloom.composites import reflect as reflect_composite
 from theloom.composites import self_improve as self_improve_composite
 from theloom.composites import semantic_landscape as semantic_landscape_composite
 from theloom.composites import simulate_change as simulate_change_composite
+from theloom.composites import since_last_session as since_last_session_composite
 from theloom.composites import structural_survey as structural_survey_composite
 from theloom.composites import verified_extract as verified_extract_composite
 from theloom.operations import algebra as algebra_ops
 from theloom.operations import analysis as analysis_ops
 from theloom.operations import bulk as bulk_ops
+from theloom.operations import calibration as calibration_ops
 from theloom.operations import consumption as consumption_ops
 from theloom.operations import documents as document_ops
 from theloom.operations import entity as entity_ops
@@ -56,16 +63,21 @@ from theloom.operations import extraction as extraction_ops
 from theloom.operations import inference as inference_ops
 from theloom.operations import merge as merge_ops
 from theloom.operations import multigraph as multigraph_ops
+from theloom.operations import notices as notices_ops
 from theloom.operations import portability as portability_ops
+from theloom.operations import receipts as receipt_ops
 from theloom.operations import reification as reification_ops
 from theloom.operations import relations as relation_ops
 from theloom.operations import semantic as semantic_ops
+from theloom.operations import sessions as sessions_ops
 from theloom.operations import solve as solve_ops
 from theloom.operations import symbolic as symbolic_ops
 from theloom.operations import synthesis as synthesis_ops
 from theloom.operations import verification as verification_ops
 from theloom.operations import work_memory as work_memory_ops
+from theloom.operations import worlds as worlds_ops
 from theloom.operations.common import CommandInput
+from theloom.store import receipts, worldctx
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import cegis as cegis_module
 from theloom.viz import serve as viz_serve
@@ -463,6 +475,14 @@ def _semantic_commands() -> list[CommandDescriptor]:
                 "Pre-download and warm the embedding model.",
                 s.WarmEmbedderInput,
                 s.warm_embedder,
+                True,
+            ),
+            _Spec(
+                "embedder-profile",
+                "Embeddings",
+                "The configured embedder's live-measured similarity landscape.",
+                s.EmbedderProfileInput,
+                s.embedder_profile,
                 True,
             ),
             _Spec(
@@ -1309,6 +1329,27 @@ def _consumption_commands() -> list[CommandDescriptor]:
     )
 
 
+def _event_log_commands() -> list[CommandDescriptor]:
+    """Event Log: the read surface over the append-only event stream —
+    write-receipts' other half (desire 1). Mutating commands report the event
+    ids they appended (see ``theloom.store.receipts``); ``what-changed``
+    replays any span of those ids, or a raw stream range, as a compact
+    field-level diff."""
+    return _build(
+        [
+            _Spec(
+                "what-changed",
+                "Event Log",
+                "Replay a span of the event log as a compact diff: entity/relation, field, "
+                "old, new, and the command that caused it.",
+                receipt_ops.WhatChangedInput,
+                receipt_ops.what_changed,
+                True,
+            ),
+        ]
+    )
+
+
 def _work_memory_commands() -> list[CommandDescriptor]:
     """Work Memory: the experiential layer — what was tried, how it turned out,
     and the standing lessons that fall out of it."""
@@ -1327,10 +1368,52 @@ def _work_memory_commands() -> list[CommandDescriptor]:
     )
 
 
+def _calibration_commands() -> list[CommandDescriptor]:
+    """The closed calibration loop (desire 14): resolving a claim/hypothesis
+    against reality, and folding resolutions into per-bucket Brier scores
+    and asserted-vs-empirical gaps. ``propagate-credit``'s
+    ``dampingFactor: "calibrated"`` and ``create-entity``'s
+    ``CONFIDENCE_OUT_OF_LINE`` feedback both build on the same fold
+    (``theloom.operations.calibration``) without a command of their own."""
+    return _build(
+        [
+            _Spec(
+                "resolve-claim",
+                "Calibration",
+                "Resolve a claim/hypothesis: create the outcome entity, link it with a "
+                "'resolves' edge, and transition its status -- one atomic write.",
+                calibration_ops.ResolveClaimInput,
+                calibration_ops.resolve_claim,
+                False,
+            ),
+            _Spec(
+                "calibration-profile",
+                "Calibration",
+                "Fold every resolved claim into per-bucket count, mean asserted confidence, "
+                "empirical hit rate, Brier score, and the asserted-vs-empirical gap, using "
+                "each claim's assertion-time confidence.",
+                calibration_ops.CalibrationProfileInput,
+                calibration_ops.calibration_profile,
+                True,
+            ),
+        ]
+    )
+
+
 def _composite_commands() -> list[CommandDescriptor]:
     """Composites: multi-section bundles over the core operations."""
     return _build(
         [
+            _Spec(
+                "belief-blast-radius",
+                "Composites",
+                "What would change if I stopped believing this? Fork, propagate-credit inside "
+                "the fork with the hypothetical delta, diff-worlds, abandon -- read-only from "
+                "main's perspective (composite).",
+                belief_blast_radius_composite.BeliefBlastRadiusInput,
+                belief_blast_radius_composite.belief_blast_radius,
+                False,
+            ),
             _Spec(
                 "graph-reconnaissance",
                 "Composites",
@@ -1498,6 +1581,125 @@ def _composite_commands() -> list[CommandDescriptor]:
                 explore_frontier_composite.explore_frontier,
                 True,
             ),
+            _Spec(
+                "consolidate",
+                "Composites",
+                "The dreaming pass (desire 13): forks a dream world and runs contradiction "
+                "(incl. transitive, via run-inference inside the fork), staleness, motif, "
+                "structural-gap hypothesis, cross-domain analogy, and credit-propagation-replay "
+                "passes, writing low-confidence insight/hypothesis/tension findings plus a "
+                "consolidation_report entity into the dream. NEVER writes to main (composite).",
+                consolidate_composite.ConsolidateInput,
+                consolidate_composite.consolidate,
+                True,
+            ),
+            _Spec(
+                "since-last-session",
+                "Composites",
+                "The waking surface (desire 13): the latest unreviewed consolidation report(s), "
+                "a fresh diff-worlds summary for each, contradictions touching anything recently "
+                "active, and calibration alerts -- one call, hard-capped to fit a context window "
+                "(composite, read-only).",
+                since_last_session_composite.SinceLastSessionInput,
+                since_last_session_composite.since_last_session,
+                True,
+            ),
+        ]
+    )
+
+
+def _session_commands() -> list[CommandDescriptor]:
+    """Session workspaces (desire 2): a namespaced, TTL-bearing scratch
+    boundary that turns "only touch graphs prefixed X" from a convention an
+    orchestrator has to police into a property the substrate tracks and
+    reaps in one call."""
+    return _build(
+        [
+            _Spec(
+                "begin-session",
+                "Workspaces",
+                "Start a namespaced, TTL-bearing session workspace for scratch graphs.",
+                sessions_ops.BeginSessionInput,
+                sessions_ops.begin_session,
+                True,
+            ),
+            _Spec(
+                "end-session",
+                "Workspaces",
+                "Reap a session in one call: delete every graph registered under its "
+                "namespace and mark the session reaped.",
+                sessions_ops.EndSessionInput,
+                sessions_ops.end_session,
+                False,
+            ),
+            _Spec(
+                "list-sessions",
+                "Workspaces",
+                "List session workspaces with their namespace, TTL, and current member graphs.",
+                sessions_ops.EmptyInput,
+                sessions_ops.list_sessions,
+                True,
+            ),
+        ]
+    )
+
+
+def _world_commands() -> list[CommandDescriptor]:
+    """Branchable belief worlds (desire 12 / Part 5): a named ref over the
+    same event-sourced store every graph already is (see
+    ``theloom.store.worlds``). ``belief-blast-radius`` (desire 4) is
+    registered alongside the composites, not here — it is exactly this
+    machinery plus ``propagate-credit``, not a new primitive."""
+    return _build(
+        [
+            _Spec(
+                "fork-world",
+                "Worlds",
+                "Fork a new belief world at a graph's (or another world's) current tip, or a "
+                "historical moment via asOf. Writes no entity data -- O(1). The response's "
+                "forkedAtEventId is informational/for-audit only (which event was live at fork "
+                "time); the projection itself is anchored by forkedAt's wall-clock instant "
+                "(compared against tx_from, never against stream position), so it stays "
+                "well-defined even if that event's own append was later repaired out of order.",
+                worlds_ops.ForkWorldInput,
+                worlds_ops.fork_world,
+                True,
+            ),
+            _Spec(
+                "list-worlds",
+                "Worlds",
+                "List belief worlds with their parent, fork point, and status.",
+                worlds_ops.ListWorldsInput,
+                worlds_ops.list_worlds,
+                True,
+            ),
+            _Spec(
+                "abandon-world",
+                "Worlds",
+                "Mark a world's ref dead and delete its segment in one call.",
+                worlds_ops.AbandonWorldInput,
+                worlds_ops.abandon_world,
+                False,
+            ),
+            _Spec(
+                "diff-worlds",
+                "Worlds",
+                "Semantic diff between two worlds: entities added/invalidated, confidences "
+                "changed, relations added/removed, contested claims -- each with event ids.",
+                worlds_ops.DiffWorldsInput,
+                worlds_ops.diff_worlds,
+                False,
+            ),
+            _Spec(
+                "merge-world",
+                "Worlds",
+                "Merge a world's changes into another (default 'main'). 'endorse-all' applies "
+                "every uncontested change and notices the rest as CONTESTED_ON_MERGE; 'select' "
+                "grafts exactly the named entityIds/eventIds.",
+                worlds_ops.MergeWorldInput,
+                worlds_ops.merge_world,
+                False,
+            ),
         ]
     )
 
@@ -1537,7 +1739,7 @@ def _tail_commands() -> list[CommandDescriptor]:
                 "Multi-Graph",
                 "List all available graphs with their loaded status and stats.",
                 EmptyInput,
-                lambda _, multi: multi.list_graphs(),
+                lambda _, multi: notices_ops.list_envelope(multi.list_graphs()),
                 True,
             ),
             _Spec(
@@ -1612,6 +1814,15 @@ def _tail_commands() -> list[CommandDescriptor]:
                 viz_serve.serve,
                 True,
             ),
+            _Spec(
+                "notices-catalog",
+                "Contract",
+                "Enumerate every notice code, its meaning, and the commands that can "
+                "emit it -- generated from source, never hand-maintained.",
+                notices_catalog_ops.EmptyInput,
+                notices_catalog_ops.notices_catalog,
+                True,
+            ),
         ]
     )
 
@@ -1622,11 +1833,18 @@ def _create_graph(params: GraphNameInput, multi: MultiGraph) -> str:
 
 
 def _delete_graph(params: GraphNameInput, multi: MultiGraph) -> str:
-    multi.delete_graph(params.name)
+    reaped_worlds = multi.delete_graph(params.name)
+    if reaped_worlds:
+        return (
+            f"Graph '{params.name}' deleted successfully; "
+            f"{len(reaped_worlds)} world ref(s) forked from it were purged with it: "
+            + ", ".join(reaped_worlds)
+            + "."
+        )
     return f"Graph '{params.name}' deleted successfully."
 
 
-def _list_bridges(params: BridgeFilterInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def _list_bridges(params: BridgeFilterInput, multi: MultiGraph) -> dict[str, Any]:
     filter: dict[str, str] = {}
     if params.from_graph is not None:
         filter["from_graph"] = params.from_graph
@@ -1634,7 +1852,7 @@ def _list_bridges(params: BridgeFilterInput, multi: MultiGraph) -> list[dict[str
         filter["to_graph"] = params.to_graph
     if params.entity_id is not None:
         filter["entity_id"] = params.entity_id
-    return multi.bridges.list_bridges(filter or None)
+    return notices_ops.list_envelope(multi.bridges.list_bridges(filter or None))
 
 
 COMMANDS: list[CommandDescriptor] = [
@@ -1651,8 +1869,12 @@ COMMANDS: list[CommandDescriptor] = [
     *_inference_commands(),
     *_verification_commands(),
     *_consumption_commands(),
+    *_event_log_commands(),
     *_work_memory_commands(),
+    *_calibration_commands(),
     *_composite_commands(),
+    *_session_commands(),
+    *_world_commands(),
     *_tail_commands(),
 ]
 
@@ -1664,13 +1886,40 @@ def get_command(name: str) -> CommandDescriptor:
 
 
 def run_handler(name: str, input_doc: dict[str, Any], multi: MultiGraph) -> Any:
-    """Validate the input against the command's model and run its handler."""
+    """Validate the input against the command's model and run its handler.
+
+    Wraps the call in one write-receipts scope (``theloom.store.receipts``):
+    every event id any store commit appends anywhere during the handler —
+    including inside a composite's nested calls — is collected under this
+    command's name and folded onto the response as ``eventIds`` (desire 1).
+    A read-only handler that commits nothing collects nothing, so its
+    response is untouched.
+
+    Also opens a ``theloom.store.worldctx`` scope from the input's own
+    ``world`` field (branchable belief worlds, desire 12 / Part 5) — every
+    command's input model carries it (``theloom.operations.common.
+    CommandInput``), so this one line is the entire "every command gains a
+    world param" wiring; no handler below this line needs to know worlds
+    exist. A ``raw_handler`` command (bulk-import) reads it straight off the
+    unvalidated doc, since it never goes through a Pydantic model at all.
+    """
     descriptor = _BY_NAME[name]
     if descriptor.raw_handler is not None:
-        return descriptor.raw_handler(input_doc, multi)
-    try:
-        params = descriptor.input_model.model_validate(input_doc)
-    except pydantic.ValidationError as exc:
-        raise describe_validation_error(descriptor.input_model, exc, command=name) from exc
-    assert descriptor.handler is not None
-    return descriptor.handler(params, multi)
+        world = input_doc.get("world") if isinstance(input_doc.get("world"), str) else None
+        with worldctx.active(world), receipts.collecting(name) as event_ids:
+            result = descriptor.raw_handler(input_doc, multi)
+    else:
+        try:
+            params = descriptor.input_model.model_validate(input_doc)
+        except pydantic.ValidationError as exc:
+            raise describe_validation_error(descriptor.input_model, exc, command=name) from exc
+        assert descriptor.handler is not None
+        world = getattr(params, "world", None)
+        with worldctx.active(world), receipts.collecting(name) as event_ids:
+            result = descriptor.handler(params, multi)
+    assert not isinstance(result, list), (
+        f"command '{name}' returned a bare top-level array — every list-returning "
+        "command must use the {items, count, notices?} envelope (theloom.operations."
+        "notices.list_envelope)"
+    )
+    return receipts.attach(result, event_ids)

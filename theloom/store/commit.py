@@ -58,6 +58,7 @@ from falkordb.query_result import QueryResult
 from redis import Redis
 
 from theloom.errors import OperationError
+from theloom.store import receipts
 from theloom.store.events import EventLog
 
 Step = tuple[str, dict[str, Any]]
@@ -81,8 +82,24 @@ def commit_steps(
     events_log: EventLog,
     steps: Sequence[Step],
     events: Sequence[EventSpec],
+    *,
+    register: tuple[str, str] | None = None,
 ) -> tuple[list[QueryResult], list[str]]:
     """Run the Cypher steps and append their events as one MULTI/EXEC unit.
+
+    ``register``, when given, is ``(registry_key, member)``: a ``SADD`` queued
+    into the same transaction as the Cypher and the event append, so a graph's
+    first write and its membership in the multigraph registry land together —
+    the fix for the registry gap where a graph created implicitly via a bare
+    ``graph`` param on any mutating command was invisible to
+    ``list-graphs``/``delete-graph`` (see ``GraphSpace.__init__``, the only
+    caller that populates it; ``theloom.store.bridges.BridgeRegistry`` and the
+    chunk store's reserved graph never do). Idempotent and side-effect-free
+    for a graph already registered, so this runs on every write rather than
+    only the first — there is no cheaper way to know "first" without an extra
+    round trip. Its reply is not inspected: a ``SADD`` against a key this
+    module owns exclusively as a set does not fail in ways that should change
+    the mutation's outcome.
 
     Returns ``(query results, appended event ids)``; the ids let a caller that
     only learns the mutation was wrong *after* ``EXEC`` discard the events it
@@ -100,9 +117,12 @@ def commit_steps(
             )
         for event_type, payload in events:
             events_log.queue(pipe, event_type, payload)
+        if register is not None:
+            pipe.sadd(*register)
         responses: list[Any] = pipe.execute(raise_on_error=False)
 
-    query_responses, event_responses = responses[: len(steps)], responses[len(steps) :]
+    query_responses = responses[: len(steps)]
+    event_responses = responses[len(steps) : len(steps) + len(events)]
     event_ids = [stream_id(entry) for entry in event_responses if not is_error(entry)]
     query_failure = next((r for r in query_responses if is_error(r)), None)
     if query_failure is not None:
@@ -111,6 +131,12 @@ def commit_steps(
         raise query_failure
     failed_at = next((i for i, response in enumerate(event_responses) if is_error(response)), None)
     if failed_at is None:
+        # This is the choke point every FalkorDB mutation passes through
+        # (CLAUDE.md invariant 1) — recording here, rather than in each of the
+        # dozens of store methods that call commit_steps, is what lets
+        # write-receipts (theloom.store.receipts) attach to a command's
+        # response without those methods' return types changing.
+        receipts.record(event_ids)
         return [QueryResult(graph, response) for response in query_responses], event_ids
     # The mutation did happen and cannot be undone, so the events it earned are
     # true. Everything from the first failure on is re-appended in order — the
@@ -121,9 +147,11 @@ def commit_steps(
         for event, response in zip(events[failed_at:], event_responses[failed_at:], strict=True)
     ]
     kept = [stream_id(response) for response in event_responses[:failed_at]]
+    final_ids = kept + repair_log(events_log, suffix)
+    receipts.record(final_ids)
     return (
         [QueryResult(graph, response) for response in query_responses],
-        kept + repair_log(events_log, suffix),
+        final_ids,
     )
 
 

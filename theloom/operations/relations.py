@@ -43,6 +43,8 @@ from theloom.model import (
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
 from theloom.operations.entity import compact_entity_doc
+from theloom.operations.notices import Doc, list_envelope
+from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.verification.guards import (
     endpoint_error,
@@ -81,6 +83,21 @@ class CreateRelationInput(RelationItem):
 class CreateRelationsInput(CommandInput):
     relations: list[RelationItem] = Field(max_length=200_000)
     continue_on_error: bool | None = Field(default=None, alias="continueOnError")
+    # A per-item default, not a batch-wide override: an item's own `graph`
+    # always wins when set. Without this field, `CommandInput`'s
+    # `extra="ignore"` silently dropped a top-level `{"graph": ...}` and the
+    # whole batch fell through to whatever each item's own `graph` said
+    # (usually nothing — the default graph, i.e. production). Optional and
+    # additive, so a caller that never passed a top-level `graph` sees no
+    # behavior change.
+    graph: str | None = Field(
+        default=None,
+        description="Default graph for any item that omits its own `graph` — an item's "
+        "own `graph` always wins. Without this, a top-level `graph` on "
+        "create-relations was silently ignored (extra fields are dropped) and "
+        "the batch fell through to each item's own graph, usually the default "
+        "graph.",
+    )
 
 
 class ReadRelationInput(CommandInput):
@@ -218,8 +235,9 @@ def create_relation(params: CreateRelationInput, multi: MultiGraph) -> dict[str,
     # Gate passed → both endpoints exist in the resolved store, so this is a
     # same-graph relation; the bridge branch is unreachable with the gate on
     # (see module docstring).
-    relation = multi.get_store(params.graph).create_relation(spec)
-    return relation.model_dump(by_alias=True, exclude_unset=True)
+    store = multi.get_store(params.graph)
+    relation = store.create_relation(spec)
+    return _with_endpoint_name(relation.model_dump(by_alias=True, exclude_unset=True), store)
 
 
 def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[str, Any]:
@@ -227,7 +245,7 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
     applied = 0
     failed = 0
     bridges_created = 0
-    errors: list[dict[str, str]] = []
+    errors: list[dict[str, Any]] = []
     # Valid specs accumulate per target graph and are created in ONE
     # transactional UNWIND batch per graph.
     pending: dict[str | None, list[RelationCreate]] = {}
@@ -242,18 +260,25 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
     # Prefetch every endpoint's effective status per graph so the endpoint gate
     # is one query per graph instead of two reads per item. Status, not just
     # existence: the gate refuses a retracted endpoint (guards.endpoint_error),
-    # and the batch may not be the lenient way in.
+    # and the batch may not be the lenient way in. The same fetch also builds
+    # a name index (desire 11) so a failed item's error row can carry
+    # fromName/toName beside the ids, at no extra query.
     known_status: dict[str | None, dict[str, EntityStatus]] = {}
+    known_names: dict[str | None, dict[str, str]] = {}
 
     def status_for(graph: str | None) -> dict[str, EntityStatus]:
         if graph not in known_status:
             store = multi.get_store(graph)
-            known_status[graph] = {
-                e.id: e.effective_status for e in store.list_entities(_ALL_STATUS_FILTER)
-            }
+            entities = store.list_entities(_ALL_STATUS_FILTER)
+            known_status[graph] = {e.id: e.effective_status for e in entities}
+            known_names[graph] = {e.id: e.name for e in entities}
         return known_status[graph]
 
     for item in params.relations:
+        # The batch-level `graph` is a per-item default: an item that names
+        # its own `graph` always wins, even inside a batch that also set a
+        # top-level one.
+        effective_graph = item.graph if item.graph is not None else params.graph
         polarity = _effective_polarity(item)
         gate_errors: list[str] = []
         if item.relation_type in CAUSAL_POLARITY_DEFAULTS:
@@ -267,7 +292,7 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
             gate_errors.append(
                 f"Relation cannot reference the same entity as source and target: '{item.from_}'"
             )
-        graph_status = status_for(item.graph)
+        graph_status = status_for(effective_graph)
         for role, endpoint in (("Source", item.from_), ("Target", item.to)):
             error = endpoint_error(role, endpoint, graph_status.get(endpoint))
             if error is not None:
@@ -276,13 +301,22 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
         if gate_errors:
             failed += 1
             message = f"Relation creation blocked by verification gate: {'; '.join(gate_errors)}"
-            errors.append({"from": item.from_, "to": item.to, "error": message})
+            names = known_names.get(effective_graph, {})
+            errors.append(
+                {
+                    "from": item.from_,
+                    "to": item.to,
+                    "fromName": names.get(item.from_),
+                    "toName": names.get(item.to),
+                    "error": message,
+                }
+            )
             if not continue_on_error:
                 flush()  # persist the valid prefix before raising
                 raise OperationError(f"Error creating relations batch: {message}")
             continue
 
-        pending.setdefault(item.graph, []).append(_spec(item, polarity))
+        pending.setdefault(effective_graph, []).append(_spec(item, polarity))
         applied += 1
 
     flush()
@@ -300,22 +334,50 @@ def create_relations(params: CreateRelationsInput, multi: MultiGraph) -> dict[st
 
 
 def read_relation(params: ReadRelationInput, multi: MultiGraph) -> dict[str, Any]:
-    relation = multi.get_store(params.graph).read_relation(params.from_, params.to)
+    store = multi.get_store(params.graph)
+    relation = store.read_relation(params.from_, params.to)
     if relation is None:
         raise NotFoundError(
             f"Relation not found from {params.from_} to {params.to}. "
             "Use list_relations to see available relations."
         )
-    return relation.model_dump(by_alias=True, exclude_unset=True)
+    return _with_endpoint_name(relation.model_dump(by_alias=True, exclude_unset=True), store)
 
 
-def read_relations(params: ReadRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
-    relations = multi.get_store(params.graph).read_relations(
+def _with_endpoint_names(docs: list[Doc], store: FalkorGraphStore) -> list[Doc]:
+    """Stamp ``fromName``/``toName`` beside every relation doc's ``from``/``to``
+    id (desire 11) — one batched ``read_entity_docs`` for every endpoint any
+    doc references, never a lookup per row. A row's endpoint absent from the
+    store (a retracted-then-hard-deleted entity) simply carries no name,
+    rather than the whole row failing."""
+    wanted = {doc["from"] for doc in docs} | {doc["to"] for doc in docs}
+    if not wanted:
+        return docs
+    endpoints = store.read_entity_docs(wanted)
+    names = {entity_id: doc.get("name", "") for entity_id, doc in endpoints.items()}
+    return [
+        {**doc, "fromName": names.get(doc["from"]), "toName": names.get(doc["to"])} for doc in docs
+    ]
+
+
+def _with_endpoint_name(doc: Doc, store: FalkorGraphStore) -> Doc:
+    """Single-relation-doc form of ``_with_endpoint_names`` — every command
+    that reads or writes exactly one relation (create/read/update-relation)
+    routes through this rather than shipping bare ``from``/``to`` ids, the
+    same "self-describing enough to read without a join" contract
+    ``list-relations`` already carries (desire 11)."""
+    return _with_endpoint_names([doc], store)[0]
+
+
+def read_relations(params: ReadRelationsInput, multi: MultiGraph) -> dict[str, Any]:
+    store = multi.get_store(params.graph)
+    relations = store.read_relations(
         params.from_,
         params.to,
         params.relation_type.value if params.relation_type else None,
     )
-    return [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
+    docs = [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
+    return list_envelope(_with_endpoint_names(docs, store))
 
 
 def _gated_update_polarity(
@@ -362,8 +424,9 @@ def update_relation(params: UpdateRelationInput, multi: MultiGraph) -> dict[str,
         updates["strength"] = params.strength.value
     if params.provided("evidence"):
         updates["evidence"] = params.evidence
+    store = multi.get_store(params.graph)
     try:
-        relation = multi.get_store(params.graph).update_relation(
+        relation = store.update_relation(
             params.from_, params.to, updates, relation_id=params.relation_id
         )
     except NotFoundError:
@@ -371,7 +434,7 @@ def update_relation(params: UpdateRelationInput, multi: MultiGraph) -> dict[str,
             f"Relation not found from {params.from_} to {params.to}. "
             "Use list_relations to verify the relation exists before updating."
         ) from None
-    return relation.model_dump(by_alias=True, exclude_unset=True)
+    return _with_endpoint_name(relation.model_dump(by_alias=True, exclude_unset=True), store)
 
 
 def delete_relation(params: DeleteRelationInput, multi: MultiGraph) -> str:
@@ -396,7 +459,7 @@ def delete_relation(params: DeleteRelationInput, multi: MultiGraph) -> str:
     return f"Relation from {params.from_} to {params.to} {verb} successfully."
 
 
-def list_relations(params: ListRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def list_relations(params: ListRelationsInput, multi: MultiGraph) -> dict[str, Any]:
     filter_doc: dict[str, Any] = {}
     if params.from_ is not None:
         filter_doc["from"] = params.from_
@@ -419,11 +482,13 @@ def list_relations(params: ListRelationsInput, multi: MultiGraph) -> list[dict[s
     if params.graph == WILDCARD_GRAPH:
         results: list[dict[str, Any]] = []
         for graph_name in multi.graph_names():
-            for doc in fetch(graph_name):
+            docs = _with_endpoint_names(fetch(graph_name), multi.get_store(graph_name))
+            for doc in docs:
                 doc["graph"] = graph_name
                 results.append(doc)
-        return results
-    return fetch(params.graph)
+        return list_envelope(results)
+    docs = _with_endpoint_names(fetch(params.graph), multi.get_store(params.graph))
+    return list_envelope(docs)
 
 
 # =============================================================================
@@ -451,7 +516,7 @@ def _bridge_matches(
     return relation_type is None or bridge["relationType"] == relation_type
 
 
-def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def get_relations(params: GetRelationsInput, multi: MultiGraph) -> dict[str, Any]:
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
@@ -459,7 +524,9 @@ def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str
         store, entity_id=params.entity_id, name=params.name, id_field="entityId"
     )
     relations = store.get_relations(entity_id, direction, relation_type)  # type: ignore[arg-type]
-    results = [r.model_dump(by_alias=True, exclude_unset=True) for r in relations]
+    results = _with_endpoint_names(
+        [r.model_dump(by_alias=True, exclude_unset=True) for r in relations], store
+    )
 
     for bridge in multi.bridges.list_bridges({"entity_id": entity_id}):
         if not _bridge_matches(bridge, entity_id, direction, relation_type):
@@ -471,16 +538,18 @@ def get_relations(params: GetRelationsInput, multi: MultiGraph) -> list[dict[str
             if from_entity is not None:
                 doc = from_entity.model_dump(by_alias=True, exclude_unset=True)
                 row["from_entity"] = compact_entity_doc(doc) if params.compact else doc
+                row["fromName"] = doc["name"]
             to_store = multi.get_store(bridge["to_graph"])
             to_entity = to_store.read_entity(bridge["to"])
             if to_entity is not None:
                 doc = to_entity.model_dump(by_alias=True, exclude_unset=True)
                 row["to_entity"] = compact_entity_doc(doc) if params.compact else doc
+                row["toName"] = doc["name"]
         results.append(row)
-    return results
+    return list_envelope(results)
 
 
-def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> dict[str, Any]:
     direction = params.direction or "both"
     relation_type = params.relation_type.value if params.relation_type else None
     store = multi.get_store(params.graph)
@@ -570,4 +639,4 @@ def get_neighbors(params: GetNeighborsInput, multi: MultiGraph) -> list[dict[str
                 "direction": edge_direction,
             }
         )
-    return results
+    return list_envelope(results)

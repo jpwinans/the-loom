@@ -68,6 +68,7 @@ from theloom.model import (
     RelationFilter,
     is_valid_transition,
 )
+from theloom.store import receipts
 from theloom.store.base import Direction, GraphStore
 from theloom.store.filters import (
     apply_entity_filters,
@@ -83,7 +84,7 @@ _ENTITY_LABEL = "_Entity"
 _VECTOR_PROPERTY = VECTOR_PROPERTY
 
 _IMMUTABLE_ENTITY_FIELDS = ("id", "created_at")
-_IMMUTABLE_RELATION_FIELDS = ("id", "from", "to", "created_at")
+_IMMUTABLE_RELATION_FIELDS = ("id", "created_at")
 
 # The derived read-index properties, in wire-doc projection order. Named
 # without the leading underscore here; the node property is "_" + field.
@@ -261,6 +262,67 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             },
         )
 
+    def adopt_entity(self, doc: Mapping[str, Any], tx_from: str | None = None) -> Entity:
+        """Materialize a verbatim copy of an entity doc read from elsewhere
+        into *this* graph — the copy-on-write half of a branchable belief
+        world's overlay (``theloom.store.worlds.WorldGraphStore``): a fork
+        reads an inherited entity straight from its parent, but the first
+        *write* addressing that id needs a local incarnation to snapshot and
+        swap, because the parent's own node must never be touched (worlds:
+        "main is never mutable from inside a fork").
+
+        Routed through ``_commit`` (the one commit primitive every write
+        goes through) like every other mutation, but with an empty events
+        list: the doc is byte-identical to what a reader already saw through
+        the overlay, so nothing observable has changed yet and there is
+        nothing for ``what-changed``/``diff-worlds`` to report. The *next*
+        mutation on this id (an ordinary ``update_entity``/``delete_entity``)
+        emits the real event, with this doc as its ``previous`` — exactly
+        mirroring ``import_entity_doc``'s "write doc verbatim; no event"
+        contract, just through the transactional primitive instead of a bare
+        query, since a copy-on-write is triggered by live traffic rather
+        than a one-shot migration script.
+        """
+        doc = dict(doc)
+        self._commit(
+            (
+                f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $tx, {_index_literal('ix')}}})",
+                {
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                    "tx": tx_from or doc.get("updated_at") or iso_now(),
+                    **_index_params(doc, "ix"),
+                },
+            ),
+            [],
+        )
+        return Entity.model_validate(doc)
+
+    def graft_entity(self, doc: Mapping[str, Any]) -> Entity:
+        """Create a verbatim copy of an entity doc — id preserved — as a
+        REAL, event-logged creation in this graph: ``merge-world``'s
+        counterpart to ``adopt_entity``. A fork's copy-on-write is invisible
+        (the doc a reader already saw, just relocated); grafting an entity
+        from a world's segment into another world (typically ``main``) via
+        an explicit merge is a genuine, user-visible write, so it earns a
+        real ``entity_created`` event other than the id being pre-chosen
+        rather than minted."""
+        doc = dict(doc)
+        index_literal = _index_literal("ix")
+        self._commit(
+            (
+                f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, {index_literal}}})",
+                {
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                    "now": iso_now(),
+                    **_index_params(doc, "ix"),
+                },
+            ),
+            [("entity_created", {"entity": doc})],
+        )
+        return Entity.model_validate(doc)
+
     # -- vectors (entity vectors live in the same store) ------------------------
     #
     # The index itself — create, width, OPERATIONAL barrier, k-NN with its
@@ -316,6 +378,45 @@ class FalkorGraphStore(GraphSpace, GraphStore):
         if version_rows:
             return Entity.model_validate(json.loads(version_rows[0][0]))
         return None
+
+    def read_entity_earliest_version(self, entity_id: str) -> Entity | None:
+        """This graph segment's own oldest recorded incarnation of an
+        entity -- the fallback ``theloom.operations.calibration.
+        resolved_claims`` reaches for when ``read_entity_as_of`` at a
+        claim's ``created_at`` comes up empty, which happens for an entity
+        ``merge-world`` grafted from another world: the graft (``graft_entity``)
+        preserves the SOURCE world's original ``created_at`` but opens a
+        brand-new ``tx_from`` at graft time, so no live-or-version interval
+        in *this* segment ever covers the original creation instant, even
+        though this segment does hold the graft-time doc -- exactly the
+        value the endorser accepted into this graph and the only
+        "assertion time" this segment can honestly speak to.
+
+        Earliest is the earliest closed ``:_EntityVersion`` snapshot (by
+        ``tx_from``) if the entity has been updated here since; otherwise
+        the live doc itself, which is then -- by construction, nothing has
+        superseded it in this segment -- the only incarnation on file, and
+        therefore trivially the earliest one too.
+
+        Local only: reads ``_read_doc`` directly rather than the
+        (possibly overridden) ``read_entity``, so a ``WorldGraphStore``
+        subclass never falls through to an ancestor's current live value
+        here -- that would silently reintroduce the same "current value
+        masquerading as assertion time" bug this method exists to close,
+        just one layer removed. Returns ``None`` only when this segment
+        has neither a version nor a live doc for the id at all (nothing
+        readable), the caller's signal to exclude and disclose rather than
+        fabricate.
+        """
+        version_rows = self._rows(
+            "MATCH (v:_EntityVersion {entity_id: $id}) "
+            "RETURN v._doc ORDER BY v.tx_from ASC LIMIT 1",
+            {"id": entity_id},
+        )
+        if version_rows:
+            return Entity.model_validate(json.loads(version_rows[0][0]))
+        doc = self._read_doc(entity_id)
+        return Entity.model_validate(doc) if doc is not None else None
 
     def read_graph_as_of(self, timestamp: str) -> GraphSnapshot:
         """The whole graph as it stood at ``timestamp`` (see the read port)."""
@@ -614,22 +715,27 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             )
             params["supersedesId"] = supersedes_doc["id"]
             params["supersedesDoc"] = json.dumps(dict(supersedes_doc))
-        self._commit(
-            ("".join(parts), params),
-            [
-                (
-                    "entities_merged",
-                    {
-                        "primary": dict(primary_doc),
-                        "secondary": dict(secondary_doc),
-                        "previousPrimary": dict(previous_primary),
-                        "previousSecondary": dict(previous_secondary),
-                        "redirectedRelations": [dict(doc) for doc in redirects],
-                        "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
-                    },
-                )
-            ],
-        )
+        events: list[tuple[str, dict[str, Any]]] = [
+            (
+                "entities_merged",
+                {
+                    "primary": dict(primary_doc),
+                    "secondary": dict(secondary_doc),
+                    "previousPrimary": dict(previous_primary),
+                    "previousSecondary": dict(previous_secondary),
+                    "redirectedRelations": [dict(doc) for doc in redirects],
+                    "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
+                },
+            )
+        ]
+        if supersedes_doc is not None:
+            # A real, separately event-logged creation -- not just a field
+            # on entities_merged's own payload -- so what-changed's/diff-
+            # worlds' ordinary relation_created differ sees it (a relation
+            # id with no dedicated event is invisible to both, not merely
+            # eventId: null).
+            events.append(("relation_created", {"relation": dict(supersedes_doc)}))
+        self._commit(("".join(parts), params), events)
 
     def list_entity_docs(self, filter: EntityFilter | None = None) -> list[dict[str, Any]]:
         """Verbatim wire docs, same filtering/order as list_entities."""
@@ -847,6 +953,147 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             },
         )
 
+    def adopt_relation(self, doc: Mapping[str, Any]) -> Relation:
+        """Materialize a verbatim copy of a relation doc read from elsewhere
+        into *this* graph — the relation twin of ``adopt_entity`` (see its
+        docstring for the full rationale). Both endpoints must already exist
+        in *this* graph (``WorldGraphStore`` adopts them first); no event,
+        for the same reason ``adopt_entity`` has none — the next real
+        mutation on this edge (``update_relation``/``delete_relation``)
+        carries it."""
+        doc = dict(doc)
+        self._commit(
+            (
+                "MATCH (a:_Entity {id: $from}), (b:_Entity {id: $to}) "
+                f"CREATE (a)-[:{doc['relationType']} {{id: $id, _doc: $doc}}]->(b)",
+                {
+                    "from": doc["from"],
+                    "to": doc["to"],
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                },
+            ),
+            [],
+        )
+        return Relation.model_validate(doc)
+
+    def graft_relation(self, doc: Mapping[str, Any]) -> Relation:
+        """Create a verbatim copy of a relation doc — id preserved — as a
+        REAL, event-logged creation: ``merge-world``'s counterpart to
+        ``adopt_relation`` (see ``graft_entity`` for the full rationale).
+
+        Both endpoints must already exist in this graph — checked ahead of
+        the commit (``_require_endpoints``'s own "pre-empting beats
+        compensating"), and again against the reply's own
+        ``relationships_created`` count in case a concurrent writer
+        retracted an endpoint between the check and the ``EXEC``. Without
+        the second check, a MATCH that silently matches zero rows would
+        still earn a real ``relation_created`` event and report success for
+        a graft that never happened — the same pathology
+        ``apply_entity_merge``'s docstring describes for its own MATCH-
+        gated statement, which this method shares (it is the closed set's
+        other MATCH-gated committing write; see
+        ``theloom.store.worlds.WorldGraphStore.graft_relation`` for the
+        copy-on-write half of this fix, needed when the caller is a
+        world-to-world merge rather than a merge into ``main``)."""
+        doc = dict(doc)
+        self._require_endpoints([doc])
+        results, event_ids = self._commit(
+            (
+                "MATCH (a:_Entity {id: $from}), (b:_Entity {id: $to}) "
+                f"CREATE (a)-[:{doc['relationType']} {{id: $id, _doc: $doc}}]->(b)",
+                {
+                    "from": doc["from"],
+                    "to": doc["to"],
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                },
+            ),
+            [("relation_created", {"relation": doc})],
+        )
+        if int(results[0].relationships_created) == 0:
+            # Lost a race with a concurrent delete between the pre-check and
+            # the EXEC: undo both halves so the caller's NOT_FOUND means
+            # what it says, the same compensation create_relations makes.
+            self._delete_relations_by_id([doc["id"]])
+            self._events.discard(event_ids)
+            raise NotFoundError(
+                f"Entity not found: relation endpoints must exist ({doc['from']!r}, {doc['to']!r})"
+            )
+        return Relation.model_validate(doc)
+
+    def relation_ids_known_live(self) -> set[str]:
+        """Every relation id this graph currently has an opinion about —
+        live, closed (a ``:_RelationVersion`` snapshot), or hard-deleted
+        with a tombstone (``:_RelationTombstone`` — see
+        ``theloom.store.worlds.WorldGraphStore.delete_relation``) —
+        regardless of when. Used by ``WorldGraphStore``'s overlay merge to
+        tell "this layer deleted an inherited relation" (shadow deeper
+        layers) apart from "this layer never heard of it" (fall through to
+        them), since ``list_relations`` alone cannot distinguish the two: a
+        closed or hard-deleted relation is simply absent from it either
+        way."""
+        live_rows = self._rows_paged("MATCH ()-[r]->() RETURN r.id")
+        closed_rows = self._rows_paged("MATCH (v:_RelationVersion) RETURN DISTINCT v.relation_id")
+        tombstoned_rows = self._rows_paged("MATCH (t:_RelationTombstone) RETURN t.id")
+        return (
+            {row[0] for row in live_rows}
+            | {row[0] for row in closed_rows}
+            | {row[0] for row in tombstoned_rows}
+        )
+
+    def relation_ids_known_as_of(self, timestamp: str) -> set[str]:
+        """``relation_ids_known_live``, bounded to what this graph knew *as
+        of* ``timestamp`` — the historical-layer form the overlay merge uses
+        once an ancestor's own state has been clamped to a fork point (a
+        later closure by that ancestor must not shadow a child that forked
+        away before it happened).
+
+        Built on ``_relations_as_of`` (the private half of
+        ``read_graph_as_of``) rather than ``read_graph_as_of`` itself: this
+        method is called as ``super().relation_ids_known_as_of(...)`` from
+        ``WorldGraphStore.read_graph_as_of``, and ``self.read_graph_as_of``
+        would resolve back to that same override through ordinary
+        (non-``super``) polymorphism — infinite recursion. ``_relations_as_of``
+        is never overridden, so it always reads *this* graph's own rows, plain
+        or world-local alike, with no entity-presence filtering to complicate
+        that (this method only needs relation ids, not a consistent snapshot).
+        """
+        open_ids = {relation.id for relation in self._relations_as_of(timestamp)}
+        closed_rows = self._rows_paged(
+            "MATCH (v:_RelationVersion) WHERE v.tx_to <= $t RETURN DISTINCT v.relation_id",
+            {"t": timestamp},
+        )
+        # Tombstones aren't time-bounded (a hard delete destroys history —
+        # see FalkorGraphStore's module docstring — so there is no earlier
+        # incarnation to resurrect for an as-of read either): once written,
+        # a tombstoned id is dead for every timestamp this method is asked
+        # about, matching a hard delete's own "absent from every snapshot"
+        # doctrine for a plain (non-world) graph.
+        tombstoned_rows = self._rows_paged("MATCH (t:_RelationTombstone) RETURN t.id")
+        return open_ids | {row[0] for row in closed_rows} | {row[0] for row in tombstoned_rows}
+
+    def entity_tombstoned(self, entity_id: str) -> bool:
+        """Whether ``entity_id`` was hard-deleted with a tombstone left
+        behind (``theloom.store.worlds.WorldGraphStore.delete_entity``'s
+        ``hard=True`` path). Only ever true in a belief world's own local
+        segment — a plain graph never writes one — checked by the overlay's
+        every entity read so a hard-deleted id is never resurrected by
+        falling through to an ancestor that still has it: the live node and
+        any ``:_EntityVersion`` history are both gone by design (a hard
+        delete destroys history), so nothing short of an explicit marker
+        can tell "erased here" apart from "never touched here"."""
+        return bool(
+            self._rows("MATCH (t:_EntityTombstone {id: $id}) RETURN t LIMIT 1", {"id": entity_id})
+        )
+
+    def entity_ids_tombstoned(self) -> set[str]:
+        """Every entity id hard-deleted (with a tombstone) in this graph —
+        the bulk form of ``entity_tombstoned``, for listing/snapshot reads
+        that need the whole set rather than one id at a time."""
+        rows = self._rows_paged("MATCH (t:_EntityTombstone) RETURN t.id")
+        return {row[0] for row in rows}
+
     def replay_creation_events(
         self,
         entity_docs: Sequence[Mapping[str, Any]],
@@ -861,7 +1108,12 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             ("entity_created", {"entity": dict(doc)}) for doc in entity_docs
         ]
         events += [("relation_created", {"relation": dict(doc)}) for doc in relation_docs]
-        self._events.append_many(events)
+        event_ids = self._events.append_many(events)
+        # Not routed through commit_steps (this is the bulk-import replay
+        # path, documented above as writing docs verbatim/unlogged and then
+        # appending their creation events as one separate batch) — so it
+        # records its own receipt rather than inheriting commit_steps'.
+        receipts.record(event_ids)
         return len(events)
 
     def _edge_rows(
@@ -944,16 +1196,28 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             "txFrom": current.get("created_at", now),
             "now": now,
         }
-        if merged["relationType"] != current["relationType"]:
-            # relationType is an updatable field; the edge is
-            # retyped structurally (delete + recreate, same id/doc) so Cypher
-            # type-filtered traversals stay consistent with the doc.
+        retyped = merged["relationType"] != current["relationType"]
+        redirected = merged["from"] != current["from"] or merged["to"] != current["to"]
+        if retyped or redirected:
+            # relationType and endpoints are both updatable fields, but
+            # Cypher has no SET for either (a relationship's type and its
+            # start/end nodes are structural, fixed at creation) -- so
+            # either kind of change is applied the same way: delete +
+            # recreate, same id/doc, snapshotted first exactly like the
+            # SET branch below. A WITH is required between the DELETE and
+            # the second MATCH (FalkorDB refuses to introduce a MATCH
+            # after an updating clause without one); harmless when only
+            # the type changed, since $newFrom/$newTo then equal the
+            # current endpoints and the second MATCH just re-finds the
+            # same two nodes DELETE didn't touch.
             step = (
-                "MATCH (a:_Entity {id: $from})-[r]->(b:_Entity {id: $to}) "
-                f"WHERE id(r) = $rid {snapshot_clause}DELETE r "
+                "MATCH ()-[r]->() WHERE id(r) = $rid "
+                f"{snapshot_clause}DELETE r "
+                "WITH 1 AS _skip "
+                "MATCH (a:_Entity {id: $newFrom}), (b:_Entity {id: $newTo}) "
                 f"CREATE (a)-[:{merged['relationType']} "
                 "{id: $eid, _doc: $doc, tx_from: $now}]->(b)",
-                {**params, "from": from_id, "to": to_id},
+                {**params, "newFrom": merged["from"], "newTo": merged["to"]},
             )
         else:
             step = (

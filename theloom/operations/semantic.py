@@ -39,6 +39,8 @@ from theloom.errors import NotFoundError
 from theloom.graph.metadata import coerce_observation
 from theloom.model import ALL_RELATION_TYPES, EmbeddingStatus, EntityFilter, EntityType
 from theloom.operations.common import CommandInput, UuidStr
+from theloom.operations.notices import list_envelope, notice, with_notices
+from theloom.semantic import landscape
 from theloom.semantic.embed import (
     EMBEDDING_DIMENSIONS,
     EMBEDDING_VERSION,
@@ -228,6 +230,10 @@ class WarmEmbedderInput(CommandInput):
     pass
 
 
+class EmbedderProfileInput(CommandInput):
+    pass
+
+
 class EmbeddingReconcileInput(CommandInput):
     dry_run: bool | None = Field(default=None, alias="dryRun")
     clean_orphans: bool | None = Field(default=None, alias="cleanOrphans")
@@ -324,6 +330,31 @@ _EMBED_TYPES_MSG = (
 )
 
 
+def _world_partial_notices(params: CommandInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): a world's overlay
+    reconstructs entities/relations from the event log, but a vector
+    attached via ``set_entity_vector`` is a direct Cypher property write
+    outside it (see ``theloom.store.falkor.FalkorGraphStore``'s module
+    docstring — updates snapshot, but ``_embedding`` is not part of the
+    versioned ``_doc``), so ``adopt_entity``'s copy-on-write never carries
+    it: a fork's vector index reflects only what was embedded *inside* that
+    fork, never what its parent already had embedded. An inherited entity
+    can therefore still report ``embeddingStatus: "completed"`` (a doc
+    field, correctly forked) while genuinely unsearchable in this world —
+    this notice says so instead of a command silently searching (or
+    reporting on) less than it appears to.
+    """
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's embeddings — this reflects "
+            "only entities embedded inside this world, not the ones inherited from its parent.",
+        )
+    ]
+
+
 def _embed_one(store: FalkorGraphStore, entity: Doc, skip_hash_check: bool) -> dict[str, Any]:
     """The pipeline's embedEntity: hash-skip, embed, store vector + metadata.
 
@@ -349,9 +380,10 @@ def embed_entity(params: EmbedEntityInput, multi: MultiGraph) -> dict[str, Any]:
     entity = store.read_entity(params.id)
     if entity is None:
         raise NotFoundError(f"Entity not found with ID: {params.id}")
-    return _embed_one(
+    result = _embed_one(
         store, entity.model_dump(by_alias=True, exclude_unset=True), skip_hash_check=False
     )
+    return with_notices(result, _world_partial_notices(params))
 
 
 def warm_embedder(params: WarmEmbedderInput, multi: MultiGraph) -> dict[str, Any]:
@@ -364,6 +396,34 @@ def warm_embedder(params: WarmEmbedderInput, multi: MultiGraph) -> dict[str, Any
         "model": EMBEDDING_VERSION,
         "dimensions": EMBEDDING_DIMENSIONS,
         "cacheDir": load_config().model_cache_dir,
+    }
+
+
+def embedder_profile(params: EmbedderProfileInput, multi: MultiGraph) -> dict[str, Any]:
+    """Desire 8 (claude-desires.md): the configured embedder's own empirical
+    similarity landscape, measured live against a small fixed probe corpus
+    (see theloom.semantic.landscape) — never a hard-coded constant. Every
+    number below is computed fresh from this invocation's embedder; editing
+    the probe corpus in theloom/semantic/landscape.py changes what the next
+    call reports."""
+    embedder = get_embedder()
+    profile = landscape.measure_landscape(embedder)
+    # Live-measured, not the EMBEDDING_DIMENSIONS constant: a swapped-in
+    # embedder (a test double, or a future model behind the same override
+    # point) may not share that constant's width.
+    dimensions = len(embedder.embed_query("dimension probe"))
+    return {
+        "model": EMBEDDING_VERSION,
+        "dimensions": dimensions,
+        "probeCorpus": {
+            "unrelatedPairCount": sum(1 for p in profile.pairs if p.relation == "unrelated"),
+            "relatedPairCount": sum(1 for p in profile.pairs if p.relation == "related"),
+            "pairs": [landscape.pair_doc(p) for p in profile.pairs],
+        },
+        "unrelatedPairBaseline": landscape.band_stats_doc(profile.unrelated_baseline),
+        "relatedPairRange": landscape.band_stats_doc(profile.related_range),
+        "meaningfullyRelatedCutoff": profile.meaningfully_related_cutoff,
+        "cutoffMethod": profile.cutoff_method,
     }
 
 
@@ -397,7 +457,7 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
         "totalBatches": max(1, math.ceil(total / batch_size)),
     }
     if total == 0:
-        return progress
+        return with_notices(progress, _world_partial_notices(params))
     for start in range(0, total, batch_size):
         progress["currentBatch"] += 1
         for entity in entities[start : start + batch_size]:
@@ -411,7 +471,7 @@ def embed_entities(params: EmbedEntitiesInput, multi: MultiGraph) -> dict[str, A
                 progress["skipped"] += 1
             else:
                 progress["failed"] += 1
-    return progress
+    return with_notices(progress, _world_partial_notices(params))
 
 
 def _batch_embed(store: FalkorGraphStore, entities: list[Doc]) -> dict[str, Any]:
@@ -466,7 +526,10 @@ def embedding_status(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]
     entities = _entity_docs(store)
     counts = status_counts(entities)
     counts["total"] = len(entities)
-    return {"counts": counts, "pipelineStatus": _empty_pipeline_status()}
+    return with_notices(
+        {"counts": counts, "pipelineStatus": _empty_pipeline_status()},
+        _world_partial_notices(params),
+    )
 
 
 def list_dead_letters(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any]:
@@ -484,12 +547,32 @@ def list_dead_letters(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any
         }
         for e in errored
     ]
-    return {"deadLetters": dead_letters, "count": len(dead_letters)}
+    return list_envelope(dead_letters)
 
 
 def embedding_reconcile(params: EmbeddingReconcileInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     dry_run = params.dry_run if params.dry_run is not None else True
+    in_fork = params.world not in (None, "main")
+    if in_fork and not dry_run:
+        # plan_reconcile compares the overlay's entity docs (which correctly
+        # include everything inherited) against get_entity_vectors() (which
+        # is NOT world-aware -- it only ever sees this world's own local
+        # vectors, per theloom.store.worlds.WorldGraphStore's documented
+        # boundary). Run for real here and every inherited-but-unembedded-
+        # in-this-fork entity looks like a genuine missing-vector case, so
+        # reconcile would clear embeddingStatus on entities that are, in
+        # truth, perfectly well embedded in their parent. A notice can't
+        # undo a wrong write already made on that basis -- refuse instead.
+        from theloom.errors import ValidationError
+
+        raise ValidationError(
+            f"embedding-reconcile cannot write against world '{params.world}': its vector "
+            "index only reflects entities embedded inside this world, so a non-dry run would "
+            "misclassify every inherited-but-locally-unembedded entity as missing a vector "
+            "and clear its embeddingStatus incorrectly. Retry with dryRun: true, or run "
+            "against 'main'."
+        )
     entities = _entity_docs(store)
     by_id = {e["id"]: e for e in entities}
     vector_ids = set(store.get_entity_vectors())
@@ -499,15 +582,18 @@ def embedding_reconcile(params: EmbeddingReconcileInput, multi: MultiGraph) -> d
             apply_reconcile_action(store, action, by_id[action.entity_id])
     status_fixed_missing = sum(1 for a in actions if a.kind == "clear_status")
     status_fixed_has = sum(1 for a in actions if a.kind == "mark_completed")
-    return {
-        "entitiesScanned": len(entities),
-        "statusFixedMissingVector": status_fixed_missing,
-        "statusFixedHasVector": status_fixed_has,
-        "duplicatesRemoved": 0,  # one vector property per node by construction
-        "reembedFailed": 0,
-        "orphanedRowsCleaned": 0,
-        "dryRun": dry_run,
-    }
+    return with_notices(
+        {
+            "entitiesScanned": len(entities),
+            "statusFixedMissingVector": status_fixed_missing,
+            "statusFixedHasVector": status_fixed_has,
+            "duplicatesRemoved": 0,  # one vector property per node by construction
+            "reembedFailed": 0,
+            "orphanedRowsCleaned": 0,
+            "dryRun": dry_run,
+        },
+        _world_partial_notices(params),
+    )
 
 
 # =============================================================================
@@ -549,7 +635,7 @@ def _keyword_scores(
     return matches
 
 
-def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     results = _search_similar(
         store,
@@ -558,18 +644,21 @@ def semantic_search(params: SemanticSearchInput, multi: MultiGraph) -> list[dict
         min_score=params.min_score,
         entity_types=_as_type_list(params.entity_type),
     )
-    return [
-        {
-            "entityId": r["id"],
-            "name": r["metadata"]["name"],
-            "entityType": r["metadata"]["entityType"],
-            "score": r["score"],
-            "scores": {"vector": r["score"], "keyword": 0, "graph": 0},
-            "matchSource": "semantic",
-            "entryType": r["metadata"]["entryType"],
-        }
-        for r in results
-    ]
+    return list_envelope(
+        [
+            {
+                "entityId": r["id"],
+                "name": r["metadata"]["name"],
+                "entityType": r["metadata"]["entityType"],
+                "score": r["score"],
+                "scores": {"vector": r["score"], "keyword": 0, "graph": 0},
+                "matchSource": "semantic",
+                "entryType": r["metadata"]["entryType"],
+            }
+            for r in results
+        ],
+        _world_partial_notices(params),
+    )
 
 
 def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any]:
@@ -605,7 +694,10 @@ def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any
         entity_types=_as_type_list(params.entity_type),
     )
     if not hits:
-        return {"results": [], "totalCandidates": 0, "qualityGroups": 0, "query": query_summary}
+        return with_notices(
+            {"results": [], "totalCandidates": 0, "qualityGroups": 0, "query": query_summary},
+            _world_partial_notices(params),
+        )
 
     vector_rows = [
         {
@@ -655,12 +747,15 @@ def hybrid_search(params: HybridSearchInput, multi: MultiGraph) -> dict[str, Any
     if quality_grouping and results:
         results, quality_groups = assign_quality_groups(results, strategy)
 
-    return {
-        "results": results,
-        "totalCandidates": len(vector_rows) + len(graph_rows),
-        "qualityGroups": quality_groups,
-        "query": query_summary,
-    }
+    return with_notices(
+        {
+            "results": results,
+            "totalCandidates": len(vector_rows) + len(graph_rows),
+            "qualityGroups": quality_groups,
+            "query": query_summary,
+        },
+        _world_partial_notices(params),
+    )
 
 
 # =============================================================================
@@ -676,7 +771,7 @@ def _connected_ids(store: FalkorGraphStore, entity_id: str) -> set[str]:
     return connected
 
 
-def semantic_neighbors(params: SemanticNeighborsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def semantic_neighbors(params: SemanticNeighborsInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     entity = store.read_entity(params.entity_id)
     if entity is None:
@@ -705,7 +800,7 @@ def semantic_neighbors(params: SemanticNeighborsInput, multi: MultiGraph) -> lis
         if r["id"] not in connected
     ]
     neighbors.sort(key=lambda n: -float(n["similarity"]))
-    return neighbors[:limit]
+    return list_envelope(neighbors[:limit], _world_partial_notices(params))
 
 
 def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any]:
@@ -718,7 +813,10 @@ def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any
         filter = EntityFilter.model_validate({"entityType": params.entity_type.value})
     all_entities = _entity_docs(store, filter)
     if not all_entities:
-        return {"clusters": [], "sampled": False, "totalEntities": 0, "sampledEntities": 0}
+        return with_notices(
+            {"clusters": [], "sampled": False, "totalEntities": 0, "sampledEntities": 0},
+            _world_partial_notices(params),
+        )
     sampled = len(all_entities) > max_entities
     if sampled:
         step = len(all_entities) / max_entities
@@ -773,22 +871,25 @@ def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any
         )
         cluster_id += 1
     clusters.sort(key=lambda c: -int(str(c["size"])))
-    return {
-        "clusters": clusters,
-        "sampled": sampled,
-        "totalEntities": len(all_entities),
-        "sampledEntities": len(entities),
-    }
+    return with_notices(
+        {
+            "clusters": clusters,
+            "sampled": sampled,
+            "totalEntities": len(all_entities),
+            "sampledEntities": len(entities),
+        },
+        _world_partial_notices(params),
+    )
 
 
-def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     limit = params.limit or 20
     min_similarity = params.min_similarity if params.min_similarity is not None else 0.6
     max_entities = params.max_entities or 200
     entities = _spread_sample(_entity_docs(store), max_entities, params.seed)
     if not entities:
-        return []
+        return list_envelope([], _world_partial_notices(params))
     index = {
         e["id"]: {"id": e["id"], "name": e["name"], "entityType": e["entityType"]} for e in entities
     }
@@ -822,10 +923,10 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> list[dict[str
                 }
             )
     gaps.sort(key=lambda g: -float(g["similarity"]))
-    return gaps[:limit]
+    return list_envelope(gaps[:limit], _world_partial_notices(params))
 
 
-def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> list[dict[str, Any]]:
+def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     entity = store.read_entity(params.entity_id)
     if entity is None:
@@ -849,7 +950,7 @@ def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> list[
             }
         ),
         multi,
-    )
+    )["items"]
 
     id_to_type = {e["id"]: e["entityType"] for e in _entity_docs(store)}
     pair_freq: dict[str, dict[str, Any]] = {}
@@ -892,7 +993,11 @@ def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> list[
             row["suggestedRelationType"] = suggested
         suggestions.append(row)
     suggestions.sort(key=lambda s: -float(s["confidence"]))
-    return suggestions[:limit]
+    # suggest_relations calls semantic_neighbors directly (see above), which
+    # already computes and would otherwise silently drop this notice on the
+    # `["items"]` extraction above — emit it explicitly here too, since this
+    # command inherits the same partial-embeddings-in-a-fork exposure.
+    return list_envelope(suggestions[:limit], _world_partial_notices(params))
 
 
 def resolve_gaps(params: ResolveGapsInput, multi: MultiGraph) -> dict[str, Any]:
@@ -920,7 +1025,7 @@ def resolve_gaps(params: ResolveGapsInput, multi: MultiGraph) -> dict[str, Any]:
     )
     resolved: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
-    for gap in gaps:
+    for gap in gaps["items"]:
         similarity = float(gap["similarity"])
         if similarity < threshold:
             continue
@@ -962,4 +1067,12 @@ def resolve_gaps(params: ResolveGapsInput, multi: MultiGraph) -> dict[str, Any]:
             )
             item["relationCreated"] = True
         resolved.append(item)
-    return {"analyzed": len(gaps), "resolved": resolved, "skipped": skipped, "dryRun": dry_run}
+    return with_notices(
+        {
+            "analyzed": len(gaps["items"]),
+            "resolved": resolved,
+            "skipped": skipped,
+            "dryRun": dry_run,
+        },
+        _world_partial_notices(params),
+    )

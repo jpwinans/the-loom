@@ -29,7 +29,7 @@ from theloom.documents.ingestion import (
 )
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.operations.common import CommandInput
-from theloom.operations.notices import notice, with_notices
+from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.semantic.embed import cosine_similarity
 from theloom.store.multigraph import MultiGraph
 
@@ -88,16 +88,6 @@ def _graph_ignored_notices(params: Any) -> list[Doc]:
             hint=_GRAPH_IGNORED_NOTICE_HINT,
         )
     ]
-
-
-def _attach_graph_notices(items: list[Doc], params: Any) -> list[Doc]:
-    """`_graph_ignored_notices` for a list-returning command: the notice is
-    attached to every item since the response itself is a bare array with no
-    top-level slot for one (`ingest-directory`, `list-documents`)."""
-    notices = _graph_ignored_notices(params)
-    if not notices:
-        return items
-    return [with_notices(item, notices=notices) for item in items]
 
 
 def _engine(multi: MultiGraph) -> DocumentIngestion:
@@ -223,13 +213,13 @@ def ingest_document(params: IngestDocumentInput, multi: MultiGraph) -> Doc:
     return with_notices(result, notices=_graph_ignored_notices(params))
 
 
-def ingest_directory(params: IngestDirectoryInput, multi: MultiGraph) -> list[Doc]:
+def ingest_directory(params: IngestDirectoryInput, multi: MultiGraph) -> Doc:
     options = {"category": params.category, "chunkOptions": _chunk_options(params)}
     try:
         results = _engine(multi).ingest_directory(params.dir_path, params.pattern, options)
     except IngestionError as exc:
         raise _translate(exc) from exc
-    return _attach_graph_notices(results, params)
+    return list_envelope(results, notices=_graph_ignored_notices(params))
 
 
 def ingest_url(params: IngestUrlInput, multi: MultiGraph) -> Doc:
@@ -260,9 +250,9 @@ def ingest_content(params: IngestContentInput, multi: MultiGraph) -> Doc:
     return with_notices(result, notices=_graph_ignored_notices(params))
 
 
-def list_documents(params: ListDocumentsInput, multi: MultiGraph) -> list[Doc]:
+def list_documents(params: ListDocumentsInput, multi: MultiGraph) -> Doc:
     results = _engine(multi).list_documents(params.category)
-    return _attach_graph_notices(results, params)
+    return list_envelope(results, notices=_graph_ignored_notices(params))
 
 
 def delete_document(params: DeleteDocumentInput, multi: MultiGraph) -> Doc:

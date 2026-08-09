@@ -10,7 +10,12 @@ from __future__ import annotations
 import pytest
 
 from theloom.errors import ValidationError
-from theloom.operations.analysis import AnalyzeCentralityInput, analyze_centrality
+from theloom.operations.analysis import (
+    AnalyzeCentralityInput,
+    DetectComponentsInput,
+    analyze_centrality,
+    detect_components,
+)
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.operations.relations import CreateRelationInput, create_relation
 from theloom.store.multigraph import MultiGraph
@@ -75,3 +80,27 @@ def test_analyze_centrality_invalid_algorithm_raises(multi: MultiGraph) -> None:
     ent(multi, "Solo")
     with pytest.raises(ValidationError):
         analyze_centrality(AnalyzeCentralityInput(algorithm="nonsense"), multi)
+
+
+# =============================================================================
+# detect-components: componentNames travels index-for-index with components
+# (desire 11) — components itself stays list[list[id]] (viz/analytics.py
+# feeds it straight into AnalyticsSection.components, a fixed list[list[str]]
+# the frontend already depends on).
+# =============================================================================
+
+
+def test_detect_components_component_names_mirrors_components(multi: MultiGraph) -> None:
+    a, b = ent(multi, "Alpha"), ent(multi, "Beta")
+    rel(multi, a, b)
+    solo = ent(multi, "Solo")
+
+    result = detect_components(DetectComponentsInput(), multi)
+
+    assert len(result["componentNames"]) == len(result["components"])
+    by_ids = {
+        frozenset(component): names
+        for component, names in zip(result["components"], result["componentNames"], strict=True)
+    }
+    assert set(by_ids[frozenset([a, b])]) == {"Alpha", "Beta"}
+    assert by_ids[frozenset([solo])] == ["Solo"]

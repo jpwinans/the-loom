@@ -25,7 +25,7 @@ from theloom.model import (
     RelationType,
 )
 from theloom.operations.common import CommandInput
-from theloom.operations.notices import notice, with_notices
+from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -342,11 +342,25 @@ def inference_rule_create(params: InferenceRuleCreateInput, multi: MultiGraph) -
     }
     if rule.enabled is not None:
         result["enabled"] = rule.enabled
-    return result
+    notices = []
+    if rule.enabled is not True:
+        notices.append(
+            notice(
+                "RULE_DISABLED",
+                "This rule was stored without `enabled: true`, so run-inference "
+                "will never evaluate it.",
+                hint=(
+                    'Re-create the rule with `rule: {"enabled": true, ...}` '
+                    "(there is no enable/update command; inference-rule-create "
+                    "is the only way to write a rule besides inference-rule-delete)."
+                ),
+            )
+        )
+    return with_notices(result, notices)
 
 
-def inference_rule_list(params: InferenceRuleListInput, multi: MultiGraph) -> list[Doc]:
-    return _rules(_store(multi, params.graph))
+def inference_rule_list(params: InferenceRuleListInput, multi: MultiGraph) -> Doc:
+    return list_envelope(_rules(_store(multi, params.graph)))
 
 
 def inference_rule_delete(params: InferenceRuleDeleteInput, multi: MultiGraph) -> Doc:
@@ -591,7 +605,7 @@ def _traces(store: FalkorGraphStore) -> list[Doc]:
     return [t for t in (_entity_to_trace(d) for d in docs) if t is not None]
 
 
-def inference_trace_list(params: InferenceTraceListInput, multi: MultiGraph) -> list[Doc]:
+def inference_trace_list(params: InferenceTraceListInput, multi: MultiGraph) -> Doc:
     traces = _traces(_store(multi, params.graph))
     if params.rule_id is not None:
         traces = [
@@ -602,7 +616,7 @@ def inference_trace_list(params: InferenceTraceListInput, multi: MultiGraph) -> 
         ]
     traces.sort(key=lambda t: t["timestamp"], reverse=True)
     limit = params.limit if params.limit is not None else 50
-    return traces[:limit]
+    return list_envelope(traces[:limit])
 
 
 def _get_trace(store: FalkorGraphStore, trace_id: str) -> Doc | None:

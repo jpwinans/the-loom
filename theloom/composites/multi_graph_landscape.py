@@ -83,7 +83,7 @@ def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -
         focus_graph = params.graph
 
         def _related_specific() -> dict[str, list[str]]:
-            return {focus_graph: find_related_graphs(GraphInput(graph=focus_graph), multi)}
+            return {focus_graph: find_related_graphs(GraphInput(graph=focus_graph), multi)["items"]}
 
         related_section = time_section(_related_specific)
     elif graphs_unavailable:
@@ -92,7 +92,7 @@ def multi_graph_landscape(params: MultiGraphLandscapeInput, multi: MultiGraph) -
 
         def _related_all() -> dict[str, list[str]]:
             return {
-                g["name"]: find_related_graphs(GraphInput(graph=g["name"]), multi)
+                g["name"]: find_related_graphs(GraphInput(graph=g["name"]), multi)["items"]
                 for g in graphs_section["data"]
             }
 

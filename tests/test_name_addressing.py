@@ -245,7 +245,7 @@ def test_get_neighbors_by_name(multi: MultiGraph) -> None:
     by_id = get_neighbors(GetNeighborsInput.model_validate({"entityId": a}), multi)
     by_name = get_neighbors(GetNeighborsInput.model_validate({"name": "alpha"}), multi)
     assert by_name == by_id
-    assert [n["id"] for n in by_name] == [b]
+    assert [n["id"] for n in by_name["items"]] == [b]
 
 
 def test_entity_deep_dive_by_name(multi: MultiGraph) -> None:

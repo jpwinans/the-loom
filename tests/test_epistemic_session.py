@@ -8,6 +8,9 @@ added directly. Each query threads the session through to ``_list()`` /
 ``session`` field, with the legacy ``"subgraph: {sid}-{qid}"`` observation tag
 accepted as a fallback. Omitting ``session`` must leave every query's
 behavior unchanged.
+
+Every query below returns the uniform ``{items, count, notices?}`` envelope
+(desire 9); these tests operate on ``result["items"]``.
 """
 
 from __future__ import annotations
@@ -105,15 +108,15 @@ def test_uncertain_claims_scopes_by_session(multi: MultiGraph) -> None:
         multi, "Uncertain", entityType="claim", confidence=conf
     )
 
-    scoped = uncertain_claims(UncertainClaimsInput.model_validate({"session": S1}), multi)
+    scoped = uncertain_claims(UncertainClaimsInput.model_validate({"session": S1}), multi)["items"]
     assert [r["entity"]["id"] for r in scoped] == [tagged["id"]]
 
     legacy_scoped = uncertain_claims(
         UncertainClaimsInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [r["entity"]["id"] for r in legacy_scoped] == [legacy["id"]]
 
-    unscoped = uncertain_claims(UncertainClaimsInput.model_validate({}), multi)
+    unscoped = uncertain_claims(UncertainClaimsInput.model_validate({}), multi)["items"]
     assert {r["entity"]["id"] for r in unscoped} == {
         tagged["id"],
         other["id"],
@@ -126,13 +129,15 @@ def test_stale_beliefs_scopes_by_session(multi: MultiGraph) -> None:
     # No confidence at all => "never evaluated" => always stale.
     tagged, other, legacy, plain = make_four(multi, "Stale")
 
-    scoped = stale_beliefs(StaleBeliefsInput.model_validate({"session": S1}), multi)
+    scoped = stale_beliefs(StaleBeliefsInput.model_validate({"session": S1}), multi)["items"]
     assert [r["entity"]["id"] for r in scoped] == [tagged["id"]]
 
-    legacy_scoped = stale_beliefs(StaleBeliefsInput.model_validate({"session": LEGACY_SID}), multi)
+    legacy_scoped = stale_beliefs(StaleBeliefsInput.model_validate({"session": LEGACY_SID}), multi)[
+        "items"
+    ]
     assert [r["entity"]["id"] for r in legacy_scoped] == [legacy["id"]]
 
-    unscoped = stale_beliefs(StaleBeliefsInput.model_validate({}), multi)
+    unscoped = stale_beliefs(StaleBeliefsInput.model_validate({}), multi)["items"]
     assert {r["entity"]["id"] for r in unscoped} == {
         tagged["id"],
         other["id"],
@@ -145,13 +150,15 @@ def test_most_certain_scopes_by_session(multi: MultiGraph) -> None:
     conf = {"score": 0.95, "basis": "direct_observation"}
     tagged, other, legacy, plain = make_four(multi, "Certain", confidence=conf)
 
-    scoped = most_certain(MostCertainInput.model_validate({"session": S1}), multi)
+    scoped = most_certain(MostCertainInput.model_validate({"session": S1}), multi)["items"]
     assert [r["entity"]["id"] for r in scoped] == [tagged["id"]]
 
-    legacy_scoped = most_certain(MostCertainInput.model_validate({"session": LEGACY_SID}), multi)
+    legacy_scoped = most_certain(MostCertainInput.model_validate({"session": LEGACY_SID}), multi)[
+        "items"
+    ]
     assert [r["entity"]["id"] for r in legacy_scoped] == [legacy["id"]]
 
-    unscoped = most_certain(MostCertainInput.model_validate({}), multi)
+    unscoped = most_certain(MostCertainInput.model_validate({}), multi)["items"]
     assert {r["entity"]["id"] for r in unscoped} == {
         tagged["id"],
         other["id"],
@@ -164,15 +171,15 @@ def test_inferred_claims_scopes_by_session(multi: MultiGraph) -> None:
     conf = {"score": 0.5, "basis": "inference"}
     tagged, other, legacy, plain = make_four(multi, "Inferred", confidence=conf)
 
-    scoped = inferred_claims(TypedEpistemicInput.model_validate({"session": S1}), multi)
+    scoped = inferred_claims(TypedEpistemicInput.model_validate({"session": S1}), multi)["items"]
     assert [e["id"] for e in scoped] == [tagged["id"]]
 
     legacy_scoped = inferred_claims(
         TypedEpistemicInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [e["id"] for e in legacy_scoped] == [legacy["id"]]
 
-    unscoped = inferred_claims(TypedEpistemicInput.model_validate({}), multi)
+    unscoped = inferred_claims(TypedEpistemicInput.model_validate({}), multi)["items"]
     assert {e["id"] for e in unscoped} == {
         tagged["id"],
         other["id"],
@@ -185,15 +192,15 @@ def test_unprovenanced_scopes_by_session(multi: MultiGraph) -> None:
     # None of the entities have a provenance argument, so all qualify.
     tagged, other, legacy, plain = make_four(multi, "Unprovenanced")
 
-    scoped = unprovenanced(TypedEpistemicInput.model_validate({"session": S1}), multi)
+    scoped = unprovenanced(TypedEpistemicInput.model_validate({"session": S1}), multi)["items"]
     assert [e["id"] for e in scoped] == [tagged["id"]]
 
     legacy_scoped = unprovenanced(
         TypedEpistemicInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [e["id"] for e in legacy_scoped] == [legacy["id"]]
 
-    unscoped = unprovenanced(TypedEpistemicInput.model_validate({}), multi)
+    unscoped = unprovenanced(TypedEpistemicInput.model_validate({}), multi)["items"]
     assert {e["id"] for e in unscoped} == {
         tagged["id"],
         other["id"],
@@ -205,15 +212,15 @@ def test_unprovenanced_scopes_by_session(multi: MultiGraph) -> None:
 def test_open_questions_scopes_by_session(multi: MultiGraph) -> None:
     tagged, other, legacy, plain = make_four(multi, "Question", entityType="question")
 
-    scoped = open_questions(EpistemicQueryInput.model_validate({"session": S1}), multi)
+    scoped = open_questions(EpistemicQueryInput.model_validate({"session": S1}), multi)["items"]
     assert [e["id"] for e in scoped] == [tagged["id"]]
 
     legacy_scoped = open_questions(
         EpistemicQueryInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [e["id"] for e in legacy_scoped] == [legacy["id"]]
 
-    unscoped = open_questions(EpistemicQueryInput.model_validate({}), multi)
+    unscoped = open_questions(EpistemicQueryInput.model_validate({}), multi)["items"]
     assert {e["id"] for e in unscoped} == {
         tagged["id"],
         other["id"],
@@ -230,15 +237,15 @@ def test_open_questions_scopes_by_session(multi: MultiGraph) -> None:
 def test_needs_evidence_scopes_by_session(multi: MultiGraph) -> None:
     tagged, other, legacy, plain = make_four(multi, "NeedsEvidence", entityType="claim")
 
-    scoped = needs_evidence(NeedsEvidenceInput.model_validate({"session": S1}), multi)
+    scoped = needs_evidence(NeedsEvidenceInput.model_validate({"session": S1}), multi)["items"]
     assert [r["entity"]["id"] for r in scoped] == [tagged["id"]]
 
     legacy_scoped = needs_evidence(
         NeedsEvidenceInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [r["entity"]["id"] for r in legacy_scoped] == [legacy["id"]]
 
-    unscoped = needs_evidence(NeedsEvidenceInput.model_validate({}), multi)
+    unscoped = needs_evidence(NeedsEvidenceInput.model_validate({}), multi)["items"]
     assert {r["entity"]["id"] for r in unscoped} == {
         tagged["id"],
         other["id"],
@@ -253,15 +260,17 @@ def test_single_source_claims_scopes_by_session(multi: MultiGraph) -> None:
     for claim in (tagged, other, legacy, plain):
         make_relation(multi, claim["id"], src["id"], relationType="sources")
 
-    scoped = single_source_claims(EpistemicQueryInput.model_validate({"session": S1}), multi)
+    scoped = single_source_claims(EpistemicQueryInput.model_validate({"session": S1}), multi)[
+        "items"
+    ]
     assert [c["id"] for c in scoped] == [tagged["id"]]
 
     legacy_scoped = single_source_claims(
         EpistemicQueryInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [c["id"] for c in legacy_scoped] == [legacy["id"]]
 
-    unscoped = single_source_claims(EpistemicQueryInput.model_validate({}), multi)
+    unscoped = single_source_claims(EpistemicQueryInput.model_validate({}), multi)["items"]
     assert {c["id"] for c in unscoped} == {
         tagged["id"],
         other["id"],
@@ -278,15 +287,15 @@ def test_contested_claims_scopes_by_session(multi: MultiGraph) -> None:
         make_relation(multi, supporter["id"], claim["id"], relationType="supports")
         make_relation(multi, opposer["id"], claim["id"], relationType="contradicts")
 
-    scoped = contested_claims(EpistemicQueryInput.model_validate({"session": S1}), multi)
+    scoped = contested_claims(EpistemicQueryInput.model_validate({"session": S1}), multi)["items"]
     assert [r["entity"]["id"] for r in scoped] == [tagged["id"]]
 
     legacy_scoped = contested_claims(
         EpistemicQueryInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [r["entity"]["id"] for r in legacy_scoped] == [legacy["id"]]
 
-    unscoped = contested_claims(EpistemicQueryInput.model_validate({}), multi)
+    unscoped = contested_claims(EpistemicQueryInput.model_validate({}), multi)["items"]
     assert {r["entity"]["id"] for r in unscoped} == {
         tagged["id"],
         other["id"],
@@ -303,17 +312,17 @@ def test_claims_from_source_scopes_by_session(multi: MultiGraph) -> None:
 
     scoped = claims_from_source(
         ClaimsFromSourceInput.model_validate({"sourceId": src["id"], "session": S1}), multi
-    )
+    )["items"]
     assert [e["id"] for e in scoped] == [tagged["id"]]
 
     legacy_scoped = claims_from_source(
         ClaimsFromSourceInput.model_validate({"sourceId": src["id"], "session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [e["id"] for e in legacy_scoped] == [legacy["id"]]
 
     unscoped = claims_from_source(
         ClaimsFromSourceInput.model_validate({"sourceId": src["id"]}), multi
-    )
+    )["items"]
     assert {e["id"] for e in unscoped} == {
         tagged["id"],
         other["id"],
@@ -333,15 +342,17 @@ def test_blocking_questions_scopes_by_session(multi: MultiGraph) -> None:
         blocked = make_entity(multi, f"Blocked by {question['id']}", entityType="concept")
         make_relation(multi, question["id"], blocked["id"], relationType="requires", polarity=None)
 
-    scoped = blocking_questions(BlockingQuestionsInput.model_validate({"session": S1}), multi)
+    scoped = blocking_questions(BlockingQuestionsInput.model_validate({"session": S1}), multi)[
+        "items"
+    ]
     assert [r["entity"]["id"] for r in scoped] == [tagged["id"]]
 
     legacy_scoped = blocking_questions(
         BlockingQuestionsInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [r["entity"]["id"] for r in legacy_scoped] == [legacy["id"]]
 
-    unscoped = blocking_questions(BlockingQuestionsInput.model_validate({}), multi)
+    unscoped = blocking_questions(BlockingQuestionsInput.model_validate({}), multi)["items"]
     assert {r["entity"]["id"] for r in unscoped} == {
         tagged["id"],
         other["id"],
@@ -356,15 +367,17 @@ def test_answered_questions_scopes_by_session(multi: MultiGraph) -> None:
         answer = make_entity(multi, f"Answer to {question['id']}", entityType="evidence")
         make_relation(multi, answer["id"], question["id"], relationType="supports")
 
-    scoped = answered_questions(AnsweredQuestionsInput.model_validate({"session": S1}), multi)
+    scoped = answered_questions(AnsweredQuestionsInput.model_validate({"session": S1}), multi)[
+        "items"
+    ]
     assert [e["id"] for e in scoped] == [tagged["id"]]
 
     legacy_scoped = answered_questions(
         AnsweredQuestionsInput.model_validate({"session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert [e["id"] for e in legacy_scoped] == [legacy["id"]]
 
-    unscoped = answered_questions(AnsweredQuestionsInput.model_validate({}), multi)
+    unscoped = answered_questions(AnsweredQuestionsInput.model_validate({}), multi)["items"]
     assert {e["id"] for e in unscoped} == {
         tagged["id"],
         other["id"],
@@ -389,17 +402,17 @@ def test_provenance_chain_scopes_by_session(multi: MultiGraph) -> None:
 
     scoped = provenance_chain(
         ProvenanceChainInput.model_validate({"entityId": start["id"], "session": S1}), multi
-    )
+    )["items"]
     assert {item["entity"]["id"] for item in scoped} == {start["id"], tagged["id"]}
 
     legacy_scoped = provenance_chain(
         ProvenanceChainInput.model_validate({"entityId": start["id"], "session": LEGACY_SID}), multi
-    )
+    )["items"]
     assert {item["entity"]["id"] for item in legacy_scoped} == {start["id"], legacy["id"]}
 
     unscoped = provenance_chain(
         ProvenanceChainInput.model_validate({"entityId": start["id"]}), multi
-    )
+    )["items"]
     assert {item["entity"]["id"] for item in unscoped} == {
         start["id"],
         tagged["id"],

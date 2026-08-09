@@ -82,13 +82,17 @@ def test_output_shape_is_exactly_the_contract(multi: MultiGraph) -> None:
     result = merge(multi, primary["id"], secondary["id"])
     assert set(result) == {
         "primaryId",
+        "primaryName",
         "secondaryId",
+        "secondaryName",
         "observationsMerged",
         "relationsRedirected",
         "dryRun",
     }
     assert result["primaryId"] == primary["id"]
+    assert result["primaryName"] == "Primary"
     assert result["secondaryId"] == secondary["id"]
+    assert result["secondaryName"] == "Secondary"
     assert result["dryRun"] is False
 
 
@@ -333,7 +337,9 @@ def test_dry_run_previews_without_mutating(
     result = merge(multi, primary["id"], secondary["id"], dryRun=True)
     assert result == {
         "primaryId": primary["id"],
+        "primaryName": "Primary",
         "secondaryId": secondary["id"],
+        "secondaryName": "Secondary",
         "observationsMerged": 1,
         "relationsRedirected": 1,
         "dryRun": True,

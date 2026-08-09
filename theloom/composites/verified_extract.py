@@ -163,7 +163,7 @@ def verified_extract(params: VerifiedExtractInput, multi: MultiGraph) -> dict[st
                     "totalEntitiesAffected": r["totalEntitiesAffected"],
                     "maxDepthReached": r["maxDepthReached"],
                 }
-                for r in results
+                for r in results["items"]
             ]
         }
 
@@ -177,7 +177,7 @@ def verified_extract(params: VerifiedExtractInput, multi: MultiGraph) -> dict[st
                     "supportCount": r["supportCount"],
                     "contradictCount": r["contradictCount"],
                 }
-                for r in results
+                for r in results["items"]
             ]
         }
 

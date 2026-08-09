@@ -161,7 +161,9 @@ def merge_entities(params: MergeEntitiesInput, multi: MultiGraph) -> Doc:
 
     result: Doc = {
         "primaryId": params.primary,
+        "primaryName": primary["name"],
         "secondaryId": params.secondary,
+        "secondaryName": secondary["name"],
         "observationsMerged": observations_merged,
         "relationsRedirected": len(redirects),
         "dryRun": params.dry_run is True,

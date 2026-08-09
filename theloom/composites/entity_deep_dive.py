@@ -147,7 +147,7 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
                     {"entityId": entity_id, "graph": graph, "compact": True}
                 ),
                 multi,
-            )
+            )["items"]
         return compact_neighbors
 
     def _neighbor_lookup() -> dict[str, dict[str, Any]]:
@@ -159,13 +159,13 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
                 {"entityId": entity_id, "direction": "outgoing", "graph": graph}
             ),
             multi,
-        )
+        )["items"]
         incoming = get_relations(
             GetRelationsInput.model_validate(
                 {"entityId": entity_id, "direction": "incoming", "graph": graph}
             ),
             multi,
-        )
+        )["items"]
         if params.full:
             return {
                 "outgoing": [_to_relation(r) for r in outgoing],
@@ -189,7 +189,7 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
                     "name": n.get("name", n["id"]),
                     "entityType": n.get("entityType", "unknown"),
                 }
-                for n in result
+                for n in result["items"]
             ]
         return [
             {
@@ -248,7 +248,7 @@ def entity_deep_dive(params: EntityDeepDiveInput, multi: MultiGraph) -> dict[str
                     "entityType": r["entityType"],
                     "score": r["score"],
                 }
-                for r in results
+                for r in results["items"]
                 if r["entityId"] != entity_id
             ]
         except Exception:  # noqa: BLE001 — degrade to [] on any failure.

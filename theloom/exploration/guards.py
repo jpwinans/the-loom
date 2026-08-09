@@ -8,7 +8,7 @@ The six patterns: echo_chamber, semantic_gravity_well, comfort_zone,
 random_walk, noisy_tv_trap, breadth_addiction.
 
 All recommendation strings, thresholds, and severity ladders are fixed. The
-comfort-zone divisor is ``len(ALL_ENTITY_TYPES)`` which is 19 for this model.
+comfort-zone divisor is ``len(ALL_ENTITY_TYPES)`` which is 20 for this model.
 """
 
 from __future__ import annotations

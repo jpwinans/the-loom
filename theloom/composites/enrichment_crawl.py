@@ -263,7 +263,7 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
             ),
             multi,
         )
-        return [(n["entity"]["id"], float(n["similarity"])) for n in neighbors]
+        return [(n["entity"]["id"], float(n["similarity"])) for n in neighbors["items"]]
 
     def _crawl() -> Doc:
         graph: LoomGraph = state["graph"]
@@ -277,12 +277,12 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
 
         for node in state["frontier"]:
             entity_id = str(node["id"])
-            existing = get_relations(
+            existing_count = get_relations(
                 GetRelationsInput.model_validate(
                     {"entityId": entity_id, **({"graph": params.graph} if params.graph else {})}
                 ),
                 multi,
-            )
+            )["count"]
             scored: dict[str, Doc] = {}
             for other_id, score in _closure_candidates(graph, entity_id):
                 scored[other_id] = {"confidence": score, "sources": ["common-neighbors"]}
@@ -347,7 +347,7 @@ def enrichment_crawl(params: EnrichmentCrawlInput, multi: MultiGraph) -> dict[st
                 {
                     "entityId": entity_id,
                     "name": node["name"],
-                    "existingRelations": len(existing),
+                    "existingRelations": existing_count,
                     "candidatesProposed": accepted,
                 }
             )

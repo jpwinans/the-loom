@@ -47,7 +47,7 @@ from theloom.model import (
     RelationType,
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
-from theloom.operations.notices import notice, with_notices
+from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 
@@ -314,12 +314,22 @@ def analyze_centrality(params: AnalyzeCentralityInput, multi: MultiGraph) -> dic
 
 
 def detect_components(params: DetectComponentsInput, multi: MultiGraph) -> dict[str, Any]:
-    _, _, graph = _hydrated(multi.get_store(params.graph))
+    entities, _, graph = _hydrated(multi.get_store(params.graph))
     components = (
         strongly_connected_components(graph) if params.strong else connected_components(graph)
     )
+    # `components` stays list[list[id]] (viz/analytics.py feeds it straight
+    # into AnalyticsSection.components, a fixed list[list[str]] the frontend
+    # already depends on) — componentNames is index-for-index parallel to it
+    # (desire 11: self-describing without a join, additive rather than a
+    # reshape of an existing wire contract).
+    names = {e["id"]: e["name"] for e in entities}
+    component_names = [
+        [names.get(member_id) for member_id in component] for component in components
+    ]
     return {
         "components": components,
+        "componentNames": component_names,
         "summary": {
             "componentCount": len(components),
             "largestComponentSize": max((len(c) for c in components), default=0),
@@ -367,22 +377,21 @@ def list_loops(params: ListLoopsInput, multi: MultiGraph) -> dict[str, Any]:
         with_metadata = [
             lp for lp in with_metadata if lp["_metadata"]["memberCount"] <= params.max_size
         ]
-    result = {"count": len(with_metadata), "loops": with_metadata}
-    if none_persisted:
-        return with_notices(
-            result,
-            [
-                notice(
-                    "NONE_PERSISTED",
-                    "No loop entities have been persisted in this graph yet. This does "
-                    "not mean no feedback loops exist -- it means detect-loops has not "
-                    "been run with persist, or has not found any yet.",
-                    hint='Run detect-loops with "persist": true to detect and persist '
-                    "loops before listing them.",
-                )
-            ],
-        )
-    return result
+    notices = (
+        [
+            notice(
+                "NONE_PERSISTED",
+                "No loop entities have been persisted in this graph yet. This does "
+                "not mean no feedback loops exist -- it means detect-loops has not "
+                "been run with persist, or has not found any yet.",
+                hint='Run detect-loops with "persist": true to detect and persist '
+                "loops before listing them.",
+            )
+        ]
+        if none_persisted
+        else None
+    )
+    return list_envelope(with_metadata, notices)
 
 
 def loop_details(params: LoopDetailsInput, multi: MultiGraph) -> dict[str, Any]:
@@ -444,7 +453,7 @@ def list_leverage_points(params: ListLeveragePointsInput, multi: MultiGraph) -> 
             r.from_ for r in part_of if r.to == params.target_entity and r.from_ in point_ids
         }
         with_metadata = [p for p in with_metadata if p["id"] in targeting]
-    return {"count": len(with_metadata), "leveragePoints": with_metadata}
+    return list_envelope(with_metadata)
 
 
 def leverage_point_details(params: LeveragePointDetailsInput, multi: MultiGraph) -> dict[str, Any]:

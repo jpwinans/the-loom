@@ -151,7 +151,7 @@ def influence_map(params: InfluenceMapInput, multi: MultiGraph) -> dict[str, Any
                     neighbors = get_neighbors(
                         GetNeighborsInput.model_validate({"entityId": current_id, "graph": graph}),
                         multi,
-                    )
+                    )["items"]
                 except Exception:  # noqa: BLE001 — skip failed neighbor lookups.
                     continue
                 for neighbor in neighbors:

@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from theloom.cli.io import format_success
 from theloom.cli.registry import _BY_NAME as REGISTRY_BY_NAME
 from theloom.cli.registry import CommandDescriptor, run_handler
 from theloom.operations.common import CommandInput
-from theloom.operations.notices import notice, with_notices
+from theloom.operations.notices import list_envelope, notice, with_notices
 
 
 def test_notice_builds_a_structured_code_message_hint_doc() -> None:
@@ -30,9 +32,20 @@ def test_notice_builds_a_structured_code_message_hint_doc() -> None:
 
 
 def test_notice_omits_hint_key_when_not_given() -> None:
-    doc = notice("PARAM_IGNORED", "graph was ignored for this command.")
-    assert doc == {"code": "PARAM_IGNORED", "message": "graph was ignored for this command."}
+    doc = notice("PARAMETER_IGNORED", "graph was ignored for this command.")
+    assert doc == {
+        "code": "PARAMETER_IGNORED",
+        "message": "graph was ignored for this command.",
+    }
     assert "hint" not in doc
+
+
+def test_notice_rejects_an_uncataloged_code() -> None:
+    """The enforcement half of the queryable notice catalog (desire 3): a
+    code can't ship without a meaning in NOTICE_CATALOG, so the catalog can
+    never silently miss one."""
+    with pytest.raises(ValueError, match="NOT_A_REAL_CODE"):
+        notice("NOT_A_REAL_CODE", "this should never build")
 
 
 def test_with_notices_is_additive_and_leaves_a_clean_result_untouched() -> None:
@@ -60,8 +73,38 @@ def test_with_notices_attaches_applied_only_when_explicitly_given() -> None:
 
 def test_with_notices_does_not_mutate_the_input_dict() -> None:
     result = {"count": 1}
-    with_notices(result, notices=[notice("X", "y")], applied=False)
+    with_notices(result, notices=[notice("DRY_RUN", "y")], applied=False)
     assert result == {"count": 1}
+
+
+# =============================================================================
+# list_envelope: the uniform {items, count, notices} shape (desire 9)
+# =============================================================================
+
+
+def test_list_envelope_wraps_items_with_their_count() -> None:
+    rows = [{"id": "a"}, {"id": "b"}]
+    assert list_envelope(rows) == {"items": rows, "count": 2}
+
+
+def test_list_envelope_of_an_empty_list_has_zero_count_and_no_notices_key() -> None:
+    out = list_envelope([])
+    assert out == {"items": [], "count": 0}
+    assert "notices" not in out
+
+
+def test_list_envelope_attaches_notices_only_when_non_empty() -> None:
+    n = [notice("NONE_PERSISTED", "nothing here yet")]
+    out = list_envelope([], notices=n)
+    assert out == {"items": [], "count": 0, "notices": n}
+    assert "notices" not in list_envelope([], notices=[])
+
+
+def test_list_envelope_copies_rather_than_aliases_the_input_sequence() -> None:
+    rows = [{"id": "a"}]
+    out = list_envelope(rows)
+    rows.append({"id": "b"})
+    assert out["items"] == [{"id": "a"}]  # unaffected by the later mutation
 
 
 # =============================================================================

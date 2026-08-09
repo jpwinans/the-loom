@@ -13,10 +13,11 @@ dated path is unit-tested instead.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
+from theloom.config import load_config
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.model import (
     ALL_ENTITY_STATUSES,
@@ -26,8 +27,9 @@ from theloom.model import (
     RelationFilter,
     confidence_label,
 )
+from theloom.operations import calibration
 from theloom.operations.common import CommandInput, UuidStr
-from theloom.operations.notices import notice, with_notices
+from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.filters import matches_session
 from theloom.store.multigraph import MultiGraph
@@ -168,6 +170,17 @@ class PostmortemEvaluateInput(CommandInput):
     dry_run: bool | None = Field(default=None, alias="dryRun")
 
 
+_PROPAGATE_CREDIT_DAMPING_DESC = (
+    "A plain number (0-1 inclusive) applies that constant at every hop, exactly as before. "
+    "Pass 'calibrated' (desire 14) to resolve damping per hop from the SOURCE entity's "
+    "author's own measured reliability (1 - their Brier score over resolved claims they've "
+    "asserted -- see calibration-profile/resolve-claim) instead of a constant, so credit from "
+    "a well-calibrated author propagates further than credit from a poorly-calibrated one. An "
+    "author with too little resolved history falls back to the ordinary constant and the "
+    "response carries an INSUFFICIENT_DATA notice naming them. Each change in the response "
+    "carries the exact `dampingApplied` value used for its hop."
+)
+
 _PROPAGATE_CREDIT_DRY_RUN_DESC = (
     "Preview the propagation without persisting anything. Defaults to "
     "false: a call with no dryRun (or dryRun: false) computes AND "
@@ -186,7 +199,9 @@ class PropagateCreditInput(CommandInput):
     # fallback is unreachable from the CLI.
     entity_ids: list[UuidStr] = Field(alias="entityIds")
     delta: float
-    damping_factor: float | None = Field(default=None, alias="dampingFactor")
+    damping_factor: float | Literal["calibrated"] | None = Field(
+        default=None, alias="dampingFactor", description=_PROPAGATE_CREDIT_DAMPING_DESC
+    )
     max_depth: int | None = Field(default=None, ge=1, alias="maxDepth")
     min_delta: float | None = Field(default=None, ge=0, alias="minDelta")
     dry_run: bool | None = Field(
@@ -209,7 +224,7 @@ class CrossSessionContradictionsInput(EpistemicQueryInput):
 # =============================================================================
 
 
-def uncertain_claims(params: UncertainClaimsInput, multi: MultiGraph) -> list[Doc]:
+def uncertain_claims(params: UncertainClaimsInput, multi: MultiGraph) -> Doc:
     threshold = params.threshold if params.threshold is not None else 0.5
     store = multi.get_store(params.graph)
     entities = _list(
@@ -230,10 +245,10 @@ def uncertain_claims(params: UncertainClaimsInput, multi: MultiGraph) -> list[Do
                 }
             )
     results.sort(key=lambda r: r["confidenceScore"])
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def needs_evidence(params: NeedsEvidenceInput, multi: MultiGraph) -> list[Doc]:
+def needs_evidence(params: NeedsEvidenceInput, multi: MultiGraph) -> Doc:
     min_supports = params.min_supports if params.min_supports is not None else 2
     store = multi.get_store(params.graph)
     if params.claim_id:
@@ -264,10 +279,10 @@ def needs_evidence(params: NeedsEvidenceInput, multi: MultiGraph) -> list[Doc]:
                 }
             )
     results.sort(key=lambda r: -float(str(r["evidenceGap"])))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def stale_beliefs(params: StaleBeliefsInput, multi: MultiGraph) -> list[Doc]:
+def stale_beliefs(params: StaleBeliefsInput, multi: MultiGraph) -> Doc:
     days_old = params.days_old if params.days_old is not None else 30
     store = multi.get_store(params.graph)
     entities = _list(
@@ -294,10 +309,10 @@ def stale_beliefs(params: StaleBeliefsInput, multi: MultiGraph) -> list[Doc]:
         return (0, 0.0) if days_value is None else (1, -float(days_value))
 
     results.sort(key=sort_key)
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def provenance_chain(params: ProvenanceChainInput, multi: MultiGraph) -> list[Doc]:
+def provenance_chain(params: ProvenanceChainInput, multi: MultiGraph) -> Doc:
     max_depth = min(params.max_depth if params.max_depth is not None else 10, MAX_DEPTH_LIMIT)
     store = multi.get_store(params.graph)
     start = _read(store, params.entity_id)
@@ -329,19 +344,19 @@ def provenance_chain(params: ProvenanceChainInput, multi: MultiGraph) -> list[Do
                 item["entity"].get("observations") or [],
             )
         ]
-    return chain
+    return list_envelope(chain)
 
 
-def single_source_claims(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc]:
+def single_source_claims(params: EpistemicQueryInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     claims = _list(store, _status_filter(params.include_all_statuses), "claim", params.session)
     results = [
         claim for claim in claims if len(_relations(store, claim["id"], "outgoing", "sources")) == 1
     ]
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def most_certain(params: MostCertainInput, multi: MultiGraph) -> list[Doc]:
+def most_certain(params: MostCertainInput, multi: MultiGraph) -> Doc:
     top_k = params.top_k if params.top_k is not None else 10
     store = multi.get_store(params.graph)
     entities = _list(
@@ -363,10 +378,10 @@ def most_certain(params: MostCertainInput, multi: MultiGraph) -> list[Doc]:
             }
         )
     results.sort(key=lambda r: -float(r["confidenceScore"]))
-    return results[:top_k]
+    return list_envelope(results[:top_k])
 
 
-def contested_claims(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc]:
+def contested_claims(params: EpistemicQueryInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     claims = _list(store, _status_filter(params.include_all_statuses), "claim", params.session)
     results = []
@@ -382,10 +397,10 @@ def contested_claims(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc
                 }
             )
     results.sort(key=lambda r: -min(int(str(r["supportCount"])), int(str(r["contradictCount"]))))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def claims_from_source(params: ClaimsFromSourceInput, multi: MultiGraph) -> list[Doc]:
+def claims_from_source(params: ClaimsFromSourceInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     if _read(store, params.source_id) is None:
         raise NotFoundError(f"Source entity not found: {params.source_id}")
@@ -401,10 +416,10 @@ def claims_from_source(params: ClaimsFromSourceInput, multi: MultiGraph) -> list
             if matches_session(params.session, e.get("session"), e.get("observations") or [])
         ]
     results.sort(key=lambda e: (e["entityType"], e["name"]))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def inferred_claims(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]:
+def inferred_claims(params: TypedEpistemicInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     entities = _list(
         store,
@@ -418,10 +433,10 @@ def inferred_claims(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]
         if (e.get("provenance") or {}).get("sourceType") == "inference"
         or (e.get("confidence") or {}).get("basis") == "inference"
     ]
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def unprovenanced(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]:
+def unprovenanced(params: TypedEpistemicInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     entities = _list(
         store,
@@ -429,18 +444,18 @@ def unprovenanced(params: TypedEpistemicInput, multi: MultiGraph) -> list[Doc]:
         params.entity_type.value if params.entity_type else None,
         params.session,
     )
-    return _limited([e for e in entities if not e.get("provenance")], params.limit)
+    return list_envelope(_limited([e for e in entities if not e.get("provenance")], params.limit))
 
 
-def open_questions(params: EpistemicQueryInput, multi: MultiGraph) -> list[Doc]:
+def open_questions(params: EpistemicQueryInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     questions = _list(
         store, _status_filter(params.include_all_statuses), "question", params.session
     )
-    return _limited(questions, params.limit)
+    return list_envelope(_limited(questions, params.limit))
 
 
-def blocking_questions(params: BlockingQuestionsInput, multi: MultiGraph) -> list[Doc]:
+def blocking_questions(params: BlockingQuestionsInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     questions = _list(store, DEFAULT_ACTIVE_STATUSES, "question", params.session)
     results = []
@@ -469,10 +484,10 @@ def blocking_questions(params: BlockingQuestionsInput, multi: MultiGraph) -> lis
             }
         )
     results.sort(key=lambda r: -int(str(r["blockedCount"])))
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
-def answered_questions(params: AnsweredQuestionsInput, multi: MultiGraph) -> list[Doc]:
+def answered_questions(params: AnsweredQuestionsInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     superseded = _list(store, ["superseded"], "question", params.session)
     active = _list(store, DEFAULT_ACTIVE_STATUSES, "question", params.session)
@@ -487,12 +502,33 @@ def answered_questions(params: AnsweredQuestionsInput, multi: MultiGraph) -> lis
     if params.since:
         since = params.since
         results = [q for q in results if q["updated_at"] >= since]
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
 # =============================================================================
 # session-changelog / postmortem-evaluate / cross-session-contradictions
 # =============================================================================
+
+
+def _world_partial_notices(params: CommandInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): graph-level
+    metadata (``theloom.store.falkor.FalkorGraphStore.get_metadata``/
+    ``set_metadata``, a singleton ``:_GraphMeta`` node) is written with no
+    event at all, so a world's overlay — which reconstructs state by
+    replaying events — cannot fork it: a world's metadata always starts
+    empty, independent of whatever its parent has stored. The postmortem
+    checkpoint (``lastPostmortemTimestamp``) and history this module reads/
+    writes through it are exactly that kind of state.
+    """
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's graph-level metadata — "
+            "this reflects only what was written inside this world, not what its parent has.",
+        )
+    ]
 
 
 def session_changelog(params: SessionChangelogInput, multi: MultiGraph) -> Doc:
@@ -553,30 +589,33 @@ def session_changelog(params: SessionChangelogInput, multi: MultiGraph) -> Doc:
     result_head: Doc = {"since": since, "generatedAt": now}
     if params.session is not None:
         result_head["session"] = params.session
-    return {
-        **result_head,
-        "entities": {
-            "created": created_entities,
-            "modified": modified_entities,
-            "statusChanged": status_changed,
-        },
-        "relations": {"created": created_relations, "modified": modified_relations},
-        "totals": {
+    return with_notices(
+        {
+            **result_head,
             "entities": {
-                "created": len(created_entities),
-                "modified": len(modified_entities),
-                "statusChanged": len(status_changed),
+                "created": created_entities,
+                "modified": modified_entities,
+                "statusChanged": status_changed,
             },
-            "relations": {
-                "created": len(created_relations),
-                "modified": len(modified_relations),
+            "relations": {"created": created_relations, "modified": modified_relations},
+            "totals": {
+                "entities": {
+                    "created": len(created_entities),
+                    "modified": len(modified_entities),
+                    "statusChanged": len(status_changed),
+                },
+                "relations": {
+                    "created": len(created_relations),
+                    "modified": len(modified_relations),
+                },
+                "total": len(created_entities)
+                + len(modified_entities)
+                + len(created_relations)
+                + len(modified_relations),
             },
-            "total": len(created_entities)
-            + len(modified_entities)
-            + len(created_relations)
-            + len(modified_relations),
         },
-    }
+        _world_partial_notices(params),
+    )
 
 
 def _compute_trend(history: list[Doc]) -> Doc:
@@ -695,22 +734,28 @@ def postmortem_evaluate(params: PostmortemEvaluateInput, multi: MultiGraph) -> D
         ]
         if not params.dry_run:
             store.set_metadata(POSTMORTEM_HISTORY_KEY, updated)
-        return {
+        return with_notices(
+            {
+                "counts": counts,
+                "utilityScore": utility_score,
+                "flagged": flagged,
+                "trend": _compute_trend(updated),
+                "history": updated,
+                "items": items,
+            },
+            _world_partial_notices(params),
+        )
+    return with_notices(
+        {
             "counts": counts,
             "utilityScore": utility_score,
             "flagged": flagged,
-            "trend": _compute_trend(updated),
-            "history": updated,
+            "trend": _compute_trend(history),
+            "history": history,
             "items": items,
-        }
-    return {
-        "counts": counts,
-        "utilityScore": utility_score,
-        "flagged": flagged,
-        "trend": _compute_trend(history),
-        "history": history,
-        "items": items,
-    }
+        },
+        _world_partial_notices(params),
+    )
 
 
 def _trace_session(store: FalkorGraphStore, entity_id: str, max_depth: int) -> Doc | None:
@@ -736,9 +781,7 @@ def _trace_session(store: FalkorGraphStore, entity_id: str, max_depth: int) -> D
     return None
 
 
-def cross_session_contradictions(
-    params: CrossSessionContradictionsInput, multi: MultiGraph
-) -> list[Doc]:
+def cross_session_contradictions(params: CrossSessionContradictionsInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     max_depth = min(params.max_depth if params.max_depth is not None else 3, MAX_DEPTH_LIMIT)
     statuses = _status_filter(params.include_all_statuses)
@@ -788,7 +831,7 @@ def cross_session_contradictions(
                 "relation": doc,
             }
         )
-    return _limited(results, params.limit)
+    return list_envelope(_limited(results, params.limit))
 
 
 # =============================================================================
@@ -802,6 +845,52 @@ def _dry_run_notice() -> Doc:
         "Propagation was simulated; no confidence changes were persisted.",
         hint="Omit dryRun, or pass dryRun: false (the default), to persist the changes.",
     )
+
+
+#: The ordinary constant damping default, also the fallback a calibrated hop
+#: uses when its source author has too little resolved history to trust.
+_CALIBRATED_DAMPING_FALLBACK = 0.5
+
+
+def _insufficient_calibration_notice(session: str, floor: int) -> Doc:
+    return notice(
+        "INSUFFICIENT_DATA",
+        f"'{session}' has fewer than {floor} judged resolved claims; calibrated damping fell "
+        f"back to the default constant ({_CALIBRATED_DAMPING_FALLBACK}) for hops sourced from "
+        "this author.",
+    )
+
+
+def _calibrated_hop_damping(
+    store: FalkorGraphStore,
+    session: str | None,
+    floor: int,
+    cache: dict[str, float | None],
+    fallback_sessions: set[str],
+) -> float:
+    """The per-hop damping factor for ``dampingFactor: "calibrated"``: the
+    hop's SOURCE entity's author's measured reliability (``1 - their Brier
+    score`` over every resolved claim they've asserted -- see
+    ``theloom.operations.calibration.author_reliability``), memoized per
+    author for the life of THIS ONE ``propagate-credit`` call only, never
+    across calls -- the next call always sees the latest resolutions, so
+    recalibration is felt immediately rather than served stale. Falls back
+    to the ordinary constant when the author has no calibration history yet,
+    recording that author in ``fallback_sessions`` so the caller can notice
+    it once per author rather than once per hop.
+    """
+    key = session if session is not None else ""
+    if key not in cache:
+        cache[key] = (
+            calibration.author_reliability(store, session=session, floor=floor)
+            if session is not None
+            else None
+        )
+    reliability = cache[key]
+    if reliability is None:
+        fallback_sessions.add(session or "(no author)")
+        return _CALIBRATED_DAMPING_FALLBACK
+    return reliability
 
 
 def _propagate_one(
@@ -830,9 +919,29 @@ def _propagate_one(
     }
     if not trigger.get("confidence"):
         return with_notices(empty, dry_notices, applied=False)
-    damping = options.get("dampingFactor", 0.5)
-    if not 0 <= damping <= 1:
-        raise ValidationError(f"dampingFactor must be between 0 and 1 (inclusive), got {damping}")
+    raw_damping = options.get("dampingFactor", _CALIBRATED_DAMPING_FALLBACK)
+    calibrated = raw_damping == "calibrated"
+    # `damping` (the constant path) and the calibrated-path bookkeeping are
+    # both always initialized, whichever branch below actually applies, so
+    # neither is possibly-unbound where the hop loop and the final notice
+    # assembly read them later.
+    damping = _CALIBRATED_DAMPING_FALLBACK
+    calibration_floor = 0
+    reliability_cache: dict[str, float | None] = {}
+    fallback_sessions: set[str] = set()
+    if calibrated:
+        calibration_floor = load_config().calibration_min_bucket_n
+    elif (
+        isinstance(raw_damping, int | float)
+        and not isinstance(raw_damping, bool)
+        and 0 <= raw_damping <= 1
+    ):
+        damping = float(raw_damping)
+    else:
+        raise ValidationError(
+            "dampingFactor must be a number between 0 and 1 (inclusive), or 'calibrated', "
+            f"got {raw_damping!r}"
+        )
     max_depth = min(options.get("maxDepth", 3), MAX_DEPTH_LIMIT)
     min_delta = options.get("minDelta", 0.01)
     relation_types = options.get("relationTypes", ["supports", "contradicts"])
@@ -852,7 +961,22 @@ def _propagate_one(
         if item["depth"] >= max_depth or abs(item["incomingDelta"]) < min_delta:
             continue
         outgoing = _relations(store, item["entityId"], "outgoing")
-        for relation in (r for r in outgoing if r["relationType"] in relation_types):
+        filtered_relations = [r for r in outgoing if r["relationType"] in relation_types]
+        if not filtered_relations:
+            continue
+        # Only looked up (and only ever falls back / notices) when there is
+        # at least one outgoing edge to actually apply it to -- a dead-end
+        # node's own author is irrelevant and must never generate a spurious
+        # INSUFFICIENT_DATA notice for reliability nothing used.
+        if calibrated:
+            source_doc = _read(store, item["entityId"])
+            source_session = (source_doc or {}).get("session")
+            hop_damping = _calibrated_hop_damping(
+                store, source_session, calibration_floor, reliability_cache, fallback_sessions
+            )
+        else:
+            hop_damping = damping
+        for relation in filtered_relations:
             target_id = relation["to"]
             if target_id in visited:
                 continue
@@ -863,7 +987,7 @@ def _propagate_one(
             strength_mult = VITERBI_STRENGTH_MAP.get(relation["strength"], 0.5)
             incoming = _relations(store, target_id, "incoming")
             n = max(sum(1 for r in incoming if r["relationType"] in relation_types), 1)
-            hop_delta = (1 / n) * damping * item["incomingDelta"] * strength_mult * polarity
+            hop_delta = (1 / n) * hop_damping * item["incomingDelta"] * strength_mult * polarity
             if abs(hop_delta) < min_delta:
                 continue
             target = _read(store, target_id)
@@ -902,6 +1026,7 @@ def _propagate_one(
                     "reason": reason,
                     "propagationPath": new_path,
                     "depth": new_depth,
+                    "dampingApplied": round(hop_damping, 6),
                 }
             )
             downstream = actual_delta if mode == "applied" else hop_delta
@@ -954,10 +1079,18 @@ def _propagate_one(
         "totalEntitiesAffected": len(changes),
         "maxDepthReached": max_depth_reached,
     }
-    return with_notices(result, dry_notices, applied=applied_count > 0)
+    calibration_notices = (
+        [
+            _insufficient_calibration_notice(session, calibration_floor)
+            for session in sorted(fallback_sessions)
+        ]
+        if calibrated
+        else []
+    )
+    return with_notices(result, [*dry_notices, *calibration_notices], applied=applied_count > 0)
 
 
-def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> list[Doc]:
+def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     ids = params.entity_ids
     if not ids:
@@ -976,4 +1109,5 @@ def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> list[Do
         options["relationTypes"] = [t for t in params.relation_types if t in valid_types]
     if params.propagation_mode is not None:
         options["propagationMode"] = params.propagation_mode
-    return [_propagate_one(store, entity_id, params.delta, options) for entity_id in ids]
+    results = [_propagate_one(store, entity_id, params.delta, options) for entity_id in ids]
+    return list_envelope(results)

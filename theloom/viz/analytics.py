@@ -78,7 +78,7 @@ def assemble_analytics(graph: str | None, multi: MultiGraph) -> AnalyticsSection
         )["loops"]
     else:
         loops = []
-    leverage = list_leverage_points(ListLeveragePointsInput(graph=graph), multi)["leveragePoints"]
+    leverage = list_leverage_points(ListLeveragePointsInput(graph=graph), multi)["items"]
     bridges = multi.bridges.list_bridges()
     return AnalyticsSection(
         centrality=centrality,

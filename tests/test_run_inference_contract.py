@@ -27,9 +27,11 @@ from theloom.model import EntityFilter
 from theloom.operations.entity import CreateEntityInput, create_entity
 from theloom.operations.inference import (
     InferenceRuleCreateInput,
+    InferenceRuleListInput,
     InferenceTraceGetInput,
     RunInferenceInput,
     inference_rule_create,
+    inference_rule_list,
     inference_trace_get,
     run_inference,
 )
@@ -143,6 +145,31 @@ def test_real_run_persists_exactly_one_trace_and_marks_applied(multi: MultiGraph
     )
     assert trace["dryRun"] is False
     assert trace["derivedFactCount"] == len(result["derivedRelations"])
+
+
+def test_create_without_enabled_carries_rule_disabled_notice(multi: MultiGraph) -> None:
+    spec = dict(RULE_SPEC)
+    del spec["enabled"]
+    result = inference_rule_create(InferenceRuleCreateInput.model_validate({"rule": spec}), multi)
+
+    assert "enabled" not in result
+    codes = {n["code"] for n in result.get("notices", [])}
+    assert "RULE_DISABLED" in codes
+    notice = next(n for n in result["notices"] if n["code"] == "RULE_DISABLED")
+    assert notice["hint"] is not None
+    assert "enabled" in notice["hint"].lower()
+
+    # The rule is still stored -- informational only, nothing is rejected.
+    stored = inference_rule_list(InferenceRuleListInput.model_validate({}), multi)
+    assert any(r["id"] == result["id"] for r in stored["items"])
+
+
+def test_create_with_enabled_true_has_no_disabled_notice(multi: MultiGraph) -> None:
+    result = inference_rule_create(
+        InferenceRuleCreateInput.model_validate({"rule": RULE_SPEC}), multi
+    )
+    codes = {n["code"] for n in result.get("notices", [])}
+    assert "RULE_DISABLED" not in codes
 
 
 def test_dry_run_documented_in_schema() -> None:

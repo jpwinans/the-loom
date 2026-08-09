@@ -59,13 +59,54 @@ def memory_store() -> InMemoryGraphStore:
     return InMemoryGraphStore()
 
 
+#: Fixed, well-known key: every process pointed at this FalkorDB server —
+#: including a concurrent, unrelated ``pytest`` invocation from another
+#: worktree — takes the *same* lock before touching RESULTSET_SIZE, so it
+#: serializes across processes, not just within one.
+_RESULTSET_LOCK_KEY = "loomtest:resultset-size-lock"
+_RESULTSET_CAP = 40
+
+
 @pytest.fixture()
-def small_resultset_cap(db: FalkorDB) -> Iterator[int]:
+def small_resultset_cap(db: FalkorDB, redis_client: Redis) -> Iterator[int]:
     """Cap the server's RESULTSET_SIZE far below the seeded row counts so
     truncation bugs surface with small fixtures; restores the prior value.
     FalkorDB silently drops rows past the cap (default 10000), so any read
-    that isn't paged or aggregated returns wrong answers on large graphs."""
-    original = db.config_get("RESULTSET_SIZE")
-    db.config_set("RESULTSET_SIZE", 40)
-    yield 40
-    db.config_set("RESULTSET_SIZE", original)
+    that isn't paged or aggregated returns wrong answers on large graphs.
+
+    RESULTSET_SIZE is a server-global (``GRAPH.CONFIG``, not a per-connection
+    or per-session knob — FalkorDB exposes no such scoping), so two tests
+    running this fixture concurrently used to race on get/set/restore: both
+    read the original value before either restored it, so the second
+    restore clobbered the first's already-lowered value back to 40 instead
+    of the true original — permanently stranding the server at the test cap.
+    That is exactly what happened in practice (2026-08-08): a spurious
+    "flaky" failure that was really shared mutable server state.
+
+    The fix is to make the whole get/set/yield/restore span one critical
+    section, guarded by a cross-process Redis lock (``redis.Redis.lock`` —
+    ``SET NX PX`` under the hood, safe release via a stored token, no new
+    dependency) rather than an in-process one: the race is between separate
+    ``pytest`` invocations against the same live server, not between threads
+    in one process, so a ``threading.Lock`` would not have helped. A run
+    that cannot acquire the lock within ``blocking_timeout`` skips instead of
+    racing anyway — the server is never left in an inconsistent state either
+    way: it is on the mend under someone else's lock, or restored to
+    whatever this fixture found before it, in both branches.
+    """
+    lock = redis_client.lock(_RESULTSET_LOCK_KEY, timeout=60, blocking_timeout=30)
+    if not lock.acquire(blocking=True):
+        pytest.skip(
+            "Could not acquire the RESULTSET_SIZE lock within 30s — another "
+            "concurrent test run holds the server-global config. Skipping "
+            "rather than racing it (see small_resultset_cap's docstring)."
+        )
+    try:
+        original = db.config_get("RESULTSET_SIZE")
+        db.config_set("RESULTSET_SIZE", _RESULTSET_CAP)
+        try:
+            yield _RESULTSET_CAP
+        finally:
+            db.config_set("RESULTSET_SIZE", original)
+    finally:
+        lock.release()

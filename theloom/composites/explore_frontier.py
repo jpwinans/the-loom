@@ -44,9 +44,30 @@ from theloom.exploration import (
 from theloom.exploration.composite_signals import ALL_STALE_THRESHOLD
 from theloom.operations.analysis import DetectComponentsInput, detect_components
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import notice, with_notices
 from theloom.store.multigraph import MultiGraph
 
 Doc = dict[str, Any]
+
+
+def _world_partial_notices(params: ExploreFrontierInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): the CoverageGap
+    signal (``theloom.exploration.coverage_gap``) is embedding-ranked --
+    entity vectors are a direct Cypher property write outside the event log
+    a world's overlay replays, so inside a fork this signal only ever sees
+    vectors embedded within that fork, never ones its parent already had
+    embedded. AgeStaleness and BridgingPotential are structural and fork
+    correctly; CoverageGap alone is degraded."""
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's embeddings — the CoverageGap "
+            "signal reflects only entities embedded inside this world, not the ones inherited "
+            "from its parent.",
+        )
+    ]
 
 
 class ExploreFrontierInput(CommandInput):
@@ -83,13 +104,16 @@ def explore_frontier(params: ExploreFrontierInput, multi: MultiGraph) -> Doc:
             "durationMs": 0,
             "error": None,
         }
-        return run_composite(
-            [
-                ("regions", empty_regions),
-                ("mvtAdvice", empty_mvt),
-                ("antiPatterns", empty_anti_patterns),
-            ],
-            start=start,
+        return with_notices(
+            run_composite(
+                [
+                    ("regions", empty_regions),
+                    ("mvtAdvice", empty_mvt),
+                    ("antiPatterns", empty_anti_patterns),
+                ],
+                start=start,
+            ),
+            _world_partial_notices(params),
         )
 
     now = datetime.now(UTC)
@@ -316,11 +340,14 @@ def explore_frontier(params: ExploreFrontierInput, multi: MultiGraph) -> Doc:
 
     anti_patterns = time_section(_anti_patterns)
 
-    return run_composite(
-        [
-            ("regions", regions),
-            ("mvtAdvice", mvt_advice),
-            ("antiPatterns", anti_patterns),
-        ],
-        start=start,
+    return with_notices(
+        run_composite(
+            [
+                ("regions", regions),
+                ("mvtAdvice", mvt_advice),
+                ("antiPatterns", anti_patterns),
+            ],
+            start=start,
+        ),
+        _world_partial_notices(params),
     )

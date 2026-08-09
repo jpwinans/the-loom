@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from theloom.config import DEFAULT_SESSION
 from theloom.errors import LoomError
 from theloom.operations.entity import (
     CreateEntityInput,
@@ -73,9 +74,15 @@ def test_create_entity_persists_session(multi: MultiGraph) -> None:
     assert stored["session"] == "session-1"
 
 
-def test_create_entity_without_session_omits_the_key(multi: MultiGraph) -> None:
+def test_create_entity_without_session_gets_the_configured_default(multi: MultiGraph) -> None:
+    """Desire 14: session is required-with-default now, not optional-and-
+    absent -- every entity carries an author, server-supplied when the
+    caller omits one."""
     entity = make_entity(multi, "Untagged")
-    assert "session" not in entity
+    assert entity["session"] == DEFAULT_SESSION
+    stored = multi.get_store().read_entity_doc(entity["id"])
+    assert stored is not None
+    assert stored["session"] == DEFAULT_SESSION
 
 
 def test_create_relation_persists_session(multi: MultiGraph) -> None:
@@ -97,7 +104,7 @@ def test_list_entities_filters_by_session(multi: MultiGraph) -> None:
     make_entity(multi, "Other Session", session="session-2")
     make_entity(multi, "No Session")
     results = list_entities(ListEntitiesInput.model_validate({"session": "session-1"}), multi)
-    assert [e["id"] for e in results] == [tagged["id"]]
+    assert [e["id"] for e in results["items"]] == [tagged["id"]]
 
 
 def test_list_entities_session_matches_legacy_subgraph_tag(multi: MultiGraph) -> None:
@@ -106,7 +113,7 @@ def test_list_entities_session_matches_legacy_subgraph_tag(multi: MultiGraph) ->
     make_entity(multi, "Legacy Other Sid", observations=["subgraph: sid2-q1"])
     make_entity(multi, "Unrelated", observations=["subgraph unrelated"])
     results = list_entities(ListEntitiesInput.model_validate({"session": "sid"}), multi)
-    assert {e["id"] for e in results} == {exact["id"], prefixed["id"]}
+    assert {e["id"] for e in results["items"]} == {exact["id"], prefixed["id"]}
 
 
 def test_list_entities_session_combines_with_other_filters(multi: MultiGraph) -> None:
@@ -116,7 +123,7 @@ def test_list_entities_session_combines_with_other_filters(multi: MultiGraph) ->
         ListEntitiesInput.model_validate({"session": "session-1", "entityType": "claim"}),
         multi,
     )
-    assert [e["id"] for e in results] == [claim["id"]]
+    assert [e["id"] for e in results["items"]] == [claim["id"]]
 
 
 def test_list_relations_filters_by_session(multi: MultiGraph) -> None:
@@ -126,7 +133,7 @@ def test_list_relations_filters_by_session(multi: MultiGraph) -> None:
     make_relation(multi, b["id"], a["id"], session="session-2")
     make_relation(multi, a["id"], b["id"], relationType="related_to")
     results = list_relations(ListRelationsInput.model_validate({"session": "session-1"}), multi)
-    assert [r["id"] for r in results] == [tagged["id"]]
+    assert [r["id"] for r in results["items"]] == [tagged["id"]]
 
 
 # =============================================================================

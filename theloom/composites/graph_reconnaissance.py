@@ -115,7 +115,7 @@ def graph_reconnaissance(params: GraphReconInput, multi: MultiGraph) -> dict[str
                 "depthCategory": lp["_metadata"]["depthCategory"],
                 "intervention": lp["_metadata"]["intervention"],
             }
-            for lp in result["leveragePoints"]
+            for lp in result["items"]
         ]
 
     def _centrality() -> dict[str, list[dict[str, Any]]]:

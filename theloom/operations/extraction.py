@@ -19,6 +19,7 @@ from theloom.extraction import treesitter
 from theloom.model import RelationFilter
 from theloom.operations.bulk import BulkImportInput, bulk_import
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis.llm import create_synthesis_client
@@ -242,11 +243,30 @@ def update_codebase(params: UpdateCodebaseInput, multi: MultiGraph) -> Doc:
         raise NotFoundError(str(exc)) from exc
 
 
+def _world_partial_notices(params: CommandInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): the self-model's
+    last-updated-commit checkpoint lives in graph-level metadata
+    (``theloom.store.falkor.FalkorGraphStore.get_metadata``/
+    ``set_metadata``, a singleton ``:_GraphMeta`` node) written with no
+    event at all, so a world's overlay cannot fork it — a world always
+    starts as if the checkpoint were unset, independent of whatever its
+    parent has recorded."""
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's self-model checkpoint — "
+            "this reflects only what was recorded inside this world, not what its parent has.",
+        )
+    ]
+
+
 def self_model_update(params: SelfModelUpdateInput, multi: MultiGraph) -> Doc:
     from theloom.extraction.selfmodel import update_self_model
 
     try:
-        return update_self_model(
+        result = update_self_model(
             project_path=params.project_path,
             graph_name=params.graph_name or "loom-codebase",
             dry_run=params.dry_run or False,
@@ -254,6 +274,7 @@ def self_model_update(params: SelfModelUpdateInput, multi: MultiGraph) -> Doc:
         )
     except FileNotFoundError as exc:
         raise NotFoundError(str(exc)) from exc
+    return with_notices(result, _world_partial_notices(params))
 
 
 # =============================================================================
@@ -268,7 +289,7 @@ def extraction_status(params: ExtractionStatusInput, multi: MultiGraph) -> Any:
         if run is None:
             raise NotFoundError(f"Extraction run '{params.run_id}' not found")
         return run
-    return store.list_runs()
+    return list_envelope(store.list_runs())
 
 
 def extraction_rollback(params: ExtractionRollbackInput, multi: MultiGraph) -> Doc:

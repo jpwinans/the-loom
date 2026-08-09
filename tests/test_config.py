@@ -130,3 +130,71 @@ def test_model_cache_dir_flag_overrides_env_and_file(tmp_path: Path) -> None:
         env={"LOOM_MODEL_CACHE_DIR": "/env/models"},
     )
     assert cfg.model_cache_dir == "/flag/models"
+
+
+# =============================================================================
+# Calibration (desire 14): defaultSession, calibrationGapThreshold,
+# calibrationMinBucketN
+# =============================================================================
+
+
+def test_calibration_defaults_when_no_file_no_env(tmp_path: Path) -> None:
+    cfg = load_config(config_path=tmp_path / "missing.json", env={})
+    assert cfg.default_session == "unattributed"
+    assert cfg.calibration_gap_threshold == 0.2
+    assert cfg.calibration_min_bucket_n == 5
+
+
+def test_calibration_values_from_config_file(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {
+            "defaultSession": "house-author",
+            "calibrationGapThreshold": 0.35,
+            "calibrationMinBucketN": 8,
+        },
+    )
+    cfg = load_config(config_path=path, env={})
+    assert cfg.default_session == "house-author"
+    assert cfg.calibration_gap_threshold == 0.35
+    assert cfg.calibration_min_bucket_n == 8
+
+
+def test_calibration_env_overrides_config_file(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {
+            "defaultSession": "house-author",
+            "calibrationGapThreshold": 0.35,
+            "calibrationMinBucketN": 8,
+        },
+    )
+    cfg = load_config(
+        config_path=path,
+        env={
+            "LOOM_DEFAULT_SESSION": "env-author",
+            "LOOM_CALIBRATION_GAP_THRESHOLD": "0.15",
+            "LOOM_CALIBRATION_MIN_BUCKET_N": "3",
+        },
+    )
+    assert cfg.default_session == "env-author"
+    assert cfg.calibration_gap_threshold == 0.15
+    assert cfg.calibration_min_bucket_n == 3
+
+
+def test_invalid_calibration_gap_threshold_env_raises_typed_config_error(tmp_path: Path) -> None:
+    with pytest.raises(LoomConfigError) as excinfo:
+        load_config(
+            config_path=tmp_path / "missing.json",
+            env={"LOOM_CALIBRATION_GAP_THRESHOLD": "not-a-number"},
+        )
+    assert excinfo.value.code == "CONFIG_ERROR"
+
+
+def test_invalid_calibration_min_bucket_n_env_raises_typed_config_error(tmp_path: Path) -> None:
+    with pytest.raises(LoomConfigError) as excinfo:
+        load_config(
+            config_path=tmp_path / "missing.json",
+            env={"LOOM_CALIBRATION_MIN_BUCKET_N": "not-a-number"},
+        )
+    assert excinfo.value.code == "CONFIG_ERROR"

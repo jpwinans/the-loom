@@ -40,9 +40,44 @@ UuidStr = Annotated[str, AfterValidator(_validate_uuid)]
 
 
 class CommandInput(LoomModel):
-    """Command input base: unknown keys stripped by strict object schemas."""
+    """Command input base: unknown keys stripped by strict object schemas.
+
+    ``world`` (branchable belief worlds, desire 12 / Part 5): every command
+    gains this optional field structurally, the same way ``graph`` is
+    declared per-command today — but unlike ``graph``, ``world`` needs no
+    per-command handler change at all. ``theloom.cli.registry.run_handler``
+    opens a ``theloom.store.worldctx.active(params.world)`` scope around the
+    handler dispatch, and ``theloom.store.multigraph.MultiGraph.get_store``
+    — the one place any command ever gets a store instance — reads it from
+    there. A command whose own handler never mentions ``world`` still
+    resolves it correctly the moment it calls ``multi.get_store(params.
+    graph)``, which every graph-touching handler already does. Commands with
+    no graph at all (symbolic math, LLM synthesis) simply never read the
+    field — present in their schema for uniformity, inert in their handler.
+    Defaults to ``"main"``, never mutable from inside a fork.
+
+    ``exclude=True``: ``CommandInput`` is also the base every *nested* value
+    object (``ConfidenceArg``, ``ProvenanceArg``, a ``RelationItem`` inside a
+    batch, ...) is built on, and several of those get wholesale
+    ``.model_dump()``'d into a stricter downstream model (``theloom.model``'s
+    ``extra="forbid"`` wire shapes) that has never heard of ``world`` and
+    never should — a nested value object doesn't carry its own world, the
+    command around it does. Excluding it from serialization means every
+    existing ``.model_dump()`` call site — and there are dozens, none of them
+    written with this field in mind — stays exactly as it was; the field is
+    still validated on input and still readable via ``params.world``, just
+    never written back out.
+    """
 
     model_config = pydantic.ConfigDict(populate_by_name=True, extra="ignore")
+
+    world: str | None = pydantic.Field(
+        default=None,
+        exclude=True,
+        description="The belief world to read/write in (a worldId from fork-world, or omitted "
+        "for 'main'). Reads project the fork point plus the world's own writes; writes land "
+        "only in the world's own segment -- main is never mutable from inside a fork.",
+    )
 
     def provided(self, field: str) -> bool:
         """True iff the caller explicitly supplied the field (even as null) —

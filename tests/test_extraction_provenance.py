@@ -114,7 +114,7 @@ def test_llm_extracted_entities_do_not_surface_as_unprovenanced(
     )
 
     results = unprovenanced(TypedEpistemicInput.model_validate({"graph": GRAPH}), multi)
-    names = {r["name"] for r in results}
+    names = {r["name"] for r in results["items"]}
     assert "Provenance Chain" not in names
 
 

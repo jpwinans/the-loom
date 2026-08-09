@@ -39,6 +39,7 @@ from theloom.analysis.interestingness import (
 from theloom.composites.framework import run_composite
 from theloom.operations.common import CommandInput
 from theloom.operations.entity_proposal import EntityProposalOptions
+from theloom.operations.notices import notice, with_notices
 from theloom.operations.semantic import SemanticGapsInput, semantic_gaps
 from theloom.semantic.deduplication_gate import deduplicate_proposals
 from theloom.semantic.entity_proposer import propose_entities
@@ -199,6 +200,30 @@ def _build_summary(
 # =============================================================================
 
 
+def _world_partial_notices(params: HypothesisEngineInput) -> list[dict[str, Any]]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): the ``gaps``
+    section calls ``theloom.operations.semantic.semantic_gaps`` directly
+    (not through the CLI, so that command's own notice never reaches this
+    composite's response — see ``theloom.cli.notices_catalog``'s module
+    docstring on why a composite must attach its own), which ranks by
+    entity vectors — a direct Cypher property write outside the event log a
+    world's overlay replays. The ``dedup`` section, by contrast, always
+    calls ``deduplicate_proposals`` with ``embedding_manager=None`` (no
+    embedding pipeline in this composite, by design — see the module
+    docstring), so it never reaches the vector-backed path this notice
+    would otherwise also cover; only ``gaps`` is genuinely partial here."""
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's embeddings — the 'gaps' "
+            "section's semantic search reflects only entities embedded inside this world, not "
+            "the ones inherited from its parent.",
+        )
+    ]
+
+
 def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[str, Any]:
     start = time.perf_counter()
     graph = params.graph
@@ -261,7 +286,7 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
                 {"limit": gap_limit, "minSimilarity": min_similarity, "graph": graph}
             ),
             multi,
-        )
+        )["items"]
         state["detectedGaps"] = gap_results
         return {"count": len(gap_results), "gaps": gap_results}
 
@@ -412,4 +437,7 @@ def hypothesis_engine(params: HypothesisEngineInput, multi: MultiGraph) -> dict[
         total_ms,
     )
 
-    return {"composite": composite, "hypotheses": hypotheses, "summary": summary}
+    return with_notices(
+        {"composite": composite, "hypotheses": hypotheses, "summary": summary},
+        _world_partial_notices(params),
+    )

@@ -1,7 +1,7 @@
 """AC-3 constraint propagation.
 
 Builds a CSP from typed relation constraints (each constraint yields a
-source and target variable over the 19 entity types) and runs AC-3 with a
+source and target variable over the 20 entity types) and runs AC-3 with a
 LIFO worklist — the stack order is load-bearing because it drives
 revisionsCount and which variable is reported empty on a conflict.
 """

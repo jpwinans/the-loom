@@ -185,7 +185,10 @@ def create_app(multi: MultiGraph, default_graph: str | None = None) -> FastAPI:
         limit: int = Query(default=10),
         graph: str | None = Query(default=None),
     ) -> list[dict[str, Any]]:
-        return semantic_search(
+        # This REST endpoint's own contract predates (and is independent of)
+        # the CLI's {items, count} envelope (desire 9) — unwrap to keep it a
+        # bare array, matching every other /api/* route here.
+        items: list[dict[str, Any]] = semantic_search(
             SemanticSearchInput.model_validate(
                 {
                     "query": q,
@@ -194,7 +197,8 @@ def create_app(multi: MultiGraph, default_graph: str | None = None) -> FastAPI:
                 }
             ),
             multi,
-        )
+        )["items"]
+        return items
 
     app.add_api_route("/api/search", _search, methods=["GET"])
 

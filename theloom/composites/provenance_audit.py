@@ -63,7 +63,7 @@ def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[st
                 "depth": node["depth"],
                 "confidence": _confidence_score(node["entity"]),
             }
-            for node in chain
+            for node in chain["items"]
         ]
         state["chain_data"] = result
         return result
@@ -82,7 +82,7 @@ def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[st
             claims = claims_from_source(
                 ClaimsFromSourceInput.model_validate({"sourceId": source_id, "graph": graph}), multi
             )
-            for entity in claims:
+            for entity in claims["items"]:
                 if entity["id"] not in seen:
                     seen.add(entity["id"])
                     results.append(
@@ -105,11 +105,11 @@ def provenance_audit(params: ProvenanceAuditInput, multi: MultiGraph) -> dict[st
                 "entityType": entity["entityType"],
                 "basis": (entity.get("confidence") or {}).get("basis"),
             }
-            for entity in all_inferred
+            for entity in all_inferred["items"]
             if entity["id"] in chain_ids
         ]
 
-    def _cascade_preview() -> list[dict[str, Any]]:
+    def _cascade_preview() -> dict[str, Any]:
         return propagate_credit(
             PropagateCreditInput.model_validate(
                 {

@@ -34,18 +34,179 @@ handler — nothing here touches ``CommandInput``, the registry, or the CLI
 layer, so adopting the convention is a pure addition to a handler's return
 value. (This ticket only builds the mechanism; wiring it into detect-loops,
 propagate-credit, run-inference, etc. is the sibling tickets' job.)
+
+``list_envelope(items, notices=None)`` is the structural completion of the
+same idea: one uniform ``{"items": [...], "count": len(items)[, "notices"]}``
+shape for every list-returning command, replacing the three attachment
+strategies that grew up independently (a bare top-level array, a bare array
+with notices smeared onto every element because there was nowhere else to put
+one, and an ad hoc ``{"count", "<listName>"}`` pair whose list key differed
+per command). ``count`` is always ``len(items)`` — the number of rows the
+response actually carries, never a separate "total available before a filter"
+figure (a command that truncates says so via a notice, not a second number
+with an ambiguous relationship to the first).
+
+``NOTICE_CATALOG`` (desire 3, the queryable notice catalog behind the
+``notices-catalog`` command) is the single source of truth for every notice
+*code* this build of The Loom can emit: a ``code -> meaning`` mapping that
+``notice()`` itself enforces — building a notice with a code that isn't a
+catalog key raises ``ValueError`` rather than shipping an uncataloged code.
+That refusal is what makes the catalog self-maintaining rather than a list
+someone has to remember to update: a new notice code cannot go live without
+a meaning here the same commit it lands in an emitting call site, and
+``theloom.cli.notices_catalog`` separately walks the registry to discover
+*which* commands can actually surface each code, so neither half is
+hand-listed. See ``theloom/cli/notices_catalog.py`` and
+``tests/test_notices_catalog.py`` for the generation and the tests that
+would fail if a code were documented but unreachable, or emitted but
+undocumented.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 Doc = dict[str, Any]
 
 
+NOTICE_CATALOG: dict[str, str] = {
+    "ALL_DREAMS_REVIEWED": (
+        "since-last-session found consolidation history for this graph, but every "
+        "dream world has already been reviewed (merged or abandoned) -- there is "
+        "nothing unreviewed to surface. Distinct from NO_CONSOLIDATION_HISTORY, "
+        "which means consolidate has never been run at all."
+    ),
+    "ALREADY_REAPED": (
+        "The ref named in the request (a session workspace, or a belief "
+        "world) was already reaped; there was nothing left to delete, so "
+        "nothing further happened."
+    ),
+    "ASSERTION_HISTORY_UNAVAILABLE": (
+        "calibration-profile found one or more resolved claims with no readable "
+        "assertion-time snapshot at all (neither the as-of read at the claim's own "
+        "created_at nor the earliest recorded version in this graph segment) -- "
+        "excluded from every bucket rather than scored against a fabricated "
+        "confidence, matching INSUFFICIENT_DATA's philosophy."
+    ),
+    "AUTO_SCOPED": (
+        "A required scoping parameter was omitted, so the command auto-selected "
+        "a scope using its own retrieval (e.g. hybrid search) instead of "
+        "grading or acting against the whole graph."
+    ),
+    "CONFIDENCE_OUT_OF_LINE": (
+        "The confidence just asserted sits at least the configured threshold "
+        "away from this author's empirically measured hit rate for this "
+        "confidence basis (and domain, when set), computed from resolved "
+        "claims (resolve-claim). Informational only -- the write still "
+        "happened; recalibration is a nudge, never a rejection."
+    ),
+    "CONSOLIDATION_PASS_SKIPPED": (
+        "A consolidation pass was skipped because the data it needs was not "
+        "available (e.g. no prior consolidation report to diff confidence "
+        "changes against, or too few distinct domains in the graph to compare "
+        "structurally) -- see the pass's own entry in the report for the exact "
+        "reason. Every other requested pass still ran."
+    ),
+    "CONTESTED_ON_MERGE": (
+        "merge-world found one or more entities or relations changed in "
+        "both the source and target world since the fork. These conflicts "
+        "were not auto-resolved: the merge applied only the uncontested "
+        "set, and the contested items are listed in the response's "
+        "'contested' field for a caller to resolve manually (retry with "
+        "strategy: 'select')."
+    ),
+    "DRY_RUN": (
+        "The command ran as a simulation only: it computed what it would do "
+        "but did not persist any changes to the graph."
+    ),
+    "EMPTY_TRAVERSAL": (
+        "The traversal found zero edges to follow from the source entity in "
+        "the searched direction, so no results could be produced."
+    ),
+    "INSUFFICIENT_DATA": (
+        "A calibration bucket (calibration-profile, the assertion-time "
+        "feedback check, or propagate-credit's calibrated damping) has "
+        "fewer judged (confirmed/refuted) resolved claims than the "
+        "configured floor, so no Brier score, hit rate, gap, or measured "
+        "reliability is reported for it -- a fabricated number would be "
+        "worse than none."
+    ),
+    "NONE_PERSISTED": (
+        "No entities of the kind this command lists have been persisted in "
+        "the graph yet. This does not mean none exist -- only that the "
+        "generating command has not been run with persistence, or has not "
+        "found any yet."
+    ),
+    "NO_CONSOLIDATION_HISTORY": (
+        "consolidate has GENUINELY NEVER been run for this graph -- no dream-world ref "
+        "exists in any status (active, merged, or abandoned). Distinct from "
+        "ALL_DREAMS_REVIEWED, which means consolidation history exists but everything "
+        "in it has already been reviewed; run 'consolidate' first, then check back."
+    ),
+    "NOT_PERSISTED": (
+        "The command computed results but did not write them to the graph; a "
+        "later read (e.g. a list command over the same entity kind) will not "
+        "see them until the command is re-run with persistence requested."
+    ),
+    "PARAMETER_IGNORED": (
+        "A supplied parameter was accepted for schema compatibility but was "
+        "not applied -- the response reflects the command's real behavior, "
+        "not the ignored parameter's implication."
+    ),
+    "RULE_DISABLED": (
+        "inference-rule-create stored this rule without `enabled: true`, so "
+        "run-inference will never evaluate it -- it is stored, not rejected, "
+        'but it can never fire until re-created with `rule: {"enabled": '
+        "true, ...}` (there is no update/enable command; inference-rule-"
+        "create is the only write path besides inference-rule-delete)."
+    ),
+    "SESSION_SURFACE_TRUNCATED": (
+        "since-last-session's response exceeded its fixed context-window size "
+        "budget and was trimmed -- lower-priority findings, contradictions, "
+        "and/or alerts were cut first; older dream-world reports are dropped "
+        "last. Call diff-worlds or read a specific dream world's report "
+        "directly for the untrimmed detail."
+    ),
+    "TRUNCATED": (
+        "The result set was larger than the page returned in this response; "
+        "only a prefix is included."
+    ),
+    "WORLD_PROJECTION_PARTIAL": (
+        "This command ran against a non-main belief world, but the data it "
+        "operates on (embeddings, or other state written outside the event "
+        "log) is not forked -- it reflects only what was written inside "
+        "this world, not what the world inherited from its parent. The "
+        "command computed a real answer over that partial data rather than "
+        "silently pretending to see the whole projection."
+    ),
+}
+
+
+def list_envelope(items: Sequence[Any], notices: list[Doc] | None = None) -> Doc:
+    """The uniform list-command response: ``{"items", "count"[, "notices"]}``.
+
+    ``items`` is usually a list of docs but is not required to be one — a
+    handful of commands (``find-related-graphs``) list bare strings."""
+    return with_notices({"items": list(items), "count": len(items)}, notices)
+
+
 def notice(code: str, message: str, hint: str | None = None) -> Doc:
     """One structured notice: ``{"code", "message", "hint"}`` — ``hint`` is
-    omitted (not set to ``null``) when there is nothing actionable to add."""
+    omitted (not set to ``null``) when there is nothing actionable to add.
+
+    ``code`` must be a key in ``NOTICE_CATALOG``: this is the enforcement
+    half of the queryable notice catalog (desire 3) — a code cannot ship
+    without a cataloged meaning, so ``loom notices-catalog`` can never miss
+    one. Raises ``ValueError`` (an internal-invariant bug, not a caller
+    input error) rather than silently emitting an uncataloged code.
+    """
+    if code not in NOTICE_CATALOG:
+        raise ValueError(
+            f"Notice code {code!r} is not registered in NOTICE_CATALOG "
+            "(theloom/operations/notices.py) -- add its meaning there before "
+            "emitting it, so `notices-catalog` can enumerate it."
+        )
     doc: Doc = {"code": code, "message": message}
     if hint is not None:
         doc["hint"] = hint
