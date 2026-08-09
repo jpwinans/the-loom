@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from theloom.config import DEFAULT_SESSION
 from theloom.errors import LoomError
 from theloom.operations.entity import (
     CreateEntityInput,
@@ -73,9 +74,15 @@ def test_create_entity_persists_session(multi: MultiGraph) -> None:
     assert stored["session"] == "session-1"
 
 
-def test_create_entity_without_session_omits_the_key(multi: MultiGraph) -> None:
+def test_create_entity_without_session_gets_the_configured_default(multi: MultiGraph) -> None:
+    """Desire 14: session is required-with-default now, not optional-and-
+    absent -- every entity carries an author, server-supplied when the
+    caller omits one."""
     entity = make_entity(multi, "Untagged")
-    assert "session" not in entity
+    assert entity["session"] == DEFAULT_SESSION
+    stored = multi.get_store().read_entity_doc(entity["id"])
+    assert stored is not None
+    assert stored["session"] == DEFAULT_SESSION
 
 
 def test_create_relation_persists_session(multi: MultiGraph) -> None:

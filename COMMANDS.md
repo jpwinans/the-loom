@@ -2,7 +2,7 @@
 
 Generated from the registry (`theloom/cli/registry.py`) — never hand-edit.
 
-**176 registry commands** across 27 categories, plus the special `init` command.
+**178 registry commands** across 28 categories, plus the special `init` command.
 
 Each command lists its input fields below its summary: dotted paths (`confidence.score`) descend into nested objects, `[]` (`relations[].from`) marks an array of objects. `required`/`optional` is scoped to the field's immediate parent — a required field of an optional object only applies once that object is supplied at all. Run `loom <command> --schema` for the raw JSON Schema (with full `$defs`) behind any entry.
 
@@ -11,7 +11,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 - **`adaptive-distances`** — Distances with an auto-routed plan.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `source` — string; required
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `maxDepth` — integer | null; optional
   - `pathMode` — string | null; optional
   - `limit` — integer | null; optional
@@ -21,7 +21,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `source` — string; required
   - `target` — string | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `maxDepth` — integer | null; optional
   - `pathMode` — string | null; optional
   - `productMode` — boolean | null; optional
@@ -31,7 +31,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `source` — string; required
   - `target` — string | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `maxDepth` — integer | null; optional
   - `pathMode` — string | null; optional
   - `graph` — string | null; optional
@@ -49,8 +49,28 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `source` — string | null; optional
   - `target` — string | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `metapath` — string | object | null; optional
+  - `graph` — string | null; optional
+
+## Calibration
+
+- **`calibration-profile`** — Fold every resolved claim into per-bucket count, mean asserted confidence, empirical hit rate, Brier score, and the asserted-vs-empirical gap, using each claim's assertion-time confidence.
+  - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
+  - `graph` — string | null; optional
+  - `by` — enum(basis, domain, author) | null; optional — Which dimension to bucket resolved claims by. Omitted falls back to 'author' -- the dimension propagate-credit's calibrated damping and the assertion-time feedback check both key reliability by.
+  - `window` — object | null; optional — Restricts the fold to claims RESOLVED (not created) in ``[since, until)`` -- open-ended on either side when omitted. This is what ``theloom.operations.calibration_alerts`` uses to ask "what resolved since I last looked".
+  - `window.world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
+  - `window.since` — string | null; optional
+  - `window.until` — string | null; optional
+  - `minBucketN` — integer | null; optional
+
+- **`resolve-claim`** — Resolve a claim/hypothesis: create the outcome entity, link it with a 'resolves' edge, and transition its status -- one atomic write.
+  - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
+  - `claimId` — string; required
+  - `resolution` — enum(confirmed, refuted, expired); required — How a resolved claim/hypothesis actually turned out (desire 14, the closed calibration loop) -- distinct from ``UsageOutcome``, which grades whether a piece of *work* was useful, not whether a *belief* was true. ``confirmed``/``refuted`` are the judged, binary-scorable outcomes a Brier score is computed over; ``expired`` means the claim became moot before anyone could tell -- excluded from Brier/hit-rate (see ``theloom.operations.calibration``'s module docstring) rather than scored as either.
+  - `evidence` — string; required
+  - `session` — string | null; optional
   - `graph` — string | null; optional
 
 ## Composites
@@ -451,7 +471,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `provenance.extractionDate` — string | null; optional
   - `provenance.extractor` — string; required
   - `provenance.extractionMethod` — string | null; required
-  - `session` — string | null; optional
+  - `session` — string | null; optional — The authoring identity attributed to this entity. When omitted, the server attributes a configured fallback identity (theloom/config.py's defaultSession) so every entity carries authorship -- never left absent.
   - `version` — integer | null; optional
   - `previousVersionId` — string | null; optional
   - `changeType` — string | null; optional
@@ -621,7 +641,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `entityIds` — array<string>; required
   - `delta` — number; required
-  - `dampingFactor` — number | null; optional
+  - `dampingFactor` — number | string | null; optional — A plain number (0-1 inclusive) applies that constant at every hop, exactly as before. Pass 'calibrated' (desire 14) to resolve damping per hop from the SOURCE entity's author's own measured reliability (1 - their Brier score over resolved claims they've asserted -- see calibration-profile/resolve-claim) instead of a constant, so credit from a well-calibrated author propagates further than credit from a poorly-calibrated one. An author with too little resolved history falls back to the ordinary constant and the response carries an INSUFFICIENT_DATA notice naming them. Each change in the response carries the exact `dampingApplied` value used for its hop.
   - `maxDepth` — integer | null; optional
   - `minDelta` — number | null; optional
   - `dryRun` — boolean | null; optional — Preview the propagation without persisting anything. Defaults to false: a call with no dryRun (or dryRun: false) computes AND PERSISTS the propagated confidence changes immediately — this is a mutating command by default, consistent with the other mutating epistemic commands (postmortem-evaluate, session-changelog). Pass dryRun: true to compute the would-be newConfidence values without writing them. Either way the response carries an `applied` marker (true iff a write actually happened) and, on a simulated run, a DRY_RUN notice.
@@ -878,12 +898,12 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `rule.conditions[].world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `rule.conditions[].from` — string; required — The pattern this condition matches against each existing relation's `from` (source) endpoint. Either a rule variable — a string starting with '?' (e.g. '?a') — bound at match time to whatever entity id satisfies the pattern, or a literal entity id, matched only against relations whose endpoint is exactly that id. IMPORTANT: a bare string that is not a real entity id (a display name, or a variable typo missing the '?', e.g. 'a' instead of '?a') validates with no error and creates the rule, but the rule can then never match anything — a silently inert rule, not a rejected one (TL-495 tracks warning about this case; not enforced here). The same variable name must bind to the same entity everywhere it appears across a rule's conditions, and any variable used in the conclusion must appear in at least one condition (checked at rule-creation time). Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, {"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion {"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new "enables" relation whenever two chained "enables" relations share a middle entity.
   - `rule.conditions[].to` — string; required — The pattern this condition matches against each existing relation's `to` (target) endpoint — same '?var' (rule variable, bound at match time) vs. literal-entity-id semantics as `from`: see that field's description for the full syntax, the inert-rule pitfall of a bare non-id string, and a worked example. Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, {"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion {"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new "enables" relation whenever two chained "enables" relations share a middle entity.
-  - `rule.conditions[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — The relation type this condition must match among the graph's existing relations (ANDed together with every other condition in the rule).
+  - `rule.conditions[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — The relation type this condition must match among the graph's existing relations (ANDed together with every other condition in the rule).
   - `rule.conclusion` — object; required — The relation derived when every condition matches, with each `?var` replaced by its bound entity id. See conclusion.from's description for the variable-binding rules.
   - `rule.conclusion.world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `rule.conclusion.from` — string; required — The `from` (source) endpoint of the relation to derive when every condition matches. Either a rule variable already bound by a condition (its bound entity id is substituted in) or a literal entity id used as-is. Every variable referenced here must appear in at least one condition — an unbound variable is rejected at rule-creation time. See RuleCondition's `from` field for the full '?var' syntax. Example: conditions [{"from": "?a", "relationType": "enables", "to": "?b"}, {"from": "?b", "relationType": "enables", "to": "?c"}] with conclusion {"from": "?a", "relationType": "enables", "to": "?c", ...} derives a new "enables" relation whenever two chained "enables" relations share a middle entity.
   - `rule.conclusion.to` — string; required — The `to` (target) endpoint of the relation to derive when every condition matches — same bound-variable-or-literal-id rule as `conclusion.from`; see RuleCondition's `from` field for the full '?var' syntax and a worked example.
-  - `rule.conclusion.relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — The relation type to create for the derived relation.
+  - `rule.conclusion.relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — The relation type to create for the derived relation.
   - `rule.conclusion.strength` — string; required
   - `rule.conclusion.evidence` — string; required
   - `rule.conclusion.polarity` — string | null; optional
@@ -1002,7 +1022,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `maxDepth` — integer | null; optional
   - `maxPaths` — integer | null; optional
   - `timeout` — integer | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `graph` — string | null; optional
 
 - **`find-shortest-path`** — Find the shortest path between entities.
@@ -1011,7 +1031,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `target` — string | null; optional
   - `sourceName` — string | null; optional
   - `targetName` — string | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `graph` — string | null; optional
 
 ## Relation Management
@@ -1020,7 +1040,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `from` — string; required
   - `to` — string; required
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `polarity` — enum(+, -) | null; required
   - `strength` — enum(weak, moderate, strong, foundational); required
   - `evidence` — string | null; required
@@ -1033,7 +1053,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `relations[].world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `relations[].from` — string; required
   - `relations[].to` — string; required
-  - `relations[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relations[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `relations[].polarity` — enum(+, -) | null; required
   - `relations[].strength` — enum(weak, moderate, strong, foundational); required
   - `relations[].evidence` — string | null; required
@@ -1047,7 +1067,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `from` — string; required
   - `to` — string; required
   - `relationId` — string | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `hard` — boolean | null; optional
   - `graph` — string | null; optional
 
@@ -1056,7 +1076,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `entityId` — string | null; optional
   - `name` — string | null; optional
   - `direction` — string | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `graph` — string | null; optional
   - `follow_bridges` — boolean | null; optional
   - `compact` — boolean | null; optional
@@ -1066,7 +1086,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `entityId` — string | null; optional
   - `name` — string | null; optional
   - `direction` — string | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `graph` — string | null; optional
   - `follow_bridges` — boolean | null; optional
   - `compact` — boolean | null; optional
@@ -1075,7 +1095,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `from` — string | null; optional
   - `to` — string | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `polarity` — enum(+, -) | null; optional
   - `session` — string | null; optional
   - `graph` — string | null; optional
@@ -1090,7 +1110,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `from` — string; required
   - `to` — string; required
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `graph` — string | null; optional
 
 - **`update-relation`** — Update an existing relation.
@@ -1098,7 +1118,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `from` — string; required
   - `to` — string; required
   - `relationId` — string | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `polarity` — enum(+, -) | null; optional
   - `strength` — enum(weak, moderate, strong, foundational) | null; optional
   - `evidence` — string | null; optional
@@ -1154,7 +1174,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `source` — string; required
   - `target` — string; required
   - `maxDepth` — integer | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `mode` — enum(WALK, TRAIL, ACYCLIC, SIMPLE) | null; optional
   - `graph` — string | null; optional
 
@@ -1163,7 +1183,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `source` — string; required
   - `target` — string; required
   - `maxDepth` — integer | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `graph` — string | null; optional
 
 - **`semiring-distances`** — Single-source semiring distances.
@@ -1171,7 +1191,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `source` — string; required
   - `semiring` — enum(boolean, tropical, tropical-uniform, viterbi, counting, capacity); required
   - `maxDepth` — integer | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `mode` — enum(WALK, TRAIL, ACYCLIC, SIMPLE) | null; optional
   - `limit` — integer | null; optional
   - `graph` — string | null; optional
@@ -1182,7 +1202,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `source` — string; required
   - `target` — string; required
   - `maxDepth` — integer | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `mode` — enum(WALK, TRAIL, ACYCLIC, SIMPLE) | null; optional
   - `graph` — string | null; optional
 
@@ -1191,7 +1211,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `source` — string; required
   - `target` — string; required
   - `maxDepth` — integer | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `mode` — enum(WALK, TRAIL, ACYCLIC, SIMPLE) | null; optional
   - `graph` — string | null; optional
 
@@ -1201,13 +1221,13 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `target` — string; required
   - `semiring` — enum(boolean, tropical, tropical-uniform, viterbi, counting, capacity) | null; optional
   - `maxDepth` — integer | null; optional
-  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
+  - `relationTypes` — array<enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from)> | null; optional
   - `mode` — enum(WALK, TRAIL, ACYCLIC, SIMPLE) | null; optional
   - `graph` — string | null; optional
 
 - **`transitive-closure`** — Boolean transitive closure pairs.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `maxDepth` — integer | null; optional
   - `graph` — string | null; optional
 
@@ -1219,7 +1239,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `temperature` — number | null; optional
   - `limit` — integer | null; optional
   - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `structuralWeight` — number | null; optional
   - `proximityWeight` — number | null; optional
   - `contextWeight` — number | null; optional
@@ -1242,7 +1262,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `entityId` — string | null; optional
   - `depth` — integer | null; optional
   - `entityType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session) | null; optional
-  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from) | null; optional — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `output_mode` — string | null; optional
   - `graph` — string | null; optional
 
@@ -1356,7 +1376,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `constraints` — array<object>; required
   - `constraints[].world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `constraints[].sourceType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session); required
-  - `constraints[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes. Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
+  - `constraints[].relationType` — enum(related_to, instance_of, part_of, sources, calls, references, supports, contradicts, questions, supersedes, resolves, causes, enables, requires, inhibits, amplifies, dampens, crystallized_from); required — Structural (no polarity): related_to, instance_of, part_of, sources, calls, references (the last two are code structure: invocation and non-invoking mention). Epistemic (no polarity): supports, contradicts, questions, supersedes, resolves (the calibration outcome link — an outcome entity resolves a claim/hypothesis; see ``theloom.operations.calibration``). Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens. Plus crystallized_from (reification lineage).
   - `constraints[].targetType` — enum(concept, claim, source, question, evidence, pattern, insight, tension, convergence, system, variable, loop, leverage_point, event, procedure, hypothesis, inference_rule, inference_trace, research_session); required
   - `graph` — string | null; optional
 

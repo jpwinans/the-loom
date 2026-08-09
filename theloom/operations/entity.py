@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import Field
 
+from theloom.config import load_config
 from theloom.errors import NotFoundError
 from theloom.model import (
     ConfidenceBasis,
@@ -29,7 +30,7 @@ from theloom.model import (
     is_valid_transition,
 )
 from theloom.operations.common import CommandInput, UuidStr, resolve_entity_ref
-from theloom.operations.notices import list_envelope, notice
+from theloom.operations.notices import Doc, list_envelope, notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
@@ -75,7 +76,12 @@ class CreateEntityInput(CommandInput):
     observations: list[str]
     confidence: ConfidenceArg | None = None
     provenance: ProvenanceArg | None = None
-    session: str | None = None
+    session: str | None = Field(
+        default=None,
+        description="The authoring identity attributed to this entity. When omitted, the "
+        "server attributes a configured fallback identity (theloom/config.py's "
+        "defaultSession) so every entity carries authorship -- never left absent.",
+    )
     version: int | None = Field(default=None, ge=1)
     previous_version_id: str | None = Field(default=None, alias="previousVersionId")
     change_type: str | None = Field(default=None, alias="changeType")
@@ -192,11 +198,65 @@ def _provenance_doc(provenance: ProvenanceArg) -> dict[str, Any]:
 # =============================================================================
 
 
+def _confidence_out_of_line_notice(
+    store: FalkorGraphStore,
+    *,
+    session: str,
+    basis: str,
+    domain: str | None,
+    asserted_score: float,
+) -> Doc | None:
+    """``CONFIDENCE_OUT_OF_LINE`` (desire 14): compares the score just
+    asserted against this author's OWN measured calibration bucket for this
+    basis (narrowed to this domain, when the entity has one) -- a notice,
+    never a rejection; the write already happened by the time this runs.
+
+    Defined here, in ``entity.py``, rather than in
+    ``theloom.operations.calibration`` where the bucket arithmetic actually
+    lives: the notices-catalog reachability walk
+    (``theloom.cli.notices_catalog``) only follows same-module calls from a
+    command's own handler, so a ``notice()`` call two modules deep would
+    never be attributed to ``create-entity``. ``calibration`` is imported
+    lazily to avoid a create_entity <-> resolve_claim import cycle
+    (``calibration.resolve_claim`` calls back into this module's
+    ``create_entity``/``update_entity``, the same reason ``update_entity``
+    below defers its own import of ``theloom.operations.relations``).
+    """
+    from theloom.operations import calibration
+
+    config = load_config()
+    gap_result = calibration.assertion_time_gap(
+        store,
+        session=session,
+        basis=basis,
+        domain=domain,
+        floor=config.calibration_min_bucket_n,
+    )
+    if gap_result is None:
+        return None
+    gap = asserted_score - gap_result.empirical_hit_rate
+    if abs(gap) < config.calibration_gap_threshold:
+        return None
+    domain_clause = f" in {domain}" if domain else ""
+    return notice(
+        "CONFIDENCE_OUT_OF_LINE",
+        f"Your {basis}-based claims{domain_clause} resolve at "
+        f"{gap_result.empirical_hit_rate:.2f} empirically (n={gap_result.n} judged); "
+        f"you asserted {asserted_score:.2f}.",
+        hint="Informational, not a rejection -- see calibration-profile for the full bucket.",
+    )
+
+
 def create_entity(params: CreateEntityInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
 
     warnings = entity_gate_warnings(store, params.name, params.observations)
     observations = [*params.observations, *warnings] if warnings else params.observations
+
+    # Required-with-default (desire 14): every entity now carries an author,
+    # server-supplied when the caller omits one -- never left absent. The
+    # input schema itself stays optional (no new required field).
+    session = params.session if params.session is not None else load_config().default_session
 
     doc: dict[str, Any] = {
         "name": params.name,
@@ -206,13 +266,12 @@ def create_entity(params: CreateEntityInput, multi: MultiGraph) -> dict[str, Any
         "previousVersionId": params.previous_version_id,
         "changeType": params.change_type if params.change_type is not None else "created",
         "changeReason": params.change_reason,
+        "session": session,
     }
     if params.confidence is not None:
         doc["confidence"] = _confidence_doc(params.confidence)
     if params.provenance is not None:
         doc["provenance"] = _provenance_doc(params.provenance)
-    if params.session is not None:
-        doc["session"] = params.session
     # 3D fields pass through only when truthy (conditional-spread guards).
     if params.memory_type:
         doc["memoryType"] = params.memory_type.value
@@ -224,7 +283,20 @@ def create_entity(params: CreateEntityInput, multi: MultiGraph) -> dict[str, Any
         doc["expiresAt"] = params.expires_at
 
     entity = store.create_entity(EntityCreate.model_validate(doc))
-    return entity.model_dump(by_alias=True, exclude_unset=True)
+    result = entity.model_dump(by_alias=True, exclude_unset=True)
+
+    calibration_notices: list[Doc] = []
+    if params.confidence is not None:
+        out_of_line = _confidence_out_of_line_notice(
+            store,
+            session=session,
+            basis=params.confidence.basis.value,
+            domain=params.domain.value if params.domain else None,
+            asserted_score=params.confidence.score,
+        )
+        if out_of_line is not None:
+            calibration_notices.append(out_of_line)
+    return with_notices(result, calibration_notices)
 
 
 def read_entity(params: ReadEntityInput, multi: MultiGraph) -> dict[str, Any]:

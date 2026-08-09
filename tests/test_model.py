@@ -92,7 +92,7 @@ def test_all_19_entity_types_match_reference() -> None:
     ]
 
 
-def test_all_17_relation_types_match_reference() -> None:
+def test_all_18_relation_types_match_reference() -> None:
     assert [t.value for t in ALL_RELATION_TYPES] == [
         "related_to",
         "instance_of",
@@ -104,6 +104,7 @@ def test_all_17_relation_types_match_reference() -> None:
         "contradicts",
         "questions",
         "supersedes",
+        "resolves",
         "causes",
         "enables",
         "requires",

@@ -81,6 +81,13 @@ NOTICE_CATALOG: dict[str, str] = {
         "a scope using its own retrieval (e.g. hybrid search) instead of "
         "grading or acting against the whole graph."
     ),
+    "CONFIDENCE_OUT_OF_LINE": (
+        "The confidence just asserted sits at least the configured threshold "
+        "away from this author's empirically measured hit rate for this "
+        "confidence basis (and domain, when set), computed from resolved "
+        "claims (resolve-claim). Informational only -- the write still "
+        "happened; recalibration is a nudge, never a rejection."
+    ),
     "CONTESTED_ON_MERGE": (
         "merge-world found one or more entities or relations changed in "
         "both the source and target world since the fork. These conflicts "
@@ -96,6 +103,14 @@ NOTICE_CATALOG: dict[str, str] = {
     "EMPTY_TRAVERSAL": (
         "The traversal found zero edges to follow from the source entity in "
         "the searched direction, so no results could be produced."
+    ),
+    "INSUFFICIENT_DATA": (
+        "A calibration bucket (calibration-profile, the assertion-time "
+        "feedback check, or propagate-credit's calibrated damping) has "
+        "fewer judged (confirmed/refuted) resolved claims than the "
+        "configured floor, so no Brier score, hit rate, gap, or measured "
+        "reliability is reported for it -- a fabricated number would be "
+        "worse than none."
     ),
     "NONE_PERSISTED": (
         "No entities of the kind this command lists have been persisted in "

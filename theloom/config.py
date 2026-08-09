@@ -6,10 +6,20 @@ highest wins:
     CLI flags > environment > ~/.loom/config.json > defaults
 
 Environment variables: GRAPH_HOST, GRAPH_PORT, DEFAULT_GRAPH, ANTHROPIC_API_KEY,
-LOOM_LLM_* (see below), LOOM_MODEL_CACHE_DIR, and LOOM_CONFIG (alternate
-config-file path). Config-file keys are camelCase (defaultGraph,
-anthropicApiKey, modelCacheDir) plus graphHost/graphPort for the FalkorDB
-substrate.
+LOOM_LLM_* (see below), LOOM_MODEL_CACHE_DIR, LOOM_DEFAULT_SESSION,
+LOOM_CALIBRATION_GAP_THRESHOLD, LOOM_CALIBRATION_MIN_BUCKET_N, and LOOM_CONFIG
+(alternate config-file path). Config-file keys are camelCase (defaultGraph,
+anthropicApiKey, modelCacheDir, defaultSession, calibrationGapThreshold,
+calibrationMinBucketN) plus graphHost/graphPort for the FalkorDB substrate.
+
+Calibration (desire 14, the closed calibration loop): ``defaultSession``
+(default ``"unattributed"``) is the author identity ``create-entity``
+attributes when a caller omits ``session`` -- every entity now carries
+authorship, never absence. ``calibrationGapThreshold`` (default ``0.2``) is
+how far an asserted confidence may sit from the author's measured hit rate
+before ``create-entity`` attaches a ``CONFIDENCE_OUT_OF_LINE`` notice.
+``calibrationMinBucketN`` (default ``5``) is the floor below which a
+calibration bucket reports ``INSUFFICIENT_DATA`` instead of a number.
 
 Embedding model cache: ``modelCacheDir`` (env ``LOOM_MODEL_CACHE_DIR``) pins
 where the embedder's HuggingFace/fastembed model files land, so the ~500MB
@@ -53,6 +63,24 @@ from theloom.errors import ConfigError
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 6379
 DEFAULT_GRAPH = "default"
+#: The fallback author identity ``create-entity`` attributes when a caller
+#: omits ``session`` (desire 14: entity authorship becomes required-with-
+#: default rather than optional-and-absent). A stable, recognizable string
+#: rather than e.g. a fresh uuid per call, so every unattributed entity
+#: lands in the *same* calibration bucket instead of each forming its own
+#: n=1 bucket that can never clear the floor.
+DEFAULT_SESSION = "unattributed"
+#: Desire 14's assertion-time feedback: how far an asserted confidence may
+#: sit from the author's empirically measured hit rate (for that basis/
+#: domain) before ``create-entity`` attaches a ``CONFIDENCE_OUT_OF_LINE``
+#: notice. Compared with ``>=`` -- a gap exactly at the threshold fires.
+DEFAULT_CALIBRATION_GAP_THRESHOLD = 0.2
+#: Desire 14's floor: a calibration bucket (calibration-profile, the
+#: assertion-time feedback check, and propagate-credit's calibrated damping)
+#: with fewer than this many judged (confirmed/refuted) resolved claims
+#: reports ``INSUFFICIENT_DATA`` rather than a number computed from too
+#: little evidence to trust.
+DEFAULT_CALIBRATION_MIN_BUCKET_N = 5
 
 
 def _default_model_cache_dir() -> str:
@@ -103,6 +131,9 @@ class LoomConfig:
     anthropic_api_key: str | None = None
     llm: LlmConfig | None = None
     model_cache_dir: str = field(default_factory=_default_model_cache_dir)
+    default_session: str = DEFAULT_SESSION
+    calibration_gap_threshold: float = DEFAULT_CALIBRATION_GAP_THRESHOLD
+    calibration_min_bucket_n: int = DEFAULT_CALIBRATION_MIN_BUCKET_N
 
 
 def default_config_path(env: Mapping[str, str]) -> Path:
@@ -169,6 +200,9 @@ def load_config(
     default_graph = DEFAULT_GRAPH
     anthropic_api_key: str | None = None
     model_cache_dir = _default_model_cache_dir()
+    default_session = DEFAULT_SESSION
+    calibration_gap_threshold = DEFAULT_CALIBRATION_GAP_THRESHOLD
+    calibration_min_bucket_n = DEFAULT_CALIBRATION_MIN_BUCKET_N
 
     # Layer 1: config file
     if isinstance(file_config.get("graphHost"), str):
@@ -181,6 +215,14 @@ def load_config(
         anthropic_api_key = str(file_config["anthropicApiKey"])
     if isinstance(file_config.get("modelCacheDir"), str):
         model_cache_dir = str(file_config["modelCacheDir"])
+    if isinstance(file_config.get("defaultSession"), str):
+        default_session = str(file_config["defaultSession"])
+    raw_gap_threshold = file_config.get("calibrationGapThreshold")
+    if isinstance(raw_gap_threshold, int | float) and not isinstance(raw_gap_threshold, bool):
+        calibration_gap_threshold = float(raw_gap_threshold)
+    raw_min_bucket_n = file_config.get("calibrationMinBucketN")
+    if isinstance(raw_min_bucket_n, int) and not isinstance(raw_min_bucket_n, bool):
+        calibration_min_bucket_n = raw_min_bucket_n
 
     llm = _resolve_llm(file_config.get("llm"), environment)
 
@@ -195,6 +237,24 @@ def load_config(
         anthropic_api_key = environment["ANTHROPIC_API_KEY"]
     if environment.get("LOOM_MODEL_CACHE_DIR"):
         model_cache_dir = environment["LOOM_MODEL_CACHE_DIR"]
+    if environment.get("LOOM_DEFAULT_SESSION"):
+        default_session = environment["LOOM_DEFAULT_SESSION"]
+    if environment.get("LOOM_CALIBRATION_GAP_THRESHOLD"):
+        try:
+            calibration_gap_threshold = float(environment["LOOM_CALIBRATION_GAP_THRESHOLD"])
+        except ValueError as exc:
+            raise LoomConfigError(
+                "Invalid LOOM_CALIBRATION_GAP_THRESHOLD: "
+                f"{environment['LOOM_CALIBRATION_GAP_THRESHOLD']!r}"
+            ) from exc
+    if environment.get("LOOM_CALIBRATION_MIN_BUCKET_N"):
+        try:
+            calibration_min_bucket_n = int(environment["LOOM_CALIBRATION_MIN_BUCKET_N"])
+        except ValueError as exc:
+            raise LoomConfigError(
+                "Invalid LOOM_CALIBRATION_MIN_BUCKET_N: "
+                f"{environment['LOOM_CALIBRATION_MIN_BUCKET_N']!r}"
+            ) from exc
 
     # Layer 3: CLI flags
     if flags:
@@ -216,6 +276,9 @@ def load_config(
         anthropic_api_key=anthropic_api_key,
         llm=llm,
         model_cache_dir=model_cache_dir,
+        default_session=default_session,
+        calibration_gap_threshold=calibration_gap_threshold,
+        calibration_min_bucket_n=calibration_min_bucket_n,
     )
 
 

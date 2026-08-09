@@ -13,10 +13,11 @@ dated path is unit-tested instead.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field
 
+from theloom.config import load_config
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.model import (
     ALL_ENTITY_STATUSES,
@@ -26,6 +27,7 @@ from theloom.model import (
     RelationFilter,
     confidence_label,
 )
+from theloom.operations import calibration
 from theloom.operations.common import CommandInput, UuidStr
 from theloom.operations.notices import list_envelope, notice, with_notices
 from theloom.store.falkor import FalkorGraphStore
@@ -168,6 +170,17 @@ class PostmortemEvaluateInput(CommandInput):
     dry_run: bool | None = Field(default=None, alias="dryRun")
 
 
+_PROPAGATE_CREDIT_DAMPING_DESC = (
+    "A plain number (0-1 inclusive) applies that constant at every hop, exactly as before. "
+    "Pass 'calibrated' (desire 14) to resolve damping per hop from the SOURCE entity's "
+    "author's own measured reliability (1 - their Brier score over resolved claims they've "
+    "asserted -- see calibration-profile/resolve-claim) instead of a constant, so credit from "
+    "a well-calibrated author propagates further than credit from a poorly-calibrated one. An "
+    "author with too little resolved history falls back to the ordinary constant and the "
+    "response carries an INSUFFICIENT_DATA notice naming them. Each change in the response "
+    "carries the exact `dampingApplied` value used for its hop."
+)
+
 _PROPAGATE_CREDIT_DRY_RUN_DESC = (
     "Preview the propagation without persisting anything. Defaults to "
     "false: a call with no dryRun (or dryRun: false) computes AND "
@@ -186,7 +199,9 @@ class PropagateCreditInput(CommandInput):
     # fallback is unreachable from the CLI.
     entity_ids: list[UuidStr] = Field(alias="entityIds")
     delta: float
-    damping_factor: float | None = Field(default=None, alias="dampingFactor")
+    damping_factor: float | Literal["calibrated"] | None = Field(
+        default=None, alias="dampingFactor", description=_PROPAGATE_CREDIT_DAMPING_DESC
+    )
     max_depth: int | None = Field(default=None, ge=1, alias="maxDepth")
     min_delta: float | None = Field(default=None, ge=0, alias="minDelta")
     dry_run: bool | None = Field(
@@ -832,6 +847,52 @@ def _dry_run_notice() -> Doc:
     )
 
 
+#: The ordinary constant damping default, also the fallback a calibrated hop
+#: uses when its source author has too little resolved history to trust.
+_CALIBRATED_DAMPING_FALLBACK = 0.5
+
+
+def _insufficient_calibration_notice(session: str, floor: int) -> Doc:
+    return notice(
+        "INSUFFICIENT_DATA",
+        f"'{session}' has fewer than {floor} judged resolved claims; calibrated damping fell "
+        f"back to the default constant ({_CALIBRATED_DAMPING_FALLBACK}) for hops sourced from "
+        "this author.",
+    )
+
+
+def _calibrated_hop_damping(
+    store: FalkorGraphStore,
+    session: str | None,
+    floor: int,
+    cache: dict[str, float | None],
+    fallback_sessions: set[str],
+) -> float:
+    """The per-hop damping factor for ``dampingFactor: "calibrated"``: the
+    hop's SOURCE entity's author's measured reliability (``1 - their Brier
+    score`` over every resolved claim they've asserted -- see
+    ``theloom.operations.calibration.author_reliability``), memoized per
+    author for the life of THIS ONE ``propagate-credit`` call only, never
+    across calls -- the next call always sees the latest resolutions, so
+    recalibration is felt immediately rather than served stale. Falls back
+    to the ordinary constant when the author has no calibration history yet,
+    recording that author in ``fallback_sessions`` so the caller can notice
+    it once per author rather than once per hop.
+    """
+    key = session if session is not None else ""
+    if key not in cache:
+        cache[key] = (
+            calibration.author_reliability(store, session=session, floor=floor)
+            if session is not None
+            else None
+        )
+    reliability = cache[key]
+    if reliability is None:
+        fallback_sessions.add(session or "(no author)")
+        return _CALIBRATED_DAMPING_FALLBACK
+    return reliability
+
+
 def _propagate_one(
     store: FalkorGraphStore,
     trigger_id: str,
@@ -858,9 +919,29 @@ def _propagate_one(
     }
     if not trigger.get("confidence"):
         return with_notices(empty, dry_notices, applied=False)
-    damping = options.get("dampingFactor", 0.5)
-    if not 0 <= damping <= 1:
-        raise ValidationError(f"dampingFactor must be between 0 and 1 (inclusive), got {damping}")
+    raw_damping = options.get("dampingFactor", _CALIBRATED_DAMPING_FALLBACK)
+    calibrated = raw_damping == "calibrated"
+    # `damping` (the constant path) and the calibrated-path bookkeeping are
+    # both always initialized, whichever branch below actually applies, so
+    # neither is possibly-unbound where the hop loop and the final notice
+    # assembly read them later.
+    damping = _CALIBRATED_DAMPING_FALLBACK
+    calibration_floor = 0
+    reliability_cache: dict[str, float | None] = {}
+    fallback_sessions: set[str] = set()
+    if calibrated:
+        calibration_floor = load_config().calibration_min_bucket_n
+    elif (
+        isinstance(raw_damping, int | float)
+        and not isinstance(raw_damping, bool)
+        and 0 <= raw_damping <= 1
+    ):
+        damping = float(raw_damping)
+    else:
+        raise ValidationError(
+            "dampingFactor must be a number between 0 and 1 (inclusive), or 'calibrated', "
+            f"got {raw_damping!r}"
+        )
     max_depth = min(options.get("maxDepth", 3), MAX_DEPTH_LIMIT)
     min_delta = options.get("minDelta", 0.01)
     relation_types = options.get("relationTypes", ["supports", "contradicts"])
@@ -880,7 +961,22 @@ def _propagate_one(
         if item["depth"] >= max_depth or abs(item["incomingDelta"]) < min_delta:
             continue
         outgoing = _relations(store, item["entityId"], "outgoing")
-        for relation in (r for r in outgoing if r["relationType"] in relation_types):
+        filtered_relations = [r for r in outgoing if r["relationType"] in relation_types]
+        if not filtered_relations:
+            continue
+        # Only looked up (and only ever falls back / notices) when there is
+        # at least one outgoing edge to actually apply it to -- a dead-end
+        # node's own author is irrelevant and must never generate a spurious
+        # INSUFFICIENT_DATA notice for reliability nothing used.
+        if calibrated:
+            source_doc = _read(store, item["entityId"])
+            source_session = (source_doc or {}).get("session")
+            hop_damping = _calibrated_hop_damping(
+                store, source_session, calibration_floor, reliability_cache, fallback_sessions
+            )
+        else:
+            hop_damping = damping
+        for relation in filtered_relations:
             target_id = relation["to"]
             if target_id in visited:
                 continue
@@ -891,7 +987,7 @@ def _propagate_one(
             strength_mult = VITERBI_STRENGTH_MAP.get(relation["strength"], 0.5)
             incoming = _relations(store, target_id, "incoming")
             n = max(sum(1 for r in incoming if r["relationType"] in relation_types), 1)
-            hop_delta = (1 / n) * damping * item["incomingDelta"] * strength_mult * polarity
+            hop_delta = (1 / n) * hop_damping * item["incomingDelta"] * strength_mult * polarity
             if abs(hop_delta) < min_delta:
                 continue
             target = _read(store, target_id)
@@ -930,6 +1026,7 @@ def _propagate_one(
                     "reason": reason,
                     "propagationPath": new_path,
                     "depth": new_depth,
+                    "dampingApplied": round(hop_damping, 6),
                 }
             )
             downstream = actual_delta if mode == "applied" else hop_delta
@@ -982,7 +1079,15 @@ def _propagate_one(
         "totalEntitiesAffected": len(changes),
         "maxDepthReached": max_depth_reached,
     }
-    return with_notices(result, dry_notices, applied=applied_count > 0)
+    calibration_notices = (
+        [
+            _insufficient_calibration_notice(session, calibration_floor)
+            for session in sorted(fallback_sessions)
+        ]
+        if calibrated
+        else []
+    )
+    return with_notices(result, [*dry_notices, *calibration_notices], applied=applied_count > 0)
 
 
 def propagate_credit(params: PropagateCreditInput, multi: MultiGraph) -> Doc:
