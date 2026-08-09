@@ -28,7 +28,6 @@ lancedb/
 
 # Local, machine-specific agent guidance (never committed)
 CLAUDE.local.md
-docs/agents/
 
 # Untracked working directories — kept out so a stray `git add -A` cannot
 # commit them. vestige/ in particular holds local session transcripts.
