@@ -79,7 +79,8 @@ one part of the codebase — for example
 **Contract and documentation**
 
 `root-1` (CLAUDE.md) · `root-2` (COMMANDS.md) · `root-3` (contract layer) ·
-`root-4` (uv.lock) · `docs` · `docs-architecture` · `examples`
+`root-4` (uv.lock) · `docs` · `docs-agents` (agent-skill configuration) ·
+`docs-architecture` · `examples`
 
 The human-readable labels these ids correspond to are listed in `map-manifest.json`.
 

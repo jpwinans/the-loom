@@ -1,9 +1,9 @@
 ---
 repo: the-loom
-commit: 624f69d3a4478ff3f04735ec6424d8888f4951b3
+commit: 11e6e831a003b72e9ac196ddf0387bde35361693
 graph: codebase-the-loom
 generated: 2026-08-09
-mode: full
+mode: incremental
 ---
 
 # The Loom — Architecture Map
@@ -33,25 +33,26 @@ in `tapestry/` renders live.
 
 | Metric | Value |
 |---|---|
-| Files in the graph | 425 |
+| Files in the graph | 428 |
 | External packages referenced | 68 |
-| Records (total) | 7,195 |
-| — structural (files, functions, classes, variables) | 6,150 |
-| — written layer (purposes, conventions, invariants, risks) | 1,045 |
-| Connections (total) | 15,961 |
-| — containment (`part_of`) | 6,522 |
-| — calls | 4,829 |
+| Records (total) | 7,300 |
+| — structural (files, functions, classes, variables) | 5,667 |
+| — written layer (purposes, conventions, invariants, risks) | 1,633 |
+| Connections (total) | 16,183 |
+| — containment (`part_of`) | 6,589 |
+| — calls | 4,879 |
 | — imports (`requires`) | 2,052 |
-| — cross-references (`related_to`, `references`, `instance_of`) | 2,558 |
-| Language mix | Python 302 · TypeScript 74 · Markdown 21 · JSON 14 · CSS 9 · JavaScript 2 · TOML/YAML/lock 3 |
+| — cross-references (`related_to`, `references`, `instance_of`) | 2,663 |
+| Language mix | Python 302 · TypeScript 74 · Markdown 24 · JSON 14 · CSS 9 · JavaScript 2 · TOML/YAML/lock 3 |
 | Files not parsed | 43 |
-| Module groups described | 54 of 54 |
+| Module groups described | 55 of 55 |
 
 > **Working tree was dirty at extraction.** The commit stamped in the front matter is
-> `624f69d`, but uncommitted changes were present when the graph was built (a modified
-> `.gitignore` and an untracked scratch file at the repo root). Anchors pointing into
-> tracked, unmodified files are exact; if you are reading this from a different working
-> state, treat line numbers as approximate rather than authoritative.
+> `11e6e831`, but uncommitted changes were present when the graph was built (this run's
+> `git status` showed a modified `.gitignore` at the repo root, plus locally-uncommitted
+> edits to this document set itself). Anchors pointing into tracked, unmodified files are
+> exact; if you are reading this from a different working state, treat line numbers as
+> approximate rather than authoritative.
 
 **43 files were not parsed.** The extractor covers Python, TypeScript, JavaScript,
 Markdown, JSON, CSS and a handful of config formats; anything outside that set
@@ -707,9 +708,10 @@ they were written against named in the docstring.
 
 - **`root-1` — `CLAUDE.md`.** The repo-root agent contract: the single file every session loads before touching the codebase. Six load-bearing invariants, the toolchain incantations, the package layout, a graph-first research protocol with a copy-pasteable first query and an escalation ladder, and the writing conventions. Its instructions explicitly override default behavior, so every statement is a constraint rather than advice. Its invariant claims are anchored at `CLAUDE.md:18-21` (one transactional store), `:22-25` (invalidate, never overwrite), `:26-28` (the model as source of truth), `:29-32` (typed error codes), `:33-34` (one config path), `:121-122` (the registry is the source of the CLI).
 - **`root-2` — `COMMANDS.md`.** The published contract surface, generated from the registry and checked in. Every command appears with its summary and a flattened table of every input field. Field descriptions carry real behavioral disclosure, so the catalog doubles as the behavioral contract. The checked-in file is byte-identical to generator output, enforced at `tests/test_generate_docs.py:43-49`.
-- **`root-3` — the contract layer.** `pyproject.toml` (dependency floors, console entry points, the lint/type/test gate), `docker-compose.yml` (the single database service with its persistence volume and uncapped result set), and the prose contract in `CONTEXT.md` / `CONTRIBUTING.md` / `README.md` / `STACK.md` / `SECURITY.md`. Two operator scripts build throwaway graphs, guarded by hard-coded non-default names (`scripts/gen_bench_graph.py:65-68`, `scripts/seed_live_dev.py:24-27`).
+- **`root-3` — the contract layer.** `pyproject.toml` (dependency floors, the `loom`/`the-loom` console entry points both bound to `theloom.cli.app:main`, and the lint/type/test gate), `docker-compose.yml` (the single FalkorDB service — its data volume must mount at `/var/lib/falkordb/data`, not `/data`, or the RDB snapshot is written nowhere durable — with `RESULTSET_SIZE -1` so a full-scan read errors instead of silently truncating), and the prose contract in `CONTEXT.md` / `CONTRIBUTING.md` / `README.md` / `STACK.md` / `SECURITY.md`. Two operator scripts build throwaway graphs, guarded by hard-coded non-default names (`scripts/gen_bench_graph.py:65-68`, `scripts/seed_live_dev.py:24-27`) and never touch the embedder, so the graphs they seed carry no vectors. As of commit `11e6e83`, `STACK.md` closed the dependency-rationale gap this map flagged at the prior run: it now carries rows for `numpy` (`STACK.md:38`), the `fastapi`/`uvicorn` `viz-serve` extra and the `umap-learn` `viz-umap` extra (`STACK.md:67-68`), and explicitly flags `readability-lxml` as declared-but-unused (`STACK.md:70-73`). One entry the rewrite did not resolve, and the one root-3 risk worth tracking now, is below (Tier 4, risk 35).
 - **`root-4` — `uv.lock`.** The resolved, hash-pinned dependency closure: 187 package entries, every artifact carrying a checksum and an upload timestamp, locked universally across every supported interpreter and platform rather than per-environment.
 - **`docs`** — the written-decision layer: numbered architecture decision records, dated design specs written before implementation, and recorded benchmark numbers with their reproduction recipe. Prose, not code: nothing imports these files.
+- **`docs/agents`** — three prose files that bind the repo's generic, portable agent skills to this repo's concrete infrastructure, read at run time as configuration rather than imported as code. `domain.md` tells an exploring skill which domain prose to read first (`CONTEXT.md`, `docs/adr/`) and how to surface a contradiction with an ADR; `issue-tracker.md` names GitHub Issues on `jpwinans/the-loom` as the canonical tracker, gives the exact `gh` invocations, and defines the `/wayfinder` map-and-children protocol including blocking edges and the frontier query; `triage-labels.md` maps the five canonical triage roles onto literal `gh issue edit` label strings. The indirection is what let the 2026-08-09 Jira-to-GitHub migration land by editing these three files rather than any skill. *Promises:* a triage label must already exist on the repo before it can be applied (`docs/agents/triage-labels.md:24-26`); blocking edges use the blocker's numeric database id, never its number or node id (`docs/agents/issue-tracker.md:51`); a wayfinder frontier ticket has zero open blockers and no assignee (`issue-tracker.md:52-53`); the repo is single-context — exactly one `CONTEXT.md` and one `docs/adr/` — and an absent domain doc is passed over silently (`docs/agents/domain.md:5`, `:12-17`, `:32-35`); the six `CLAUDE.md` invariants are standing ADRs, so contradicting one must be surfaced, never silently overridden (`domain.md:43-51`, `:14-17`). *Known tension:* GitHub is declared canonical while `TL-…` identifiers referencing the prior Jira tracker remain live and unresolvable through `gh` (`issue-tracker.md:5-12`, `triage-labels.md:5-8`); PRs are excluded from triage yet share one number space with issues (`issue-tracker.md:27`, `:35`).
 - **`docs/architecture`** — the committed output of the mapping pipeline (this file, the query cheat sheet, and the manifest whose `commit` field is the baseline the next run diffs against). The map is itself a node in the graph it measures.
 - **`examples`** — contributor-facing guides to the four agent skills the repository ships. No runnable code: each folder answers what the skill does, how to invoke it, and how it drives the CLI. It is also the honest-expectations layer, carrying cost, runtime and concurrency caveats the slash-command help text does not.
 
@@ -737,24 +739,25 @@ normalized to the whole graph.
 | 10 | `tapestry/src/views/systems/SystemsView.tsx` | 0.0145 | The causal-loop renderer with its overlays, animation and exports. |
 | 11 | `iso_now (timeutil)` | 0.0129 | The single canonical timestamp producer. Every created or updated record, every event, and every bi-temporal bound calls it. |
 | 12 | `theloom/cli/registry.py` | 0.0124 | 1,918 lines declaring the entire command surface; the module-scope import block reaches into every operations module. |
-| 13 | `theloom/operations/epistemic.py` | 0.0120 | Seventeen epistemic query commands plus credit propagation in one module — a wide handler surface. |
-| 14 | `theloom/errors.py` | 0.0118 | The typed error hierarchy. Every module that can fail imports it, which is nearly all of them. |
-| 15 | `theloom/extraction/treesitter.py` | 0.0118 | The code extractor: per-language parsing plus the whole-project orchestration, all in one file. |
+| 13 | `theloom/store/worlds.py` | 0.0118 | Branchable belief worlds implemented as event-log replay over a reserved graph segment — every world command and every overlay read passes through it. |
+| 14 | `tests/test_synthesis_fidelity_semantic_grounding.py` | 0.0117 | The largest single test module by degree; its size is local test fixtures, not architectural weight. |
+| 15 | `theloom/errors.py` | 0.0117 | The typed error hierarchy. Every module that can fail imports it, which is nearly all of them. |
 
 ### By betweenness
 
 | # | Record | Score | Why it is a bridge |
 |---|---|---|---|
-| 1 | `theloom/store/multigraph.py` | 0.00081 | Everything above the store reaches persistence through it and nothing else; remove it and the operations layer is disconnected from the store layer. |
-| 2 | `theloom/store/falkor.py` | 0.00064 | The other half of that bridge — where the abstract surface becomes queries. |
+| 1 | `theloom/store/multigraph.py` | 0.00080 | Everything above the store reaches persistence through it and nothing else; remove it and the operations layer is disconnected from the store layer. |
+| 2 | `theloom/store/falkor.py` | 0.00063 | The other half of that bridge — where the abstract surface becomes queries. |
 | 3 | `theloom/cli/registry.py` | 0.00056 | The only path from the CLI application into the operations layer. |
 | 4 | `theloom/viz/bundle.py` | 0.00038 | The single assembler: it is the one point where analytics, temporal and semantic sections, the store, and the wire schema all meet before emission. |
 | 5 | `theloom/operations/semantic.py` | 0.00026 | The junction between the retrieval core and the discovery commands (search, clustering, gap detection, embedding lifecycle). |
 | 6 | `theloom/config.py` | 0.00024 | The one configuration resolution path, called from the CLI, the store, the embedder seam and several operations modules. |
-| 7 | `theloom/operations/analysis.py` | 0.00022 | Sixteen traversal and analytics commands bridging the CLI to the pure graph kernel. |
-| 8 | `theloom/semantic/embed.py` | 0.00017 | The embedder contract and the resolution seam every vector-producing path funnels through. |
-| 9 | `docs/architecture/ARCHITECTURE-MAP.md` | 0.00017 | This file. It is a node in the graph it measures: its outbound documentation references connect subsystems that share no code. |
-| 10 | `README.md` | 0.00016 | Same shape — the documentation hub that links the contract files to the subsystem docs. |
+| 7 | `theloom/operations/analysis.py` | 0.00021 | Sixteen traversal and analytics commands bridging the CLI to the pure graph kernel. |
+| 8 | `CLAUDE.md` | 0.00018 | New to this table this run. The repo-root agent contract now sits on the shortest path between the doc-reference cycle's members (`README.md` → `examples/map-codebase/README.md` → `docs/architecture/QUERYING.md` → back to `CLAUDE.md`) as that cycle shrank to one loop — it is the single hinge a reader crosses to get from any one root document to the others. |
+| 9 | `theloom/semantic/embed.py` | 0.00017 | The embedder contract and the resolution seam every vector-producing path funnels through. |
+| 10 | `docs/architecture/ARCHITECTURE-MAP.md` | 0.00014 | This file. It is a node in the graph it measures: its outbound documentation references connect subsystems that share no code. |
+| 11 | `README.md` | 0.00013 | Same shape — the documentation hub that links the contract files to the subsystem docs. |
 
 The shape to take away: **the store facade and the command registry are the two
 structural chokepoints of the Python package.** Any change to `MultiGraph.get_store` or
@@ -764,8 +767,9 @@ to `run_handler` is felt by every command; check `blast-radius` before touching 
 
 ## 4. Dependency cycles
 
-Cycle detection found 20 cycles. They fall into four kinds, and only one kind is worth
-acting on.
+Cycle detection found 16 cycles (down from 20 at the prior full map, mostly documentation
+cross-references that resolved as the doc set changed). They fall into four kinds, and only
+one kind is worth acting on.
 
 ### Import cycles in the store layer — **intentional**
 
@@ -776,16 +780,12 @@ acting on.
 
 ### Documentation reference cycles — **intentional**
 
-Five cycles among the prose files, all built from documentation cross-references rather
-than code:
+One cycle among the prose files this run (down from five at the prior full map — the
+others resolved as the doc set was edited):
 
 | Members |
 |---|
-| `README.md` → `examples/map-codebase/README.md` → `docs/architecture/QUERYING.md` → `README.md` |
-| `README.md` ↔ `docs/architecture/ARCHITECTURE-MAP.md` |
-| `CLAUDE.md` → `README.md` → `ARCHITECTURE-MAP.md` → `CLAUDE.md` |
-| `ARCHITECTURE-MAP.md` ↔ `CONTRIBUTING.md` |
-| `CLAUDE.md` → `README.md` → `ARCHITECTURE-MAP.md` → `docs/adr/0001-soft-chunk-pointers.md` → `CLAUDE.md` |
+| `CLAUDE.md` → `README.md` → `examples/map-codebase/README.md` → `docs/architecture/QUERYING.md` → `CLAUDE.md` |
 
 Mutual linking between an index, a contract and a walkthrough is the intended shape of a
 documentation set. No action.
@@ -818,6 +818,8 @@ type-only construction, the documentation ring is intended, and the rest is recu
 ---
 
 ## 5. Communities vs. directories
+
+*Not recomputed this run (embedding-heavy clustering) — as of commit `624f69d3a4478ff3f04735ec6424d8888f4951b3`.*
 
 Whole-graph structural connectivity gives a clean answer: **three connected components.**
 
@@ -897,10 +899,13 @@ explicitly accepted in the code that carries them.
 32. **A process-global test seam lives in the production config module** — `theloom/config.py:359-373`, consumed at `theloom/semantic/embed.py:117`.
 33. **A malformed config file is silently ignored while a malformed value is a hard error** — `theloom/config.py:174-178` versus `:150-155`.
 34. **Wall-clock sleeps carry the most important assertions in the bi-temporal tests** — `tests/test_falkor_store.py:88`, `:282`, `:584-587`; `tests/test_ops_merge.py:391-430`; `tests/test_worlds.py:25-29`. These are the suite's flake surface.
+35. **A stale `constraint.*` mypy override outlives the dependency-rationale gap it once tracked.** `STACK.md` (as of `11e6e83`) closed the previous gap between the declared dependency set and the documented rationale — it now carries rows for `numpy` (`STACK.md:38`), the `fastapi`/`uvicorn` `viz-serve` extra and the `umap-learn` `viz-umap` extra (`STACK.md:67-68`), and explicitly flags `readability-lxml` as declared-but-unused (`STACK.md:70-73`). But `pyproject.toml:87` still lists `constraint.*` in the mypy per-module `ignore_missing_imports` override, alongside `falkordb`/`sympy`/`z3`/`tree_sitter_typescript`/`umap`/`fastapi`/`uvicorn` — and `constraint` is neither a declared dependency nor imported anywhere under `theloom/`. Inert today; it would silently disarm type checking if a module literally named `constraint` were ever introduced. (Superseded finding: the prior run's broader library-rationale drift, flagged against `STACK.md:55-66` at commit `86f50bd4`, is resolved by the same `11e6e83` rewrite.)
 
 ---
 
 ## 7. Open seams
+
+*Not recomputed this run (embedding-heavy gap detection) — as of commit `624f69d3a4478ff3f04735ec6424d8888f4951b3`.*
 
 Pairs of records that read as near-duplicates in meaning but have no connection between
 them. Twenty were surfaced; these are the ones that point at something real rather than
@@ -926,10 +931,25 @@ vector-index construction outcomes). Those are expected and need no action.
 
 ## 8. Coverage and methodology
 
-**Coverage.** 54 of 54 module groups were described this run. No group was skipped, and
-no group carried a description forward from a previous run — this was a full re-map, so
-every purpose, convention, invariant and risk above was derived fresh from the code at
-commit `624f69d`.
+**Coverage.** This was another incremental refresh, not a full re-map. 55 of 55 module
+groups have a description in the graph; no group is unenriched or missing. This run
+re-enriched exactly one group fresh from the code at commit `11e6e83`: `root-3` (`repo
+root, part 3/4`) — the diff between `86f50bd4` and `11e6e83` touched `STACK.md` (closing
+the dependency-rationale gap flagged at the prior run), `docs/agents/issue-tracker.md`
+(a four-line clarification that a `TL-…` id is human-resolvable in Jira but has no `gh`
+equivalent), and removed a stray `pr-test.md` at the repo root. `docs/agents` (`docs-agents`)
+was carried forward this run — its diff (the four-line `issue-tracker.md` clarification)
+was too small to justify re-enrichment, so its semantic layer above is unverified against
+that four-line change specifically, though it was freshly enriched at the prior run
+(`86f50bd4`) and nothing else in the group moved. Four other groups — `theloom/cli`,
+`theloom/operations (part 3/4)`, `theloom/store (part 2/2)`, and everything not named
+above — remain carried forward from the runs where they were last (re-)enriched
+(`theloom/cli`, `theloom/operations (part 3/4)` and `theloom/store (part 2/2)` from the
+full map at commit `624f69d`; the rest from `86f50bd4`) and have not been re-verified
+against the current code. The load-bearing-modules and cycles numbers above are freshly
+recomputed this run; the Communities-vs-directories (§5) and Open-seams (§7) sections
+were **not** recomputed — they still reflect the whole-graph embedding pass from commit
+`624f69d3a4478ff3f04735ec6424d8888f4951b3`.
 
 **What is not in the graph.** 43 files were not parsed: the extractor handles Python,
 TypeScript, JavaScript, Markdown, JSON, CSS and a few config formats, and anything
@@ -938,10 +958,11 @@ graph also records only what static analysis can see — dynamic dispatch, strin
 lookups and runtime registration are invisible to it, which is why several risks above
 had to be read out of comments and docstrings rather than out of edges.
 
-**Working-tree caveat.** The tree was dirty at extraction (a modified `.gitignore` and
-one untracked file at the repo root). Anchors into tracked, unmodified files are exact.
+**Working-tree caveat.** The tree was dirty at extraction (a modified `.gitignore` at the
+repo root, plus uncommitted edits to this document set). Anchors into tracked, unmodified
+files are exact.
 
-**Graph.** `codebase-the-loom`, describing commit `624f69d3a4478ff3f04735ec6424d8888f4951b3`.
+**Graph.** `codebase-the-loom`, describing commit `11e6e831a003b72e9ac196ddf0387bde35361693`.
 
 **To re-run:**
 
