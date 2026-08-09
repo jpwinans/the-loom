@@ -231,6 +231,20 @@ class RefRegistry:
         updated = replace(record, status=STATUS_REAPED, reaped_at=iso_now())
         return self._commit(kind, ref_id, updated.to_doc(), "ref_reaped")
 
+    def update_metadata(self, kind: str, ref_id: str, patch: dict[str, Any]) -> RefRecord:
+        """Merge ``patch`` into a ref's ``metadata`` and commit, same as
+        every other write here (one event, kind-agnostic). Callers own their
+        own metadata shape; this never touches the ref's own lifecycle
+        fields (``status``/TTL) — only its opaque payload. Branchable belief
+        worlds (kind ``"world"``) use this for the domain-status axis
+        (``active``/``merged``/``abandoned``) a world tracks alongside, and
+        independently of, this registry's own ``active``/``expired``/
+        ``reaped`` ref lifecycle.
+        """
+        record = self._require(kind, ref_id)
+        updated = replace(record, metadata={**record.metadata, **patch})
+        return self._commit(kind, ref_id, updated.to_doc(), "ref_metadata_updated")
+
     def _require(self, kind: str, ref_id: str) -> RefRecord:
         record = self.get(kind, ref_id)
         if record is None:

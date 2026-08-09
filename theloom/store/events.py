@@ -190,6 +190,30 @@ class EventLog:
         """Drop the stream (graph deletion / reseeding)."""
         self._redis.delete(self.key)
 
+    def last_id(self) -> str | None:
+        """The most recent entry id in the stream, or ``None`` if empty —
+        a graph's "tip" (branchable belief worlds, desire 12: the id a fork
+        with no ``asOf`` captures as ``forkedAtEventId``)."""
+        entries = self._redis.xrevrange(self.key, count=1)
+        return _decode_id(entries[0][0]) if entries else None
+
+    def last_id_before(self, timestamp: str) -> str | None:
+        """The most recent entry id at or before ``timestamp`` (the wire ISO
+        format — see ``theloom.timeutil.iso_now``), or ``None`` if the stream
+        has no entry that old. The bi-temporal-fork half of ``last_id``: a
+        ``fork-world`` with ``asOf`` captures this instead of the live tip."""
+        entries = self._redis.xrevrange(self.key, max=str(_iso_to_epoch_ms(timestamp)), count=1)
+        return _decode_id(entries[0][0]) if entries else None
+
+    def entry_id_timestamp(self, entry_id: str) -> str:
+        """``entry_id``'s embedded epoch-ms, rendered in the wire ISO format
+        (``theloom.timeutil.iso_now``'s exact shape) rather than
+        ``Event.timestamp``'s plain ``.isoformat()`` — so a caller comparing
+        it against ``tx_from``/``created_at``/other wire timestamps (a
+        world's ``forkedAt``, derived from ``forkedAtEventId``) can do so by
+        plain string comparison like every other timestamp in the store."""
+        return _entry_id_to_wire_iso(entry_id)
+
 
 def _build_events(entries: Sequence[tuple[Any, Any]]) -> list[Event]:
     events: list[Event] = []
@@ -218,6 +242,22 @@ def _entry_id_to_iso(entry_id: str) -> str:
     field and render it as ISO 8601 UTC."""
     milliseconds = int(entry_id.split("-", maxsplit=1)[0])
     return datetime.fromtimestamp(milliseconds / 1000, tz=UTC).isoformat()
+
+
+def _entry_id_to_wire_iso(entry_id: str) -> str:
+    """Like ``_entry_id_to_iso``, but in the wire format (``iso_now()``'s
+    exact ``YYYY-MM-DDTHH:MM:SS.mmmZ`` shape) instead of ``datetime``'s
+    default ``.isoformat()`` — see ``EventLog.entry_id_timestamp``."""
+    milliseconds = int(entry_id.split("-", maxsplit=1)[0])
+    dt = datetime.fromtimestamp(milliseconds / 1000, tz=UTC)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+
+
+def _iso_to_epoch_ms(timestamp: str) -> int:
+    """Inverse of ``_entry_id_to_wire_iso``: the wire ISO format back to
+    epoch milliseconds, for bounding an ``XREVRANGE`` by wall-clock time."""
+    dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1000)
 
 
 def _field(fields: dict[Any, Any], name: str) -> str:

@@ -262,6 +262,67 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             },
         )
 
+    def adopt_entity(self, doc: Mapping[str, Any], tx_from: str | None = None) -> Entity:
+        """Materialize a verbatim copy of an entity doc read from elsewhere
+        into *this* graph — the copy-on-write half of a branchable belief
+        world's overlay (``theloom.store.worlds.WorldGraphStore``): a fork
+        reads an inherited entity straight from its parent, but the first
+        *write* addressing that id needs a local incarnation to snapshot and
+        swap, because the parent's own node must never be touched (worlds:
+        "main is never mutable from inside a fork").
+
+        Routed through ``_commit`` (the one commit primitive every write
+        goes through) like every other mutation, but with an empty events
+        list: the doc is byte-identical to what a reader already saw through
+        the overlay, so nothing observable has changed yet and there is
+        nothing for ``what-changed``/``diff-worlds`` to report. The *next*
+        mutation on this id (an ordinary ``update_entity``/``delete_entity``)
+        emits the real event, with this doc as its ``previous`` — exactly
+        mirroring ``import_entity_doc``'s "write doc verbatim; no event"
+        contract, just through the transactional primitive instead of a bare
+        query, since a copy-on-write is triggered by live traffic rather
+        than a one-shot migration script.
+        """
+        doc = dict(doc)
+        self._commit(
+            (
+                f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $tx, {_index_literal('ix')}}})",
+                {
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                    "tx": tx_from or doc.get("updated_at") or iso_now(),
+                    **_index_params(doc, "ix"),
+                },
+            ),
+            [],
+        )
+        return Entity.model_validate(doc)
+
+    def graft_entity(self, doc: Mapping[str, Any]) -> Entity:
+        """Create a verbatim copy of an entity doc — id preserved — as a
+        REAL, event-logged creation in this graph: ``merge-world``'s
+        counterpart to ``adopt_entity``. A fork's copy-on-write is invisible
+        (the doc a reader already saw, just relocated); grafting an entity
+        from a world's segment into another world (typically ``main``) via
+        an explicit merge is a genuine, user-visible write, so it earns a
+        real ``entity_created`` event other than the id being pre-chosen
+        rather than minted."""
+        doc = dict(doc)
+        index_literal = _index_literal("ix")
+        self._commit(
+            (
+                f"CREATE (n:_Entity {{id: $id, _doc: $doc, tx_from: $now, {index_literal}}})",
+                {
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                    "now": iso_now(),
+                    **_index_params(doc, "ix"),
+                },
+            ),
+            [("entity_created", {"entity": doc})],
+        )
+        return Entity.model_validate(doc)
+
     # -- vectors (entity vectors live in the same store) ------------------------
     #
     # The index itself — create, width, OPERATIONAL barrier, k-NN with its
@@ -847,6 +908,87 @@ class FalkorGraphStore(GraphSpace, GraphStore):
                 "doc": json.dumps(doc),
             },
         )
+
+    def adopt_relation(self, doc: Mapping[str, Any]) -> Relation:
+        """Materialize a verbatim copy of a relation doc read from elsewhere
+        into *this* graph — the relation twin of ``adopt_entity`` (see its
+        docstring for the full rationale). Both endpoints must already exist
+        in *this* graph (``WorldGraphStore`` adopts them first); no event,
+        for the same reason ``adopt_entity`` has none — the next real
+        mutation on this edge (``update_relation``/``delete_relation``)
+        carries it."""
+        doc = dict(doc)
+        self._commit(
+            (
+                "MATCH (a:_Entity {id: $from}), (b:_Entity {id: $to}) "
+                f"CREATE (a)-[:{doc['relationType']} {{id: $id, _doc: $doc}}]->(b)",
+                {
+                    "from": doc["from"],
+                    "to": doc["to"],
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                },
+            ),
+            [],
+        )
+        return Relation.model_validate(doc)
+
+    def graft_relation(self, doc: Mapping[str, Any]) -> Relation:
+        """Create a verbatim copy of a relation doc — id preserved — as a
+        REAL, event-logged creation: ``merge-world``'s counterpart to
+        ``adopt_relation`` (see ``graft_entity`` for the full rationale).
+        Both endpoints must already exist in this graph."""
+        doc = dict(doc)
+        self._commit(
+            (
+                "MATCH (a:_Entity {id: $from}), (b:_Entity {id: $to}) "
+                f"CREATE (a)-[:{doc['relationType']} {{id: $id, _doc: $doc}}]->(b)",
+                {
+                    "from": doc["from"],
+                    "to": doc["to"],
+                    "id": doc["id"],
+                    "doc": json.dumps(doc),
+                },
+            ),
+            [("relation_created", {"relation": doc})],
+        )
+        return Relation.model_validate(doc)
+
+    def relation_ids_known_live(self) -> set[str]:
+        """Every relation id this graph currently has an opinion about —
+        live or closed (a ``:_RelationVersion`` snapshot) — regardless of
+        when. Used by ``WorldGraphStore``'s overlay merge to tell "this
+        layer deleted an inherited relation" (shadow deeper layers) apart
+        from "this layer never heard of it" (fall through to them), since
+        ``list_relations`` alone cannot distinguish the two: a closed
+        relation is simply absent from it either way."""
+        live_rows = self._rows_paged("MATCH ()-[r]->() RETURN r.id")
+        closed_rows = self._rows_paged("MATCH (v:_RelationVersion) RETURN DISTINCT v.relation_id")
+        return {row[0] for row in live_rows} | {row[0] for row in closed_rows}
+
+    def relation_ids_known_as_of(self, timestamp: str) -> set[str]:
+        """``relation_ids_known_live``, bounded to what this graph knew *as
+        of* ``timestamp`` — the historical-layer form the overlay merge uses
+        once an ancestor's own state has been clamped to a fork point (a
+        later closure by that ancestor must not shadow a child that forked
+        away before it happened).
+
+        Built on ``_relations_as_of`` (the private half of
+        ``read_graph_as_of``) rather than ``read_graph_as_of`` itself: this
+        method is called as ``super().relation_ids_known_as_of(...)`` from
+        ``WorldGraphStore.read_graph_as_of``, and ``self.read_graph_as_of``
+        would resolve back to that same override through ordinary
+        (non-``super``) polymorphism — infinite recursion. ``_relations_as_of``
+        is never overridden, so it always reads *this* graph's own rows, plain
+        or world-local alike, with no entity-presence filtering to complicate
+        that (this method only needs relation ids, not a consistent snapshot).
+        """
+        open_ids = {relation.id for relation in self._relations_as_of(timestamp)}
+        closed_rows = self._rows_paged(
+            "MATCH (v:_RelationVersion) WHERE v.tx_to <= $t RETURN DISTINCT v.relation_id",
+            {"t": timestamp},
+        )
+        return open_ids | {row[0] for row in closed_rows}
 
     def replay_creation_events(
         self,
