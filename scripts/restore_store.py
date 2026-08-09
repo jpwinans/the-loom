@@ -24,19 +24,36 @@ store.
 
 Safety gate: without `--yes`, the script only prints what it *would* do
 (target container, resolved dump file, that file's mtime/size) and exits
-non-zero -- it touches nothing. Only `--yes` performs the destructive
-sequence: `docker stop <target>` -> `docker cp <dump>
-<target>:/var/lib/falkordb/data/dump.rdb` -> `docker start <target>` ->
-poll `PING` until the server is back up (bounded timeout) -> print
-`GRAPH.LIST` of the restored store. If any step from `docker stop` onward
-fails, the script reports the failure on stderr, exits non-zero, and -- since
-the target may now be sitting stopped -- makes one best-effort attempt to
-start it again before exiting, reporting separately if that also fails.
+non-zero -- it touches nothing. Before touching anything, the dump file must
+also be readable (`os.access(..., os.R_OK)`, not just present) -- a
+permission-denied dump fails here, before `docker stop`, so a bad dump file
+never leaves the target stopped in the first place.
+
+Only `--yes` performs the destructive sequence: `docker stop <target>` ->
+`docker cp <dump> <target>:/var/lib/falkordb/data/dump.rdb` -> `docker start
+<target>` -> poll `PING` until the server is back up (bounded timeout) ->
+print `GRAPH.LIST` of the restored store. If any step from `docker stop`
+onward fails, the script reports the failure on stderr, exits non-zero, and
+-- since the target may now be sitting stopped -- makes one best-effort
+attempt to start it again before exiting, reporting separately if that also
+fails.
+
+Every `docker` subprocess call (`inspect`/`stop`/`cp`/`start`, including the
+recovery restart itself) is bounded by `_DOCKER_TIMEOUT_SECONDS` (120s --
+generous for a stop/cp/start on a store-sized dump, but never unbounded). A
+wedged `docker cp` or `docker start` (a daemon hiccup, an unreadable-past-the-
+readability-check dump, anything else that hangs rather than fails fast) must
+not be able to block forever with the target sitting stopped -- that would
+defeat the recovery-restart guarantee below entirely. A timeout is folded
+into an ordinary non-zero return from `_run`, so it flows through the exact
+same failure/recovery path as any other docker error -- no separate handling
+needed per call site.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -63,6 +80,12 @@ _MTIME_DISPLAY_FORMAT = "%Y-%m-%d %H:%M:%S"
 _READY_TIMEOUT_SECONDS = 30.0
 _READY_POLL_SECONDS = 0.5
 
+# Bounds every `docker` subprocess call (inspect/stop/cp/start, including the
+# recovery restart). Generous for a stop/cp/start on a store-sized dump --
+# this is a ceiling against a wedged daemon or a hung copy, not a tuned
+# expectation of how long any of these normally take.
+_DOCKER_TIMEOUT_SECONDS = 120.0
+
 
 def _fail(message: str) -> NoReturn:
     sys.stderr.write(f"restore_store: {message}\n")
@@ -78,8 +101,24 @@ class _RestoreFailure(Exception):
     """
 
 
-def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True)
+def _run(
+    cmd: list[str], *, timeout: float = _DOCKER_TIMEOUT_SECONDS
+) -> subprocess.CompletedProcess[str]:
+    """Run a docker subprocess, bounded so a hang can never block forever.
+
+    A timed-out call is reported as an ordinary non-zero-returncode failure
+    (``stderr`` says why) rather than letting ``subprocess.TimeoutExpired``
+    propagate -- every call site already handles "docker command failed"
+    uniformly via ``result.returncode``, so a timeout needs no separate
+    handling to flow through the same failure/recovery path as any other
+    docker error.
+    """
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            cmd, returncode=1, stdout="", stderr=f"timed out after {timeout:.0f}s"
+        )
 
 
 def _resolve_dump_path(dump: Path | None, latest: bool, source_dir: Path) -> Path:
@@ -87,11 +126,19 @@ def _resolve_dump_path(dump: Path | None, latest: bool, source_dir: Path) -> Pat
         candidates = sorted(source_dir.glob(_BACKUP_GLOB), key=lambda p: p.name)
         if not candidates:
             _fail(f"no {_BACKUP_GLOB} backups found in {source_dir}")
-        return candidates[-1]
-    assert dump is not None  # argparse's mutually-exclusive group guarantees this
-    if not dump.is_file():
-        _fail(f"dump file not found: {dump}")
-    return dump
+        resolved = candidates[-1]
+    else:
+        assert dump is not None  # argparse's mutually-exclusive group guarantees this
+        if not dump.is_file():
+            _fail(f"dump file not found: {dump}")
+        resolved = dump
+    # Defense-in-depth ahead of the docker-subprocess timeout below: catch a
+    # permission-denied dump here, before `docker stop`, so a bad dump file
+    # never leaves the target stopped in the first place -- `is_file()` alone
+    # doesn't check readability.
+    if not os.access(resolved, os.R_OK):
+        _fail(f"dump file not readable: {resolved}")
+    return resolved
 
 
 def _verify_container_exists(container: str) -> None:

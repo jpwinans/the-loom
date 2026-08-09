@@ -131,7 +131,7 @@ asleep) the next time it wakes, unlike `cron`.
 
 `users.acl` denies the redis `RESTORE` command (it deserializes
 attacker-supplied bytes into a single key and the app never uses it -- see
-[docs/adr/0002-falkordb-acl-store-protection.md](docs/adr/0002-falkordb-acl-store-protection.md)).
+[adr/0002-falkordb-acl-store-protection.md](adr/0002-falkordb-acl-store-protection.md)).
 That denial is irrelevant here: restoring a backup means putting a whole
 snapshot back, not one key, so `scripts/restore_store.py` never sends
 `RESTORE` (or any other denied command) over the wire. It only does
