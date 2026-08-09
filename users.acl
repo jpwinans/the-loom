@@ -1,0 +1,1 @@
+user default on nopass ~* &* +@all -flushall -flushdb -config -acl|setuser -acl|deluser -acl|load -acl|save -shutdown -debug -eval -eval_ro -evalsha_ro -function -fcall -fcall_ro -module -replicaof -slaveof -failover -swapdb -migrate -restore -cluster
