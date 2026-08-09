@@ -104,8 +104,8 @@ uv run loom notices-catalog '{}'
 **Assert:** every notice code ships with a meaning and the commands that emit
 it — including codes born in this PR (`ALREADY_REAPED`, `CONTESTED_ON_MERGE`,
 `WORLD_PROJECTION_PARTIAL`, `INSUFFICIENT_DATA`, `CONFIDENCE_OUT_OF_LINE`,
-`ALL_DREAMS_REVIEWED`) — plus an `alerts` section for the session-alert
-vocabulary. Trigger two live to taste them:
+`ALL_DREAMS_REVIEWED`, `RULE_DISABLED`) — plus an `alerts` section for the
+session-alert vocabulary. Trigger two live to taste them:
 
 ```bash
 uv run loom propagate-credit '{"graph": "'"$G"'", "entityIds": ["<critic-transcript-1 id>"], "delta": 0.1, "dryRun": true}'   # → DRY_RUN, applied: false
@@ -149,10 +149,12 @@ uv run loom verify-fidelity '{"graph": "'"$G"'", "text": "The postal envelope wa
 ```
 
 **Assert:** the first grounds `envelope-invariant-holds` with `matchBasis:
-"semantic"` and a disclosed `matchScore`/`zScore`/`zCutoff`; the second — one
-shared word, wrong sense — is `omitted`, **with the same audit fields
-populated** so you can reconstruct *why* from the response alone. An honest
-no is as auditable as a yes.
+"semantic-sense"` — the name shares not one word with the sentence, so the
+entity's own *observation* anchored the decision, and the label says so —
+plus a disclosed `matchScore`/`zScore`/`zCutoff`; the second — one shared
+word, wrong sense — is `omitted`, **with the same audit fields populated**
+so you can reconstruct *why* from the response alone. An honest no is as
+auditable as a yes.
 
 ---
 
@@ -199,9 +201,15 @@ uv run loom merge-world '{"from": "'"$W"'", "into": "main", "strategy": "endorse
 **Assert:** the contested claim comes back under a `CONTESTED_ON_MERGE`
 notice, only the uncontested set applies, `applied` tells the truth. Retry
 with `{"strategy": "select", "entityIds": [...]}` to graft explicitly. Then
-`abandon-world` and verify: `main`'s event log is byte-identical to before
-the fork existed (capture `what-changed` output before/after and compare) —
-worlds are invisible to non-world consumers.
+`abandon-world` and verify the true invariant, live: capture `what-changed`
+before and after and compare. The *pre-fork prefix* of `main`'s log is
+byte-identical — nothing already written moved or reordered — and a replay
+of `main` turns up **zero** world-segment events; the only additions are
+`main`'s own deliberate actions, namely the conflicting `update-entity` you
+just issued against `main` and the explicit select-merge graft, the latter
+carrying `causedBy: "merge-world"`. Worlds are invisible to non-world
+consumers — they are not invisible to `main`'s own history of what `main`
+itself did.
 
 ---
 
@@ -214,6 +222,16 @@ Plant what a night should find: a contradiction that is only *transitive*
 (create `rival —contradicts→ bridge —supports→ envelope-invariant-holds`,
 plus an inference rule `A contradicts B ∧ B supports C ⇒ A contradicts C`
 via `inference-rule-create`), and a structural gap (one zero-relation entity).
+The rule payload in full — `description`, `conclusion.strength`, and
+`conclusion.evidence` are all required (omit any and the create comes back
+`VALIDATION_ERROR` naming the field), and `"enabled": true` is load-bearing:
+leave it off and the rule is stored but silently never fires, an omission
+that now announces itself with a `RULE_DISABLED` notice on the create
+response.
+
+```bash
+uv run loom inference-rule-create '{"graph": "'"$G"'", "rule": {"name": "contradiction-through-support", "description": "A contradicts B and B supports C implies A contradicts C", "enabled": true, "conditions": [{"from": "?a", "relationType": "contradicts", "to": "?b"}, {"from": "?b", "relationType": "supports", "to": "?c"}], "conclusion": {"from": "?a", "to": "?c", "relationType": "contradicts", "strength": "weak", "evidence": "derived: contradicts a supporter", "polarity": null}}}'
+```
 
 ```bash
 uv run loom consolidate '{"graph": "'"$G"'"}'
@@ -277,9 +295,17 @@ uv run loom hybrid-search '{"graph": "claude-memory", "query": "tests failing be
 ```
 
 **Assert:** the top hit is the multi-agent test-hazards memory, by meaning,
-not filename. Note the honesty at the miss end too: a query with no true
-match scores *below* the desire-8 baseline — the substrate says "nothing
-matches well" instead of pretending.
+not filename, scoring 0.52 combined (0.59 vector) against nothing else close.
+Note the honesty at the miss end too, precisely stated: fire an off-domain
+query (try raku pottery) and the *combined* score collapses far below any
+true match — 0.298 against 0.52 — even though the raw vector subscores
+(0.494–0.496) don't fall away to nothing; they settle at the embedder's
+anisotropic floor, sitting at the top of the measured unrelated band (mean
+0.474, max 0.488) rather than below it, exactly as `embedder-profile`
+(desire 8) already told you to expect. Nothing in the response flags the
+match as weak in words — the combined score is the tell, not a raw
+similarity number, which is the whole reason desire 8 measured that geometry
+in the first place.
 
 ---
 
