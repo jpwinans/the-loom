@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
-
 from theloom.cli.registry import run_handler
 from theloom.composites import alerts as alerts_composite
 from theloom.composites.consolidate import _pass_analogy, _resolve_passes
@@ -265,18 +263,36 @@ def test_acceptance_d_two_consolidations_are_independent_not_compounding(
 
 
 # =============================================================================
-# Alerts seam: graceful degradation without theloom.operations.calibration_alerts
+# Alerts seam: calibration alerts flow through collect_alerts now that
+# theloom.operations.calibration_alerts is merged (the seam's joint behavior)
 # =============================================================================
 
 
-def test_collect_alerts_degrades_gracefully_without_calibration_module(
-    multi: MultiGraph,
-) -> None:
-    with pytest.raises(ImportError):
-        import theloom.operations.calibration_alerts  # noqa: F401
+def test_collect_alerts_includes_calibration_alerts(multi: MultiGraph) -> None:
+    graph = "g"
+    claim = create(
+        multi,
+        graph,
+        "Seam Claim",
+        entityType="claim",
+        confidence={"score": 0.8, "basis": "inference"},
+    )
+    run_handler(
+        "resolve-claim",
+        {
+            "graph": graph,
+            "claimId": claim["id"],
+            "resolution": "confirmed",
+            "evidence": "seam joint-behavior test",
+        },
+        multi,
+    )
 
-    alerts = alerts_composite.collect_alerts("g", multi, since=None)
-    assert isinstance(alerts, list)
+    alerts = alerts_composite.collect_alerts(graph, multi, since=None)
+    codes = [a["code"] for a in alerts]
+    assert "CLAIM_RESOLVED" in codes
+    resolved = next(a for a in alerts if a["code"] == "CLAIM_RESOLVED")
+    assert claim["id"] in resolved["entityIds"]
 
 
 def test_dream_expiry_alert_fires_within_the_warning_window(multi: MultiGraph) -> None:

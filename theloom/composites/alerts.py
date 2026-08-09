@@ -92,21 +92,8 @@ def collect_alerts(graph: str, multi: MultiGraph, since: str | None) -> list[dic
     list[str], "data": dict}."""
     alerts: list[Doc] = [*_dream_expiry_alerts(graph, multi)]
 
-    try:
-        # Part 7's module, built in a parallel worktree off the same base --
-        # not merged yet as of this module's own landing, so this import is
-        # expected to fail today. mypy --strict resolves the installed
-        # `theloom` distribution far enough to know this submodule doesn't
-        # exist yet and reports it as an untyped/missing stub rather than a
-        # hard error; the ignore is the one line of this contract that is
-        # expected to become unnecessary (and should be deleted, not kept)
-        # once that module lands.
-        from theloom.operations.calibration_alerts import (  # type: ignore[import-untyped]
-            provide_alerts,
-        )
-    except ImportError:
-        provide_alerts = None
-    if provide_alerts is not None:
-        alerts.extend(provide_alerts(graph, multi, since))
+    from theloom.operations.calibration_alerts import provide_alerts
+
+    alerts.extend(provide_alerts(graph, multi, since))
 
     return alerts
