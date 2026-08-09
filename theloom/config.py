@@ -5,12 +5,16 @@ highest wins:
 
     CLI flags > environment > ~/.loom/config.json > defaults
 
-Environment variables: GRAPH_HOST, GRAPH_PORT, DEFAULT_GRAPH, ANTHROPIC_API_KEY,
-LOOM_LLM_* (see below), LOOM_MODEL_CACHE_DIR, LOOM_DEFAULT_SESSION,
-LOOM_CALIBRATION_GAP_THRESHOLD, LOOM_CALIBRATION_MIN_BUCKET_N, and LOOM_CONFIG
-(alternate config-file path). Config-file keys are camelCase (defaultGraph,
-anthropicApiKey, modelCacheDir, defaultSession, calibrationGapThreshold,
-calibrationMinBucketN) plus graphHost/graphPort for the FalkorDB substrate.
+Environment variables: GRAPH_HOST, GRAPH_PORT, GRAPH_USERNAME, GRAPH_PASSWORD,
+DEFAULT_GRAPH, ANTHROPIC_API_KEY, LOOM_LLM_* (see below), LOOM_MODEL_CACHE_DIR,
+LOOM_DEFAULT_SESSION, LOOM_CALIBRATION_GAP_THRESHOLD,
+LOOM_CALIBRATION_MIN_BUCKET_N, and LOOM_CONFIG (alternate config-file path).
+Config-file keys are camelCase (defaultGraph, anthropicApiKey, modelCacheDir,
+defaultSession, calibrationGapThreshold, calibrationMinBucketN) plus
+graphHost/graphPort/graphUsername/graphPassword for the FalkorDB substrate.
+``graphUsername``/``graphPassword`` are optional (default ``None``) and thread
+straight into every ``FalkorDB(...)`` client — unset today's deployments stay
+byte-identical; set them once a deployment turns on auth, no code change.
 
 Calibration (desire 14, the closed calibration loop): ``defaultSession``
 (default ``"unattributed"``) is the author identity ``create-entity``
@@ -127,6 +131,8 @@ class LoomConfig:
 
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    graph_username: str | None = None
+    graph_password: str | None = None
     default_graph: str = DEFAULT_GRAPH
     anthropic_api_key: str | None = None
     llm: LlmConfig | None = None
@@ -134,6 +140,27 @@ class LoomConfig:
     default_session: str = DEFAULT_SESSION
     calibration_gap_threshold: float = DEFAULT_CALIBRATION_GAP_THRESHOLD
     calibration_min_bucket_n: int = DEFAULT_CALIBRATION_MIN_BUCKET_N
+
+
+def credential_kwargs(config: LoomConfig) -> dict[str, str]:
+    """``username``/``password`` kwargs for ``FalkorDB(...)``, present only
+    when configured.
+
+    Every ``FalkorDB(...)`` instantiation site threads store credentials
+    through this one function instead of reading ``config.graph_username``/
+    ``graph_password`` itself, so the "pass only when set" rule lives in one
+    place. With neither field configured this returns ``{}``, so
+    ``FalkorDB(host=..., port=..., **credential_kwargs(config))`` behaves
+    identically to a bare ``FalkorDB(host=..., port=...)`` call — today's
+    unauthenticated deployments are unaffected; a future passworded/ACL'd one
+    works by setting config, with no code change.
+    """
+    kwargs: dict[str, str] = {}
+    if config.graph_username is not None:
+        kwargs["username"] = config.graph_username
+    if config.graph_password is not None:
+        kwargs["password"] = config.graph_password
+    return kwargs
 
 
 def default_config_path(env: Mapping[str, str]) -> Path:
@@ -186,9 +213,9 @@ def load_config(
 ) -> LoomConfig:
     """Resolve configuration with precedence flags > env > file > defaults.
 
-    ``flags`` accepts the resolved-field names: host, port, default_graph,
-    anthropic_api_key. ``env``/``config_path`` default to the real environment
-    and ~/.loom/config.json; tests inject both.
+    ``flags`` accepts the resolved-field names: host, port, graph_username,
+    graph_password, default_graph, anthropic_api_key. ``env``/``config_path``
+    default to the real environment and ~/.loom/config.json; tests inject both.
     """
     environment = os.environ if env is None else env
     path = Path(config_path) if config_path is not None else default_config_path(environment)
@@ -197,6 +224,8 @@ def load_config(
 
     host = DEFAULT_HOST
     port = DEFAULT_PORT
+    graph_username: str | None = None
+    graph_password: str | None = None
     default_graph = DEFAULT_GRAPH
     anthropic_api_key: str | None = None
     model_cache_dir = _default_model_cache_dir()
@@ -209,6 +238,10 @@ def load_config(
         host = str(file_config["graphHost"])
     if "graphPort" in file_config:
         port = _coerce_port(file_config["graphPort"], str(path))
+    if isinstance(file_config.get("graphUsername"), str):
+        graph_username = str(file_config["graphUsername"])
+    if isinstance(file_config.get("graphPassword"), str):
+        graph_password = str(file_config["graphPassword"])
     if isinstance(file_config.get("defaultGraph"), str):
         default_graph = str(file_config["defaultGraph"])
     if isinstance(file_config.get("anthropicApiKey"), str):
@@ -231,6 +264,10 @@ def load_config(
         host = environment["GRAPH_HOST"]
     if environment.get("GRAPH_PORT"):
         port = _coerce_port(environment["GRAPH_PORT"], "environment")
+    if environment.get("GRAPH_USERNAME"):
+        graph_username = environment["GRAPH_USERNAME"]
+    if environment.get("GRAPH_PASSWORD"):
+        graph_password = environment["GRAPH_PASSWORD"]
     if environment.get("DEFAULT_GRAPH"):
         default_graph = environment["DEFAULT_GRAPH"]
     if environment.get("ANTHROPIC_API_KEY"):
@@ -262,6 +299,10 @@ def load_config(
             host = str(flags["host"])
         if flags.get("port") is not None:
             port = _coerce_port(flags["port"], "flags")
+        if isinstance(flags.get("graph_username"), str):
+            graph_username = str(flags["graph_username"])
+        if isinstance(flags.get("graph_password"), str):
+            graph_password = str(flags["graph_password"])
         if isinstance(flags.get("default_graph"), str):
             default_graph = str(flags["default_graph"])
         if isinstance(flags.get("anthropic_api_key"), str):
@@ -272,6 +313,8 @@ def load_config(
     return LoomConfig(
         host=host,
         port=port,
+        graph_username=graph_username,
+        graph_password=graph_password,
         default_graph=default_graph,
         anthropic_api_key=anthropic_api_key,
         llm=llm,

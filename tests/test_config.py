@@ -1,8 +1,9 @@
 """Config-loader tests — one loader, one precedence chain.
 
-Precedence (highest wins): flags > env (GRAPH_HOST/GRAPH_PORT, DEFAULT_GRAPH,
-ANTHROPIC_API_KEY) > ~/.loom/config.json > defaults. Group/world-readable
-config warns on stderr. Invalid config files are ignored (silent-continue).
+Precedence (highest wins): flags > env (GRAPH_HOST/GRAPH_PORT/GRAPH_USERNAME/
+GRAPH_PASSWORD, DEFAULT_GRAPH, ANTHROPIC_API_KEY) > ~/.loom/config.json >
+defaults. Group/world-readable config warns on stderr. Invalid config files
+are ignored (silent-continue).
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from theloom.config import LoomConfigError, load_config
+from theloom.config import LoomConfig, LoomConfigError, credential_kwargs, load_config
 
 
 def write_config(tmp_path: Path, data: dict[str, object], mode: int = 0o600) -> Path:
@@ -130,6 +131,73 @@ def test_model_cache_dir_flag_overrides_env_and_file(tmp_path: Path) -> None:
         env={"LOOM_MODEL_CACHE_DIR": "/env/models"},
     )
     assert cfg.model_cache_dir == "/flag/models"
+
+
+# =============================================================================
+# Store credentials: graphUsername/graphPassword (GRAPH_USERNAME/
+# GRAPH_PASSWORD) — optional, default None, threaded into every FalkorDB(...)
+# client via credential_kwargs().
+# =============================================================================
+
+
+def test_graph_credentials_default_to_none(tmp_path: Path) -> None:
+    cfg = load_config(config_path=tmp_path / "missing.json", env={})
+    assert cfg.graph_username is None
+    assert cfg.graph_password is None
+
+
+def test_graph_credentials_from_config_file(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {"graphUsername": "loom-user", "graphPassword": "s3cret"},
+    )
+    cfg = load_config(config_path=path, env={})
+    assert cfg.graph_username == "loom-user"
+    assert cfg.graph_password == "s3cret"
+
+
+def test_graph_credentials_env_overrides_config_file(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {"graphUsername": "file-user", "graphPassword": "file-pass"},
+    )
+    cfg = load_config(
+        config_path=path,
+        env={"GRAPH_USERNAME": "env-user", "GRAPH_PASSWORD": "env-pass"},
+    )
+    assert cfg.graph_username == "env-user"
+    assert cfg.graph_password == "env-pass"
+
+
+def test_graph_credentials_flags_override_env_and_file(tmp_path: Path) -> None:
+    path = write_config(
+        tmp_path,
+        {"graphUsername": "file-user", "graphPassword": "file-pass"},
+    )
+    cfg = load_config(
+        flags={"graph_username": "flag-user", "graph_password": "flag-pass"},
+        config_path=path,
+        env={"GRAPH_USERNAME": "env-user", "GRAPH_PASSWORD": "env-pass"},
+    )
+    assert cfg.graph_username == "flag-user"
+    assert cfg.graph_password == "flag-pass"
+
+
+def test_credential_kwargs_empty_when_unset() -> None:
+    """No credentials configured -> FalkorDB(...) call stays byte-identical
+    to today's (no username/password kwargs at all)."""
+    cfg = LoomConfig()
+    assert credential_kwargs(cfg) == {}
+
+
+def test_credential_kwargs_includes_only_set_fields() -> None:
+    cfg = LoomConfig(graph_username="loom-user", graph_password=None)
+    assert credential_kwargs(cfg) == {"username": "loom-user"}
+
+
+def test_credential_kwargs_includes_both_when_set() -> None:
+    cfg = LoomConfig(graph_username="loom-user", graph_password="s3cret")
+    assert credential_kwargs(cfg) == {"username": "loom-user", "password": "s3cret"}
 
 
 # =============================================================================

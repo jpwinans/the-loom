@@ -11,7 +11,7 @@ import pytest
 from falkordb import FalkorDB
 from redis import Redis
 
-from theloom.config import LoomConfig, load_config
+from theloom.config import LoomConfig, credential_kwargs, load_config
 from theloom.store.memory import InMemoryGraphStore
 from theloom.store.multigraph import MultiGraph
 
@@ -23,7 +23,7 @@ def config() -> LoomConfig:
 
 @pytest.fixture(scope="session")
 def db(config: LoomConfig) -> FalkorDB:
-    return FalkorDB(host=config.host, port=config.port)
+    return FalkorDB(host=config.host, port=config.port, **credential_kwargs(config))
 
 
 @pytest.fixture(scope="session")
