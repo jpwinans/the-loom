@@ -84,7 +84,7 @@ _ENTITY_LABEL = "_Entity"
 _VECTOR_PROPERTY = VECTOR_PROPERTY
 
 _IMMUTABLE_ENTITY_FIELDS = ("id", "created_at")
-_IMMUTABLE_RELATION_FIELDS = ("id", "from", "to", "created_at")
+_IMMUTABLE_RELATION_FIELDS = ("id", "created_at")
 
 # The derived read-index properties, in wire-doc projection order. Named
 # without the leading underscore here; the node property is "_" + field.
@@ -1133,16 +1133,28 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             "txFrom": current.get("created_at", now),
             "now": now,
         }
-        if merged["relationType"] != current["relationType"]:
-            # relationType is an updatable field; the edge is
-            # retyped structurally (delete + recreate, same id/doc) so Cypher
-            # type-filtered traversals stay consistent with the doc.
+        retyped = merged["relationType"] != current["relationType"]
+        redirected = merged["from"] != current["from"] or merged["to"] != current["to"]
+        if retyped or redirected:
+            # relationType and endpoints are both updatable fields, but
+            # Cypher has no SET for either (a relationship's type and its
+            # start/end nodes are structural, fixed at creation) -- so
+            # either kind of change is applied the same way: delete +
+            # recreate, same id/doc, snapshotted first exactly like the
+            # SET branch below. A WITH is required between the DELETE and
+            # the second MATCH (FalkorDB refuses to introduce a MATCH
+            # after an updating clause without one); harmless when only
+            # the type changed, since $newFrom/$newTo then equal the
+            # current endpoints and the second MATCH just re-finds the
+            # same two nodes DELETE didn't touch.
             step = (
-                "MATCH (a:_Entity {id: $from})-[r]->(b:_Entity {id: $to}) "
-                f"WHERE id(r) = $rid {snapshot_clause}DELETE r "
+                "MATCH ()-[r]->() WHERE id(r) = $rid "
+                f"{snapshot_clause}DELETE r "
+                "WITH 1 AS _skip "
+                "MATCH (a:_Entity {id: $newFrom}), (b:_Entity {id: $newTo}) "
                 f"CREATE (a)-[:{merged['relationType']} "
                 "{id: $eid, _doc: $doc, tx_from: $now}]->(b)",
-                {**params, "from": from_id, "to": to_id},
+                {**params, "newFrom": merged["from"], "newTo": merged["to"]},
             )
         else:
             step = (

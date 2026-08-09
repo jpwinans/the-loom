@@ -41,7 +41,7 @@ from theloom.operations.common import CommandInput
 from theloom.operations.notices import Doc, list_envelope
 from theloom.store.events import Event, EventLog
 from theloom.store.multigraph import MultiGraph
-from theloom.store.worlds import world_graph_name
+from theloom.store.worlds import require_world, world_graph_name
 
 # Bookkeeping fields that change on every write regardless of content — never
 # meaningful "what changed" rows on their own.
@@ -301,9 +301,19 @@ def _event_log_for(multi: MultiGraph, graph: str | None, world: str | None) -> E
     writes never land in the parent's stream (``theloom.store.worlds``), so
     reading the parent's log while a world is active would silently show
     the wrong span rather than the fork's own history.
+
+    ``require_world`` validates the ref exists (and is spelled correctly)
+    before ``multi.event_log`` ever runs: that call happily opens a stream
+    for ANY name, existing or not (an event log is schemaless, lazily
+    created on first append) -- without this check, ``what-changed`` against
+    a typo'd or already-purged worldId would silently read an empty stream
+    and report ``{"items": [], "count": 0}``, indistinguishable from "this
+    world genuinely made no changes," instead of the NOT_FOUND every other
+    world-addressed command raises for the same mistake.
     """
     if world in (None, "", "main"):
         return multi.event_log(graph)
+    require_world(multi, world)
     return multi.event_log(world_graph_name(world))
 
 

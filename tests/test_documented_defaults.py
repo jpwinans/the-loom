@@ -66,10 +66,13 @@ from theloom.operations.worlds import (
     AbandonWorldInput,
     ForkWorldInput,
     ListWorldsInput,
+    MergeWorldInput,
     abandon_world,
     fork_world,
     list_worlds,
+    merge_world,
 )
+from theloom.store import worldctx
 from theloom.store.multigraph import MultiGraph
 
 # =============================================================================
@@ -372,6 +375,51 @@ def _verify_list_worlds_include_reaped(multi: MultiGraph) -> None:
     )
     assert world_id in {w["worldId"] for w in explicit_true["items"]}, (
         "includeReaped: true must still find it -- reaping never forgets a world"
+    )
+
+    # A merged world is the case the field's own description names
+    # explicitly but the ref registry's `status` field alone cannot detect
+    # -- merge_world deliberately never reaps the ref (the two axes are
+    # independent by design; see theloom.store.worlds.list_worlds's own
+    # docstring), so this exercises the domain-status half of the filter
+    # on its own, not the reaped-ref half `abandon_world` already covers
+    # above.
+    merged_fork = fork_world(ForkWorldInput.model_validate({"graph": "default"}), multi)
+    merged_world_id = merged_fork["worldId"]
+    # create_entity resolves its store via multi.get_store(params.graph),
+    # which reads the ambient theloom.store.worldctx contextvar rather than
+    # a `world` field on the params -- normally opened by run_handler's own
+    # dispatch from the command's validated `world`, so a direct call (as
+    # every other verifier in this file makes) needs the same scope opened
+    # by hand to actually land the write inside the fork instead of main.
+    with worldctx.active(merged_world_id):
+        create_entity(
+            CreateEntityInput.model_validate(
+                {
+                    "graph": "default",
+                    "name": "documented-defaults merge probe",
+                    "entityType": "concept",
+                    "observations": [
+                        "exists only to give merge-world something uncontested to apply"
+                    ],
+                }
+            ),
+            multi,
+        )
+    merge_result = merge_world(
+        MergeWorldInput.model_validate({"from": merged_world_id, "into": "main"}), multi
+    )
+    assert merge_result["applied"] is True, "the probe entity must merge cleanly (uncontested)"
+
+    omitted_after_merge = list_worlds(ListWorldsInput.model_validate({}), multi)
+    explicit_true_after_merge = list_worlds(
+        ListWorldsInput.model_validate({"includeReaped": True}), multi
+    )
+    assert merged_world_id not in {w["worldId"] for w in omitted_after_merge["items"]}, (
+        "documented default (false) must hide a merged world, not just a reaped/abandoned one"
+    )
+    assert merged_world_id in {w["worldId"] for w in explicit_true_after_merge["items"]}, (
+        "includeReaped: true must still find a merged world too"
     )
 
 

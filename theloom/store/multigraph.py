@@ -140,26 +140,35 @@ class MultiGraph:
         then registry) are ordered so a failure never leaves a
         deregistered-but-undeleted orphan behind.
 
-        ``get_store(name)`` is called for its world/graph coherence check
-        alone (the same one every other command gets — an ambient belief
-        world, ``theloom.store.worldctx``, that names a different base
-        graph than ``name`` is rejected here too) and its result is then
-        discarded: the actual delete always targets the *plain* graph
-        (``plain_store``), never a world's own segment. Worlds have no
-        entry in this registry by design, so there is no meaningful "delete
-        this graph inside a world" — a request naming a *coherent* world
-        (one that actually forked from ``name``) still deletes the base
-        graph, not the fork; get_store would hand back a ``WorldGraphStore``
-        for that combination, and calling ``delete_graph_data`` on *that*
-        would silently erase the fork's segment while this method's own
-        registry-mutation still removed the base graph's name — two
-        different targets, exactly the confusion this avoids.
+        Refuses outright whenever ANY non-``main`` world is ambient
+        (``theloom.store.worldctx``), regardless of whether it names ``name``
+        coherently. An earlier version of this method ran a coherence check
+        alone (``get_store(name)``, discarding the result) and let a
+        *coherent* world reference through to delete the base graph anyway —
+        reasoning that worlds have no registry entry of their own, so there
+        is no meaningful "delete this graph inside a world" to redirect to.
+        That was itself the bug: it deleted ``main``'s own data — the
+        world's own parent — while a live fork's ``baseGraph`` still pointed
+        at it, from inside what should have been a read/write scope confined
+        to the fork's own segment. ``main`` is never mutable from inside a
+        fork (the same invariant every ``WorldGraphStore`` write override
+        upholds by copying-on-write into the fork's segment instead of
+        touching the parent) — deleting graph data is no exception, coherent
+        target or not. A caller that genuinely means to delete the base
+        graph does so with no world active (``abandon-world``/``merge-world``
+        the fork first, or simply omit ``world``).
         """
         if name == self.default_graph:
             raise OperationError(f"Cannot delete the default graph '{name}'")
         if not self.has_graph(name):
             raise NotFoundError(f"Graph '{name}' not found")
-        self.get_store(name)  # coherence check only; see docstring
+        effective_world = worldctx.current()
+        if effective_world not in (None, worldctx.MAIN):
+            raise ValidationError(
+                f"delete-graph cannot run inside world '{effective_world}' — main is never "
+                "mutable from inside a fork. Abandon or merge the world first, or omit "
+                "`world` to delete the base graph directly."
+            )
         self.plain_store(name).delete_graph_data()
         self._redis.srem(self._registry_key, name)
 

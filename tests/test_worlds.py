@@ -305,13 +305,21 @@ def test_diff_worlds_event_ids_are_a_superset_of_what_merge_world_applies(
 ) -> None:
     """The critic's blocking-gap invariant, pinned as a property test: for a
     world with a genuinely mixed batch of writes (create, rename,
-    confidence, status transition, relation, hard delete), every event id
-    merge-world's own candidate set is built from
+    confidence, status transition, relation, hard delete, entity merge),
+    every event id merge-world's own candidate set is built from
     (``_last_event_by_record_id`` over the fork's own segment) is visible
     somewhere in diff-worlds' reported event ids. Reconstructed here
     independently, through the same public event-log read merge-world
     itself uses -- not by reaching into either command's private state --
     so this is a genuine black-box check of the invariant, not a tautology.
+
+    ``merge-entities`` is included deliberately (round 3's blocking item 1):
+    its ``entities_merged`` event is shaped differently from every other
+    write here (a ``primary``/``secondary`` pair plus ``redirectedRelations``,
+    no top-level ``entity``/``relation`` key), so a version of this test
+    that never exercised it would not have caught the write-path gap that
+    made it a silent no-op, nor the follow-on gap in the endpoint-redirect
+    itself landing when merged into ``main``.
     """
     graph = "g"
     now = iso_now()
@@ -327,6 +335,10 @@ def test_diff_worlds_event_ids_are_a_superset_of_what_merge_world_applies(
     status_me = create(multi, graph, "StatusMe")
     delete_me = create(multi, graph, "DeleteMe")
     rel_target = create(multi, graph, "RelTarget")
+    merge_primary = create(multi, graph, "MergePrimary")
+    merge_secondary = create(multi, graph, "MergeSecondary")
+    merge_rel_target = create(multi, graph, "MergeRelTarget")
+    secondary_rel = relate(multi, graph, merge_secondary["id"], merge_rel_target["id"])
 
     world = fork(multi, graph, name="mixed-batch")
     wid = world["worldId"]
@@ -355,6 +367,16 @@ def test_diff_worlds_event_ids_are_a_superset_of_what_merge_world_applies(
     run_handler(
         "delete-entity", {"graph": graph, "id": delete_me["id"], "world": wid, "hard": True}, multi
     )
+    run_handler(
+        "merge-entities",
+        {
+            "graph": graph,
+            "world": wid,
+            "primary": merge_primary["id"],
+            "secondary": merge_secondary["id"],
+        },
+        multi,
+    )
 
     diff = run_handler("diff-worlds", {"a": "main", "b": wid}, multi)
     diff_event_ids = {row["eventId"] for row in diff["items"] if row.get("eventId")}
@@ -362,10 +384,21 @@ def test_diff_worlds_event_ids_are_a_superset_of_what_merge_world_applies(
     # Reconstructed independently, through the fork's own local event log --
     # the same public surface (multi.event_log) merge-world's own
     # _last_event_by_record_id reads, not a peek at either command's
-    # private state.
+    # private state. entities_merged is handled the same way that function
+    # does, reconstructed from its documented payload shape rather than by
+    # importing the production helper -- a genuine independent check.
     fork_events = multi.event_log(world_graph_name(wid)).read_all()
     merge_candidate_event_ids: dict[str, str] = {}
     for event in fork_events:
+        if event.type == "entities_merged":
+            for key in ("primary", "secondary"):
+                record = event.payload.get(key)
+                if isinstance(record, dict) and isinstance(record.get("id"), str):
+                    merge_candidate_event_ids[record["id"]] = event.id
+            for relation_doc in event.payload.get("redirectedRelations") or []:
+                if isinstance(relation_doc, dict) and isinstance(relation_doc.get("id"), str):
+                    merge_candidate_event_ids[relation_doc["id"]] = event.id
+            continue
         record = event.payload.get("entity") or event.payload.get("relation")
         if isinstance(record, dict) and isinstance(record.get("id"), str):
             merge_candidate_event_ids[record["id"]] = event.id
@@ -390,6 +423,8 @@ def test_diff_worlds_event_ids_are_a_superset_of_what_merge_world_applies(
         conf_me["id"],
         status_me["id"],
         delete_me["id"],
+        merge_primary["id"],
+        merge_secondary["id"],
     }
     for entity_id in applied_ids:
         assert merge_candidate_event_ids[entity_id] in diff_event_ids
@@ -399,6 +434,21 @@ def test_diff_worlds_event_ids_are_a_superset_of_what_merge_world_applies(
     with pytest.raises(LoomError) as exc:
         run_handler("read-entity", {"graph": graph, "id": delete_me["id"]}, multi)
     assert exc.value.code == "NOT_FOUND"
+
+    # The redirected relation actually moved to the primary in main -- not
+    # just reported as applied while silently keeping its old endpoint (the
+    # bug this property test's merge-entities addition was built to catch).
+    applied_relation_ids = {row["relationId"] for row in result["appliedRelations"]}
+    assert secondary_rel["id"] in applied_relation_ids
+    assert merge_candidate_event_ids[secondary_rel["id"]] in diff_event_ids
+    primary_rels_in_main = run_handler(
+        "get-relations", {"graph": graph, "entityId": merge_primary["id"]}, multi
+    )
+    assert merge_rel_target["id"] in {r["to"] for r in primary_rels_in_main["items"]}
+    secondary_rels_in_main = run_handler(
+        "get-relations", {"graph": graph, "entityId": merge_secondary["id"]}, multi
+    )
+    assert merge_rel_target["id"] not in {r["to"] for r in secondary_rels_in_main["items"]}
 
 
 # =============================================================================
@@ -468,7 +518,14 @@ def test_acceptance_d_merge_applies_uncontested_and_notices_contested(multi: Mul
     merged_contested = run_handler("read-entity", {"graph": graph, "id": contested["id"]}, multi)
     assert merged_contested["confidence"]["score"] == 0.2
 
-    worlds = run_handler("list-worlds", {}, multi)
+    # A merged world is hidden from the default list (Part 5 round 3 item 9
+    # -- merge_world sets domainStatus without reaping the ref, so the
+    # default filter has to check both axes; see
+    # theloom.store.worlds.list_worlds's own docstring). includeReaped:
+    # true still finds it, with the domain status this assertion cares about.
+    default_worlds = run_handler("list-worlds", {}, multi)
+    assert wid not in {w["worldId"] for w in default_worlds["items"]}
+    worlds = run_handler("list-worlds", {"includeReaped": True}, multi)
     merged_world = next(w for w in worlds["items"] if w["worldId"] == wid)
     assert merged_world["status"] == "merged"
 
@@ -504,6 +561,213 @@ def test_merge_select_strategy_applies_a_manually_chosen_id_even_if_contested(
     assert result["contested"] == []
     merged = run_handler("read-entity", {"graph": graph, "id": contested["id"]}, multi)
     assert merged["name"] == "Fork-wins"
+
+
+def test_merge_propagates_relation_revisions_and_removals_inherited_by_the_fork(
+    multi: MultiGraph,
+) -> None:
+    """A relation the fork only *inherited* (created before the fork, never
+    touched by the fork itself) is invisible to merge-world's candidate set
+    entirely -- expected, `touched` only ever names ids the fork's own
+    segment has an opinion about. This test is about the two ways the fork
+    CAN have an opinion on an inherited relation without creating a fresh
+    one: revising it, and removing it -- both of which a prior version of
+    merge-world silently dropped (a revision looked "already present" by
+    id; a removal looked like "never a relation" once gone from the fork's
+    own live projection)."""
+    graph = "g"
+    a = create(multi, graph, "A")
+    b = create(multi, graph, "B")
+    c = create(multi, graph, "C")
+    revise_me = relate(multi, graph, a["id"], b["id"])
+    remove_me = relate(multi, graph, a["id"], c["id"])
+
+    world = fork(multi, graph)
+    wid = world["worldId"]
+    run_handler(
+        "update-relation",
+        {
+            "graph": graph,
+            "world": wid,
+            "from": a["id"],
+            "to": b["id"],
+            "relationType": "related_to",
+            "relationId": revise_me["id"],
+            "strength": "foundational",
+        },
+        multi,
+    )
+    run_handler(
+        "delete-relation",
+        {
+            "graph": graph,
+            "world": wid,
+            "from": a["id"],
+            "to": c["id"],
+            "relationType": "related_to",
+            "relationId": remove_me["id"],
+            "hard": True,
+        },
+        multi,
+    )
+
+    result = run_handler(
+        "merge-world", {"from": wid, "into": "main", "strategy": "endorse-all"}, multi
+    )
+    assert result["contested"] == []
+    applied_relation_ids = {row["relationId"] for row in result["appliedRelations"]}
+    assert applied_relation_ids == {revise_me["id"], remove_me["id"]}
+
+    main_relations = run_handler("get-relations", {"graph": graph, "entityId": a["id"]}, multi)
+    by_id = {row["id"]: row for row in main_relations["items"]}
+    assert by_id[revise_me["id"]]["strength"] == "foundational"
+    assert remove_me["id"] not in by_id
+
+
+def test_merge_contests_relation_changes_made_on_both_sides_since_fork(
+    multi: MultiGraph,
+) -> None:
+    """The relation twin of acceptance (d): a relation revised (or removed)
+    on both sides since the fork is neither silently applied nor silently
+    dropped -- it is reported in 'contested' and left alone, exactly like a
+    contested entity."""
+    graph = "g"
+    a = create(multi, graph, "A")
+    b = create(multi, graph, "B")
+    c = create(multi, graph, "C")
+    revised_both_sides = relate(multi, graph, a["id"], b["id"])
+    removed_then_revised = relate(multi, graph, a["id"], c["id"])
+
+    world = fork(multi, graph)
+    wid = world["worldId"]
+    run_handler(
+        "update-relation",
+        {
+            "graph": graph,
+            "world": wid,
+            "from": a["id"],
+            "to": b["id"],
+            "relationType": "related_to",
+            "relationId": revised_both_sides["id"],
+            "strength": "foundational",
+        },
+        multi,
+    )
+    run_handler(
+        "delete-relation",
+        {
+            "graph": graph,
+            "world": wid,
+            "from": a["id"],
+            "to": c["id"],
+            "relationType": "related_to",
+            "relationId": removed_then_revised["id"],
+            "hard": True,
+        },
+        multi,
+    )
+    # `main` independently revises both since the fork -- a genuine conflict
+    # either way (fork revised vs. main revised; fork removed vs. main
+    # revised).
+    run_handler(
+        "update-relation",
+        {
+            "graph": graph,
+            "from": a["id"],
+            "to": b["id"],
+            "relationType": "related_to",
+            "relationId": revised_both_sides["id"],
+            "strength": "strong",
+        },
+        multi,
+    )
+    run_handler(
+        "update-relation",
+        {
+            "graph": graph,
+            "from": a["id"],
+            "to": c["id"],
+            "relationType": "related_to",
+            "relationId": removed_then_revised["id"],
+            "strength": "strong",
+        },
+        multi,
+    )
+
+    result = run_handler(
+        "merge-world", {"from": wid, "into": "main", "strategy": "endorse-all"}, multi
+    )
+    contested_ids = {row["relationId"] for row in result["contested"]}
+    assert contested_ids == {revised_both_sides["id"], removed_then_revised["id"]}
+    assert result["appliedRelations"] == []
+    assert result["applied"] is False
+    assert any(n["code"] == "CONTESTED_ON_MERGE" for n in result["notices"])
+    # main's own (contested) revisions stand -- the merge did not clobber them.
+    main_relations = run_handler("get-relations", {"graph": graph, "entityId": a["id"]}, multi)
+    by_id = {row["id"]: row for row in main_relations["items"]}
+    assert by_id[revised_both_sides["id"]]["strength"] == "strong"
+    assert by_id[removed_then_revised["id"]]["strength"] == "strong"
+
+    # `select`, naming the relation explicitly, resolves the conflict in
+    # the fork's favor -- the same manual-resolution contract entities get.
+    select_result = run_handler(
+        "merge-world",
+        {
+            "from": wid,
+            "into": "main",
+            "strategy": "select",
+            "entityIds": [revised_both_sides["id"]],
+        },
+        multi,
+    )
+    assert {row["relationId"] for row in select_result["appliedRelations"]} == {
+        revised_both_sides["id"]
+    }
+    assert select_result["contested"] == []
+    resolved = run_handler("get-relations", {"graph": graph, "entityId": a["id"]}, multi)
+    resolved_by_id = {row["id"]: row for row in resolved["items"]}
+    assert resolved_by_id[revised_both_sides["id"]]["strength"] == "foundational"
+
+
+def test_invalidate_relation_adopts_an_inherited_relation_instead_of_404ing(
+    multi: MultiGraph,
+) -> None:
+    """``WorldGraphStore.invalidate_relation`` is reached directly (not
+    through ``delete_relation``) by ``theloom.operations.extraction`` and
+    ``theloom.extraction.codebasediff`` for bi-temporal edge retirement --
+    both call it against whatever relation a bulk import/extraction pass
+    finds, which inside a world is very often one the fork only *inherited*
+    and never touched itself. Before Part 5's fix, calling it on such a
+    relation raised NOT_FOUND (the base class's ordinary MATCH against the
+    fork's own, still-empty local segment); it must instead copy-on-write
+    adopt the relation first, exactly like ``update_relation``/
+    ``delete_relation`` already do, and then invalidate the local copy."""
+    graph = "g"
+    a = create(multi, graph, "A")
+    b = create(multi, graph, "B")
+    inherited = relate(multi, graph, a["id"], b["id"])
+
+    world = fork(multi, graph)
+    wid = world["worldId"]
+    world_store = multi.get_store(None, world=wid)
+
+    # The fork never touched this relation -- it exists only via the
+    # overlay's fall-through to main, not in the fork's own local segment.
+    invalidated = world_store.invalidate_relation(
+        a["id"], b["id"], "related_to", relation_id=inherited["id"]
+    )
+    assert invalidated.id == inherited["id"]
+
+    # Invalidated inside the fork: gone from the fork's live projection...
+    in_fork = run_handler(
+        "get-relations", {"graph": graph, "entityId": a["id"], "world": wid}, multi
+    )
+    assert inherited["id"] not in {row["id"] for row in in_fork["items"]}
+
+    # ...but main's own copy is untouched -- the fork's write landed in its
+    # own segment, never in the parent.
+    in_main = run_handler("get-relations", {"graph": graph, "entityId": a["id"]}, multi)
+    assert inherited["id"] in {row["id"] for row in in_main["items"]}
 
 
 # =============================================================================
@@ -755,6 +1019,164 @@ def test_bitemporal_read_inside_a_world(multi: MultiGraph) -> None:
     assert [e.name for e in snapshot_t0.entities] == ["A"]
     snapshot_t1 = world_store.read_graph_as_of(t1)
     assert [e.name for e in snapshot_t1.entities] == ["A2"]
+
+
+def test_what_changed_replays_a_worlds_own_segment_not_its_parents(multi: MultiGraph) -> None:
+    """``what-changed`` is world-aware: passing ``world`` replays that
+    world's own event stream, not the base graph's -- a write made only
+    inside the fork must appear, and main's own concurrent write (in main's
+    stream, never the fork's) must not."""
+    graph = "g"
+    a = create(multi, graph, "A")
+    world = fork(multi, graph)
+    wid = world["worldId"]
+
+    fork_write = run_handler(
+        "update-entity", {"graph": graph, "id": a["id"], "world": wid, "name": "A-in-fork"}, multi
+    )
+    main_write = run_handler(
+        "update-entity", {"graph": graph, "id": a["id"], "name": "A-in-main"}, multi
+    )
+
+    in_world = run_handler("what-changed", {"graph": graph, "world": wid}, multi)
+    world_event_ids = {row["eventId"] for row in in_world["items"]}
+    assert set(fork_write["eventIds"]) & world_event_ids == set(fork_write["eventIds"])
+    assert not (set(main_write["eventIds"]) & world_event_ids)
+
+    in_main = run_handler("what-changed", {"graph": graph}, multi)
+    main_event_ids = {row["eventId"] for row in in_main["items"]}
+    assert set(main_write["eventIds"]) & main_event_ids == set(main_write["eventIds"])
+    assert not (set(fork_write["eventIds"]) & main_event_ids)
+
+
+def test_what_changed_against_a_nonexistent_world_is_not_found(multi: MultiGraph) -> None:
+    """A typo'd or already-purged worldId must fail loudly, the same
+    NOT_FOUND every other world-addressed command raises -- not silently
+    read an empty (because never-created) event stream and report a
+    truthful-looking ``{"items": [], "count": 0}`` for the wrong reason."""
+    with pytest.raises(LoomError) as exc:
+        run_handler("what-changed", {"graph": "g", "world": "world-does-not-exist"}, multi)
+    assert exc.value.code == "NOT_FOUND"
+
+
+def test_delete_graph_refuses_inside_a_coherent_world_too(multi: MultiGraph) -> None:
+    """``main`` is never mutable from inside a fork -- including its own
+    deletion. A world naming ``graph`` as its own ``baseGraph`` (a
+    *coherent* reference) used to pass delete-graph's old coherence-only
+    check and go on to delete the base graph anyway (the fork's own
+    segment, and the fork's ref, both left dangling with nothing left to
+    point at). This must refuse outright now, the same as an incoherent
+    reference always did."""
+    graph = "g"
+    a = create(multi, graph, "A")
+    world = fork(multi, graph)
+    wid = world["worldId"]
+
+    with pytest.raises(LoomError) as exc:
+        run_handler("delete-graph", {"name": graph, "world": wid}, multi)
+    assert exc.value.code == "VALIDATION_ERROR"
+
+    # Refused, not half-applied: the graph is still there, from both main's
+    # own view and the fork's.
+    assert run_handler("read-entity", {"graph": graph, "id": a["id"]}, multi)["id"] == a["id"]
+    still_in_fork = run_handler("list-entities", {"graph": graph, "world": wid}, multi)
+    assert still_in_fork["items"]
+
+    # Omitting `world` (main, undisturbed) still deletes it normally.
+    run_handler("abandon-world", {"worldId": wid}, multi)
+    run_handler("delete-graph", {"name": graph}, multi)
+    assert not multi.has_graph(graph)
+
+
+# =============================================================================
+# Tombstones: a hard delete inside a world must not resurrect the erased
+# record from an ancestor -- dedicated tests, separate from the superset
+# property test (which exercises hard delete only as one write among a mixed
+# batch, not as its own focused case).
+# =============================================================================
+
+
+def test_entity_tombstone_prevents_resurrection_from_an_ancestor(multi: MultiGraph) -> None:
+    """An entity the fork only *inherited* (created in main, before the
+    fork) and then hard-deletes must read as gone everywhere the fork's own
+    overlay is asked -- read, list, and get-neighbors -- while main's own
+    copy is completely untouched. A deeper fork (forked from the fork,
+    after the tombstone was written) must see the same erasure -- the
+    tombstone has to survive chain-flattening, not just a single hop."""
+    graph = "g"
+    kept = create(multi, graph, "Kept")
+    erased = create(multi, graph, "Erased")
+    relate(multi, graph, kept["id"], erased["id"])
+
+    world = fork(multi, graph)
+    wid = world["worldId"]
+    run_handler(
+        "delete-entity",
+        {"graph": graph, "id": erased["id"], "world": wid, "hard": True},
+        multi,
+    )
+
+    with pytest.raises(LoomError) as exc:
+        run_handler("read-entity", {"graph": graph, "id": erased["id"], "world": wid}, multi)
+    assert exc.value.code == "NOT_FOUND"
+    in_fork = run_handler("list-entities", {"graph": graph, "world": wid}, multi)
+    assert erased["id"] not in {row["id"] for row in in_fork["items"]}
+    fork_neighbors = run_handler(
+        "get-neighbors", {"graph": graph, "entityId": kept["id"], "world": wid}, multi
+    )
+    assert erased["id"] not in {row["id"] for row in fork_neighbors["items"]}
+
+    # main's own copy: completely untouched.
+    main_erased = run_handler("read-entity", {"graph": graph, "id": erased["id"]}, multi)
+    assert main_erased["id"] == erased["id"]
+    in_main = run_handler("list-entities", {"graph": graph}, multi)
+    assert erased["id"] in {row["id"] for row in in_main["items"]}
+
+    # A grandchild fork, forked from `wid` after the tombstone was written,
+    # inherits the erasure through the flattened chain -- not just a
+    # single-hop overlay.
+    grandchild = fork(multi, graph, fromWorld=wid)
+    gwid = grandchild["worldId"]
+    with pytest.raises(LoomError) as exc:
+        run_handler("read-entity", {"graph": graph, "id": erased["id"], "world": gwid}, multi)
+    assert exc.value.code == "NOT_FOUND"
+
+
+def test_relation_tombstone_prevents_resurrection_from_an_ancestor(multi: MultiGraph) -> None:
+    """The relation twin: a relation the fork only inherited and then
+    hard-deletes must read as gone from every overlay read path (read,
+    list, get-relations) inside the fork, while main's own copy stands."""
+    graph = "g"
+    a = create(multi, graph, "A")
+    b = create(multi, graph, "B")
+    erased = relate(multi, graph, a["id"], b["id"])
+
+    world = fork(multi, graph)
+    wid = world["worldId"]
+    run_handler(
+        "delete-relation",
+        {
+            "graph": graph,
+            "world": wid,
+            "from": a["id"],
+            "to": b["id"],
+            "relationType": "related_to",
+            "relationId": erased["id"],
+            "hard": True,
+        },
+        multi,
+    )
+
+    in_fork = run_handler(
+        "get-relations", {"graph": graph, "entityId": a["id"], "world": wid}, multi
+    )
+    assert erased["id"] not in {row["id"] for row in in_fork["items"]}
+    listed_in_fork = run_handler("list-relations", {"graph": graph, "world": wid}, multi)
+    assert erased["id"] not in {row["id"] for row in listed_in_fork["items"]}
+
+    # main's own copy: completely untouched.
+    in_main = run_handler("get-relations", {"graph": graph, "entityId": a["id"]}, multi)
+    assert erased["id"] in {row["id"] for row in in_main["items"]}
 
 
 def test_main_replay_byte_identical_before_and_after_fork_and_abandon(multi: MultiGraph) -> None:

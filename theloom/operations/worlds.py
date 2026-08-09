@@ -27,10 +27,12 @@ what_merge_world_applies``).
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import Field
 
 from theloom.errors import ValidationError
-from theloom.model import EntityFilter, EntityStatus, Relation
+from theloom.model import EntityFilter, EntityStatus
 from theloom.operations import receipts as receipts_ops
 from theloom.operations.common import CommandInput
 from theloom.operations.notices import Doc, list_envelope, notice, with_notices
@@ -171,12 +173,54 @@ def _last_event_by_record_id(events: list[Event]) -> dict[str, str]:
     """id -> the last event that touched it, entity or relation alike —
     every creation/update/status-change/deletion event carries the full
     record verbatim under an ``"entity"``/``"relation"`` payload key (see
-    ``theloom.operations.receipts``'s differs, which read the same shape)."""
+    ``theloom.operations.receipts``'s differs, which read the same shape).
+    ``entities_merged`` is the one event type shaped differently (a
+    ``"primary"``/``"secondary"`` pair, no top-level ``"entity"`` key) and
+    maps to BOTH entity ids it touched — a merge inside a world is
+    invisible to merge-world's own candidate set without this."""
     out: dict[str, str] = {}
     for event in events:
+        if event.type == "entities_merged":
+            for key in ("primary", "secondary"):
+                record = event.payload.get(key)
+                if isinstance(record, dict) and isinstance(record.get("id"), str):
+                    out[record["id"]] = event.id
+            # Redirected relations carry no dedicated event of their own
+            # (apply_entity_merge folds them into this one commit); the
+            # supersedes relation DOES get one (a separate relation_created
+            # right behind this event in the same commit), which -- being
+            # later in stream order -- correctly overwrites this fallback
+            # mapping on its own turn through this loop.
+            for relation_doc in event.payload.get("redirectedRelations") or []:
+                if isinstance(relation_doc, dict) and isinstance(relation_doc.get("id"), str):
+                    out[relation_doc["id"]] = event.id
+            continue
         record = event.payload.get("entity") or event.payload.get("relation")
         if isinstance(record, dict) and isinstance(record.get("id"), str):
             out[record["id"]] = event.id
+    return out
+
+
+def _relation_touched_ids(events: list[Event]) -> dict[str, str]:
+    """The relation-only subset of ``_last_event_by_record_id``'s domain:
+    id -> the last event that touched it, but ONLY ids that were ever a
+    relation. ``merge_world``'s relation loop needs this split because a
+    bare presence probe can't tell "this id was never a relation" (skip)
+    apart from "this id WAS a relation and the fork removed it" (propagate
+    the removal or contest it) — both look identical as a miss against
+    ``from_store``'s live projection. Kept as a second pass over the same
+    events, rather than a single richer return type, so the well-tested
+    combined view stays untouched."""
+    out: dict[str, str] = {}
+    for event in events:
+        if event.type == "entities_merged":
+            for relation_doc in event.payload.get("redirectedRelations") or []:
+                if isinstance(relation_doc, dict) and isinstance(relation_doc.get("id"), str):
+                    out[relation_doc["id"]] = event.id
+            continue
+        relation = event.payload.get("relation")
+        if isinstance(relation, dict) and isinstance(relation.get("id"), str):
+            out[relation["id"]] = event.id
     return out
 
 
@@ -209,41 +253,15 @@ def _shared_base_graph(multi: MultiGraph, a_id: str, b_id: str) -> str:
     return base_graph
 
 
-def _entity_event_rows(event: Event, world_id: str, names: dict[str, str]) -> list[Doc]:
-    """Every entity event in a world's own segment, as diff-worlds rows —
-    exactly one taxonomy of "what changed", derived from the event itself
-    rather than a before/after snapshot comparison (see the module
-    docstring for why that distinction is load-bearing)."""
-    if event.type == "entity_created":
-        doc = event.payload["entity"]
-        return [
-            {
-                "kind": "entityAdded",
-                "entityId": doc["id"],
-                "entityName": doc.get("name"),
-                "entityType": doc.get("entityType"),
-                "eventId": event.id,
-                "world": world_id,
-            }
-        ]
-    if event.type == "entity_deleted":
-        doc = event.payload["entity"]
-        return [
-            {
-                "kind": "entityInvalidated",
-                "entityId": doc["id"],
-                "entityName": doc.get("name"),
-                "entityType": doc.get("entityType"),
-                "reason": "deleted",
-                "eventId": event.id,
-                "world": world_id,
-            }
-        ]
-    if event.type not in ("entity_updated", "entity_status_changed"):
-        return []
-    doc = event.payload["entity"]
-    previous = event.payload.get("previous")
-    entity_id, entity_name = doc["id"], doc.get("name")
+def _entity_field_rows(
+    entity_id: str, entity_name: Any, event: Event, world_id: str, previous: Doc | None, doc: Doc
+) -> list[Doc]:
+    """Per-field diff-worlds rows for one entity incarnation change (an
+    ``entity_updated``/``entity_status_changed`` event, or one half of an
+    ``entities_merged`` event) — the field-level classification
+    ``_entity_event_rows`` and its ``entities_merged`` branch both need,
+    factored out so the taxonomy (confidence/terminal-status/generic) is
+    defined exactly once."""
     rows: list[Doc] = []
     for field, old_value, new_value in receipts_ops.field_diffs(previous, doc):
         base: Doc = {
@@ -284,6 +302,59 @@ def _entity_event_rows(event: Event, world_id: str, names: dict[str, str]) -> li
     return rows
 
 
+def _entity_event_rows(event: Event, world_id: str, names: dict[str, str]) -> list[Doc]:
+    """Every entity event in a world's own segment, as diff-worlds rows —
+    exactly one taxonomy of "what changed", derived from the event itself
+    rather than a before/after snapshot comparison (see the module
+    docstring for why that distinction is load-bearing)."""
+    if event.type == "entity_created":
+        doc = event.payload["entity"]
+        return [
+            {
+                "kind": "entityAdded",
+                "entityId": doc["id"],
+                "entityName": doc.get("name"),
+                "entityType": doc.get("entityType"),
+                "eventId": event.id,
+                "world": world_id,
+            }
+        ]
+    if event.type == "entity_deleted":
+        doc = event.payload["entity"]
+        return [
+            {
+                "kind": "entityInvalidated",
+                "entityId": doc["id"],
+                "entityName": doc.get("name"),
+                "entityType": doc.get("entityType"),
+                "reason": "deleted",
+                "eventId": event.id,
+                "world": world_id,
+            }
+        ]
+    if event.type == "entities_merged":
+        # Shaped differently (a primary/secondary pair, no top-level
+        # "entity" key) but every bit as real a write to both entities as
+        # an ordinary update -- each gets its own field-level rows against
+        # its own "previous" half of the payload.
+        rows: list[Doc] = []
+        for doc_key, previous_key in (
+            ("primary", "previousPrimary"),
+            ("secondary", "previousSecondary"),
+        ):
+            doc = event.payload[doc_key]
+            previous = event.payload.get(previous_key)
+            rows.extend(
+                _entity_field_rows(doc["id"], doc.get("name"), event, world_id, previous, doc)
+            )
+        return rows
+    if event.type not in ("entity_updated", "entity_status_changed"):
+        return []
+    doc = event.payload["entity"]
+    previous = event.payload.get("previous")
+    return _entity_field_rows(doc["id"], doc.get("name"), event, world_id, previous, doc)
+
+
 def _relation_event_rows(event: Event, world_id: str, names: dict[str, str]) -> list[Doc]:
     """The relation twin of ``_entity_event_rows``."""
     if event.type == "relation_created":
@@ -316,11 +387,37 @@ def _relation_event_rows(event: Event, world_id: str, names: dict[str, str]) -> 
                 "world": world_id,
             }
         ]
+    if event.type == "entities_merged":
+        # apply_entity_merge redirects every relation the secondary held to
+        # the primary in the SAME commit, with no dedicated event of its
+        # own (the supersedes relation is the one exception -- it earns a
+        # real relation_created, handled above). The pre-redirect from/to
+        # is not carried in this event's payload, so the row is honest
+        # about what it does and doesn't know: the redirect happened, not
+        # what the endpoint used to be.
+        rows: list[Doc] = []
+        for relation_doc in event.payload.get("redirectedRelations") or []:
+            rows.append(
+                {
+                    "kind": "relationRevised",
+                    "relationId": relation_doc["id"],
+                    "from": relation_doc.get("from"),
+                    "fromName": names.get(relation_doc.get("from")),
+                    "to": relation_doc.get("to"),
+                    "toName": names.get(relation_doc.get("to")),
+                    "field": "endpoints",
+                    "old": None,
+                    "new": {"from": relation_doc.get("from"), "to": relation_doc.get("to")},
+                    "eventId": event.id,
+                    "world": world_id,
+                }
+            )
+        return rows
     if event.type != "relation_updated":
         return []
     doc = event.payload["relation"]
     previous = event.payload.get("previous")
-    rows: list[Doc] = []
+    rows = []
     for field, old_value, new_value in receipts_ops.field_diffs(previous, doc):
         if field in ("from", "to"):  # endpoints are immutable; already on every row above
             continue
@@ -415,13 +512,6 @@ class MergeWorldInput(CommandInput):
     event_ids: list[str] | None = Field(default=None, alias="eventIds")
 
 
-def _find_relation_by_id(store: FalkorGraphStore, relation_id: str) -> Relation | None:
-    for relation in store.list_relations():
-        if relation.id == relation_id:
-            return relation
-    return None
-
-
 def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
     if params.strategy not in ("endorse-all", "select"):
         raise ValidationError("strategy must be 'endorse-all' or 'select'")
@@ -445,7 +535,10 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
     from_store = multi.get_store(None, world=params.from_)
     into_store = _store_for(multi, base_graph, into_id)
 
-    touched = _last_event_by_record_id(_events_for(multi, base_graph, params.from_))
+    from_events = _events_for(multi, base_graph, params.from_)
+    touched = _last_event_by_record_id(from_events)
+    relation_ids = set(_relation_touched_ids(from_events))
+    entity_ids_touched = set(touched) - relation_ids
 
     if params.strategy == "select":
         selected_ids = set(params.entity_ids or [])
@@ -469,7 +562,7 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
 
     contested: list[Doc] = []
     applied_entities: list[Doc] = []
-    for entity_id in sorted(candidate_ids):
+    for entity_id in sorted(candidate_ids & entity_ids_touched):
         from_entity = from_store.read_entity(entity_id)
         base_doc = into_store.read_entity_as_of(entity_id, forked_at)
         current_into = into_store.read_entity(entity_id)
@@ -494,6 +587,7 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
             if is_contested:
                 contested.append(
                     {
+                        "kind": "entity",
                         "entityId": entity_id,
                         "entityName": entity_name,
                         "intoValue": current_into.model_dump(by_alias=True, exclude_unset=True),
@@ -511,6 +605,7 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
         if is_contested:
             contested.append(
                 {
+                    "kind": "entity",
                     "entityId": entity_id,
                     "entityName": entity_name,
                     "intoValue": current_into.model_dump(by_alias=True, exclude_unset=True)
@@ -529,26 +624,102 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
 
     applied_ids = {row["entityId"] for row in applied_entities}
     applied_relations: list[Doc] = []
-    # Relation candidates are every id `touched` names that resolves to a
-    # live relation in `from` (an entity id never does).
-    for record_id in sorted(touched):
-        relation = _find_relation_by_id(from_store, record_id)
-        if relation is None:
-            continue
-        if params.strategy == "select" and record_id not in candidate_ids:
-            continue
-        if relation.from_ not in applied_ids and into_store.read_entity(relation.from_) is None:
-            continue
-        if relation.to not in applied_ids and into_store.read_entity(relation.to) is None:
-            continue
-        existing = into_store.read_relations(
-            relation.from_, relation.to, relation.relation_type.value
+    # Relation candidates are every id `_relation_touched_ids` names (an id
+    # is looked up by kind up front, not inferred from a read miss — a
+    # relation removed inside the fork is also absent from `from_store`'s
+    # live projection, which a read-miss probe cannot tell apart from "this
+    # id was never a relation").
+    from_relations_by_id = {relation.id: relation for relation in from_store.list_relations()}
+    into_relations_by_id = {relation.id: relation for relation in into_store.list_relations()}
+    base_relations_by_id = {
+        relation.id: relation for relation in into_store.read_graph_as_of(forked_at).relations
+    }
+    for record_id in sorted(candidate_ids & relation_ids):
+        from_relation = from_relations_by_id.get(record_id)
+        current_relation = into_relations_by_id.get(record_id)
+        base_relation = base_relations_by_id.get(record_id)
+        is_contested = (
+            params.strategy == "endorse-all"
+            and base_relation is not None
+            and current_relation is not None
+            and current_relation.model_dump(by_alias=True, exclude_unset=True)
+            != base_relation.model_dump(by_alias=True, exclude_unset=True)
         )
-        if any(existing_relation.id == record_id for existing_relation in existing):
+
+        if from_relation is None:
+            # Removed inside the fork — soft-invalidated or hard-deleted
+            # (WorldGraphStore's relation tombstoning makes hard delete
+            # trustworthy here the same way it does for entities above).
+            # Mirrors the entity branch: the removal either propagates or
+            # is contested, never silently dropped.
+            if current_relation is None:
+                continue  # already gone from `into` too — nothing to do
+            if is_contested:
+                contested.append(
+                    {
+                        "kind": "relation",
+                        "relationId": record_id,
+                        "from": current_relation.from_,
+                        "to": current_relation.to,
+                        "intoValue": current_relation.model_dump(by_alias=True, exclude_unset=True),
+                        "fromValue": None,
+                        "fromDeleted": True,
+                    }
+                )
+                continue
+            into_store.delete_relation(
+                current_relation.from_,
+                current_relation.to,
+                current_relation.relation_type.value,
+                record_id,
+                hard=True,
+            )
+            applied_relations.append(
+                {
+                    "relationId": record_id,
+                    "from": current_relation.from_,
+                    "to": current_relation.to,
+                    "deleted": True,
+                }
+            )
             continue
-        into_store.graft_relation(relation.model_dump(by_alias=True, exclude_unset=True))
+
+        if is_contested:
+            contested.append(
+                {
+                    "kind": "relation",
+                    "relationId": record_id,
+                    "from": from_relation.from_,
+                    "to": from_relation.to,
+                    "intoValue": current_relation.model_dump(by_alias=True, exclude_unset=True)
+                    if current_relation
+                    else None,
+                    "fromValue": from_relation.model_dump(by_alias=True, exclude_unset=True),
+                }
+            )
+            continue
+
+        if (
+            from_relation.from_ not in applied_ids
+            and into_store.read_entity(from_relation.from_) is None
+        ):
+            continue
+        if from_relation.to not in applied_ids and into_store.read_entity(from_relation.to) is None:
+            continue
+
+        from_doc = from_relation.model_dump(by_alias=True, exclude_unset=True)
+        if current_relation is None:
+            into_store.graft_relation(from_doc)
+        else:
+            into_store.update_relation(
+                current_relation.from_,
+                current_relation.to,
+                from_doc,
+                current_relation.relation_type.value,
+                record_id,
+            )
         applied_relations.append(
-            {"relationId": record_id, "from": relation.from_, "to": relation.to}
+            {"relationId": record_id, "from": from_relation.from_, "to": from_relation.to}
         )
 
     applied = bool(applied_entities or applied_relations)
@@ -561,11 +732,11 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
         notices.append(
             notice(
                 "CONTESTED_ON_MERGE",
-                f"{len(contested)} entit{'ies' if plural else 'y'} {'were' if plural else 'was'} "
-                f"revised in both '{params.from_}' and '{into_id}' since the fork and were not "
-                "merged; see 'contested'.",
-                hint="Retry with strategy: 'select' and entityIds naming exactly which side wins, "
-                "once resolved.",
+                f"{len(contested)} item{'s' if plural else ''} {'were' if plural else 'was'} "
+                f"changed in both '{params.from_}' and '{into_id}' since the fork and "
+                f"{'were' if plural else 'was'} not merged; see 'contested'.",
+                hint="Retry with strategy: 'select' and entityIds/eventIds naming exactly which "
+                "side wins, once resolved.",
             )
         )
 

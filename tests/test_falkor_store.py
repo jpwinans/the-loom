@@ -310,6 +310,37 @@ def test_update_relation_can_change_relation_type(store: FalkorGraphStore) -> No
     assert [r.id for r in retyped] == [created.id]
 
 
+def test_update_relation_can_redirect_an_endpoint(store: FalkorGraphStore) -> None:
+    """``update_relation`` can move an edge's ``from``/``to`` the same way
+    it can retype it: neither is a Cypher-settable property (a
+    relationship's endpoints and type are both structural, fixed at
+    creation), so a genuine change to either goes through the same
+    delete-and-recreate path, snapshotted first, same id/doc otherwise.
+
+    ``id``/``created_at`` alone are truly immutable now (Part 5, desire
+    12's merge-world needs a relation whose endpoints a fork changed --
+    e.g. ``merge-entities``' redirect -- to actually land when merged into
+    ``main``, not silently keep its old endpoints while the caller is told
+    it succeeded). No pre-existing caller ever passed ``from``/``to`` in
+    ``updates`` (the ordinary ``update-relation`` command uses them only to
+    address which edge to update, never as part of the update payload), so
+    this widens the store's own contract without changing any existing
+    caller's behavior.
+    """
+    a = store.create_entity(spec("A"))
+    b = store.create_entity(spec("B"))
+    c = store.create_entity(spec("C"))
+    created = store.create_relation(rel_spec(a.id, b.id, relationType="related_to"))
+    updated = store.update_relation(a.id, b.id, {"from": a.id, "to": c.id})
+    assert updated.id == created.id
+    assert updated.created_at == created.created_at
+    assert updated.from_ == a.id
+    assert updated.to == c.id
+    assert store.read_relations(a.id, b.id) == []
+    redirected = store.get_relations(a.id, relation_type="related_to")
+    assert [(r.id, r.to) for r in redirected] == [(created.id, c.id)]
+
+
 def test_create_relations_batch_returns_specs_in_order(store: FalkorGraphStore) -> None:
     a = store.create_entity(spec("A"))
     b = store.create_entity(spec("B"))

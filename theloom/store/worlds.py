@@ -187,26 +187,42 @@ class WorldGraphStore(FalkorGraphStore):
     graph-level metadata (``get_metadata``/``set_metadata``).
 
     Every command whose *primary purpose* is one of those two — the embed-*/
-    embedding-*/*-search/suggest-relations commands
-    (``theloom.operations.semantic``) and the metadata-backed checkpoints/
-    queues (``session-changelog``/``postmortem-evaluate``
-    (``theloom.operations.epistemic``), ``trigger-status``/
-    ``process-triggers`` (``theloom.operations.reification``),
-    ``self-model-update`` (``theloom.operations.extraction``)) — checks
-    ``params.world`` itself and attaches a ``WORLD_PROJECTION_PARTIAL``
-    notice naming exactly what it did not reconstruct; this list is a
-    checked inventory (``grep -rn 'get_entity_vectors\\|set_entity_vector\\|
-    vector_knn\\|get_metadata\\|set_metadata' theloom/operations
-    theloom/composites theloom/extraction theloom/synthesis``), not a
-    memory of what was wired. One known, narrower gap the same grep turns
-    up and this build does NOT cover: the LLM-synthesis pipeline
-    (``theloom.operations.synthesis``'s ``anchor_search_for``, behind
-    ``synthesize``/``synthesize-and-ingest``/``plan-synthesis``/
-    ``traverse-synthesis``/``verify-fidelity``) also probes
+    embedding-*/find-clusters/semantic-gaps/resolve-gaps/*-search/
+    suggest-relations commands (``theloom.operations.semantic``), the
+    metadata-backed checkpoints/queues (``session-changelog``/
+    ``postmortem-evaluate`` (``theloom.operations.epistemic``),
+    ``trigger-status``/``process-triggers``
+    (``theloom.operations.reification``), ``self-model-update``
+    (``theloom.operations.extraction``)), and the three composites whose own
+    sections read entity vectors directly (``far-analogy-retrieval``'s
+    fingerprint section, ``get_entity_vectors``; ``explore-frontier``'s
+    CoverageGap signal, ``theloom.exploration.coverage_gap``;
+    ``hypothesis-engine``'s ``gaps`` section, which calls
+    ``theloom.operations.semantic.semantic_gaps`` directly and so must
+    attach its own copy of the notice rather than inherit one that command
+    never forwards) — checks ``params.world`` itself and attaches a
+    ``WORLD_PROJECTION_PARTIAL`` notice naming exactly what it did not
+    reconstruct; this list is a checked inventory (``grep -rn
+    'get_entity_vectors\\|set_entity_vector\\|vector_knn\\|has_entity_vectors\\|
+    get_metadata\\|set_metadata' theloom/operations theloom/composites
+    theloom/extraction theloom/synthesis theloom/exploration
+    theloom/semantic``), not a memory of what was wired — re-run any time a
+    new command starts touching either family, this docstring's own list is
+    the thing that goes stale first. Two known gaps the same grep turns up
+    and this build does NOT cover, both verified to be genuinely
+    unreachable from any live command rather than merely unfixed: (1) the
+    LLM-synthesis pipeline (``theloom.operations.synthesis``'s
+    ``anchor_search_for``, behind ``synthesize``/``synthesize-and-ingest``/
+    ``plan-synthesis``/``traverse-synthesis``/``verify-fidelity``) probes
     ``has_entity_vectors``/vector search as one of several anchor-finding
     signals, not its primary purpose, and degrades to its keyword/graph
-    fallback rather than erroring inside a fork — silent in the sense that
-    no notice fires yet, tracked as follow-up rather than fixed here.
+    fallback rather than erroring inside a fork; (2)
+    ``theloom.semantic.deduplication_gate.deduplicate_proposals``'s
+    ``has_entity_vectors`` branch is dead code from its only call site
+    (``hypothesis-engine``'s ``dedup`` section always passes
+    ``embedding_manager=None``, so the function returns via its
+    name-matching fallback before that branch is ever reached) — nothing to
+    notice about a path nothing can take.
     """
 
     def __init__(
@@ -362,6 +378,55 @@ class WorldGraphStore(FalkorGraphStore):
         )
         return Entity.model_validate(doc)
 
+    # -- entity merge (writes both entities plus every redirected relation) -----
+
+    def apply_entity_merge(
+        self,
+        primary_doc: Mapping[str, Any],
+        secondary_doc: Mapping[str, Any],
+        redirects: Sequence[Mapping[str, Any]],
+        supersedes_doc: Mapping[str, Any] | None,
+        previous_primary: Mapping[str, Any],
+        previous_secondary: Mapping[str, Any],
+        now: str,
+    ) -> None:
+        """Copy-on-write for a merge: the base class's single Cypher
+        statement MATCHes both entities and every redirected relation by id
+        against *this* graph directly (``theloom.store.falkor.
+        FalkorGraphStore.apply_entity_merge``'s docstring) -- against an
+        unadopted pair, every clause matches zero rows, so the statement
+        silently no-ops while the caller's ``entities_merged`` event still
+        commits unconditionally: a success receipt for a write that never
+        happened. Ensuring both entities, and the *original* (pre-redirect)
+        endpoints of every relation being redirected, are locally present
+        first makes the inherited statement's own MATCHes find real rows.
+        """
+        primary_id = str(primary_doc["id"])
+        secondary_id = str(secondary_doc["id"])
+        self._ensure_local_entity(primary_id)
+        self._ensure_local_entity(secondary_id)
+        for doc in redirects:
+            # Redirect docs already carry their REWRITTEN from/to (one end
+            # is the primary); the edge the inherited statement's MATCH
+            # still needs to find is the ORIGINAL one, between the
+            # secondary and the other party, same id and type.
+            if doc["from"] == primary_id:
+                original_from, original_to = secondary_id, str(doc["to"])
+            else:
+                original_from, original_to = str(doc["from"]), secondary_id
+            self._ensure_local_relation(
+                original_from, original_to, str(doc["relationType"]), str(doc["id"])
+            )
+        super().apply_entity_merge(
+            primary_doc,
+            secondary_doc,
+            redirects,
+            supersedes_doc,
+            previous_primary,
+            previous_secondary,
+            now,
+        )
+
     # -- relations: point reads -------------------------------------------------
 
     def read_relations(
@@ -510,6 +575,26 @@ class WorldGraphStore(FalkorGraphStore):
     ) -> Relation:
         self._ensure_local_relation(from_id, to_id, relation_type, relation_id)
         return super().update_relation(from_id, to_id, updates, relation_type, relation_id)
+
+    def invalidate_relation(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None = None,
+        relation_id: str | None = None,
+    ) -> Relation:
+        """The soft-delete half of ``delete_relation`` — ``delete_relation``
+        already ensures local presence itself before delegating to the base
+        class, whose ``hard=False`` path calls back into *this* method
+        polymorphically, so that route was already correct. This override
+        exists because ``invalidate_relation`` is also a public method other
+        callers reach directly (``theloom.operations.extraction``,
+        ``theloom.extraction.codebasediff``) without going through
+        ``delete_relation`` at all — an update-shaped write like any other,
+        it must adopt an inherited relation rather than raise NOT_FOUND
+        against the empty local segment."""
+        self._ensure_local_relation(from_id, to_id, relation_type, relation_id)
+        return super().invalidate_relation(from_id, to_id, relation_type, relation_id)
 
     def delete_relation(
         self,
@@ -710,10 +795,29 @@ def list_worlds(multi: MultiGraph, *, include_reaped: bool = True) -> list[dict[
     abandons/merges worlds routinely does not have its default view grow
     monotonically; they are never gone (a reaped ref stays listable as
     history, same as a reaped session), just opt-in via
-    ``includeReaped: true``."""
+    ``includeReaped: true``.
+
+    Checks both axes, not just one: ``record.status`` (the ref registry's
+    own ``active``/``expired``/``reaped`` lifecycle, which ``abandon_world``
+    sets to ``reaped``) and ``record.metadata["domainStatus"]`` (this kind's
+    own ``active``/``merged``/``abandoned`` axis, which ``theloom.operations.
+    worlds.merge_world`` sets to ``"merged"``) — because ``merge_world``
+    deliberately does NOT reap the ref (``theloom.store.refs.RefRegistry.
+    update_metadata``'s own docstring: the two axes are independent by
+    design, so a merged world's segment stays fully readable — diff-worlds,
+    what-changed, a repeat-merge's own NOT_FOUND-style guard — the same way
+    it was before merging). Checking ``record.status`` alone therefore never
+    hid a merged world; only an abandoned one, whose ref happens to be
+    reaped for the unrelated reason that ``abandon_world`` deletes its
+    segment outright.
+    """
     records = multi.refs.list(WORLD_KIND)
     if not include_reaped:
-        records = [record for record in records if record.status != "reaped"]
+        records = [
+            record
+            for record in records
+            if record.status != "reaped" and record.metadata.get("domainStatus") != DOMAIN_MERGED
+        ]
     return [world_doc(record) for record in records]
 
 

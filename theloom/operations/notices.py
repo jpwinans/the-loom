@@ -82,11 +82,12 @@ NOTICE_CATALOG: dict[str, str] = {
         "grading or acting against the whole graph."
     ),
     "CONTESTED_ON_MERGE": (
-        "merge-world found one or more entities revised in both the source "
-        "and target world since the fork. These conflicts were not "
-        "auto-resolved: the merge applied only the uncontested set, and the "
-        "contested entities are listed in the response's 'contested' field "
-        "for a caller to resolve manually (retry with strategy: 'select')."
+        "merge-world found one or more entities or relations changed in "
+        "both the source and target world since the fork. These conflicts "
+        "were not auto-resolved: the merge applied only the uncontested "
+        "set, and the contested items are listed in the response's "
+        "'contested' field for a caller to resolve manually (retry with "
+        "strategy: 'select')."
     ),
     "DRY_RUN": (
         "The command ran as a simulation only: it computed what it would do "
