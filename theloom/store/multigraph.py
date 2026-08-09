@@ -35,6 +35,8 @@ from theloom.documents.chunkstore import CHUNK_GRAPH_SUFFIX, ChunkStore
 from theloom.errors import NotFoundError, OperationError, ValidationError
 from theloom.extraction.runstore import RunStore
 from theloom.model import RelationCreate
+from theloom.store import worldctx
+from theloom.store import worlds as worlds_module
 from theloom.store.bridges import (
     BRIDGE_GRAPH_SUFFIX,
     BridgeDoc,
@@ -81,6 +83,9 @@ class MultiGraph:
     #: exported so a future ``kind="world"`` consumer (desire 12 / Part 5)
     #: has a concrete sibling to pick a non-colliding kind next to.
     SESSION_KIND = "session"
+    #: Branchable belief worlds (desire 12 / Part 5) — the sibling kind the
+    #: comment above anticipated, reusing ``RefRegistry`` unmodified.
+    WORLD_KIND = worlds_module.WORLD_KIND
 
     def __init__(
         self,
@@ -135,8 +140,61 @@ class MultiGraph:
             raise NotFoundError(f"Graph '{name}' not found")
         self.get_store(name).delete_graph_data()
 
-    def get_store(self, name: str | None = None) -> FalkorGraphStore:
+    # -- store construction: the one resolution path for both `graph` and
+    # `world` (desire 12 / Part 5) ------------------------------------------
+
+    @property
+    def db(self) -> FalkorDB:
+        return self._db
+
+    @property
+    def redis(self) -> Redis:
+        return self._redis
+
+    @property
+    def key_prefix(self) -> str:
+        return self._prefix
+
+    def plain_store(self, name: str | None = None) -> FalkorGraphStore:
+        """A plain, non-world-aware store for ``name`` (default graph if
+        omitted) — ignores whatever world is ambient in
+        ``theloom.store.worldctx``. The building block ``get_store`` composes
+        world-awareness on top of, and what ``theloom.store.worlds.
+        resolve_layers`` uses to build each ancestor layer of a fork chain
+        regardless of which world the *current* command happens to be
+        running in."""
         return FalkorGraphStore(self._db, self._redis, name or self.default_graph, self._prefix)
+
+    def get_store(self, name: str | None = None, world: str | None = None) -> FalkorGraphStore:
+        """The one place every command gets a store instance — and so the
+        one resolution path both ``graph`` and ``world`` thread through.
+
+        ``world`` explicit here overrides whatever is ambient (used by
+        internal callers that need a *specific* world regardless of command
+        context); omitted, it falls back to ``theloom.store.worldctx``'s
+        contextvar, which ``theloom.cli.registry.run_handler`` opens from
+        the command's own validated ``world`` field. Either way, a non-
+        ``main`` world returns a ``WorldGraphStore`` — same public surface as
+        a plain ``FalkorGraphStore`` (it IS one), so no call site of the
+        ~140 that already call this method needs to change to become world-
+        aware. ``main`` (the default, and every pre-existing call site)
+        returns exactly what this method always returned.
+        """
+        effective_world = world if world is not None else worldctx.current()
+        if effective_world is None or effective_world == worldctx.MAIN:
+            return self.plain_store(name)
+        record = self.refs.get(worlds_module.WORLD_KIND, effective_world)
+        if record is None:
+            raise NotFoundError(
+                f"World '{effective_world}' not found. Use list-worlds to see active worlds."
+            )
+        base_graph = str(record.metadata["baseGraph"])
+        if name is not None and name != base_graph:
+            raise ValidationError(
+                f"graph '{name}' does not match world '{effective_world}''s own base graph "
+                f"'{base_graph}' — omit graph when addressing a world, or pass the matching one."
+            )
+        return worlds_module.get_world_store(self, effective_world)
 
     def chunk_store(self) -> ChunkStore:
         """The global document-chunk store (not graph-scoped)."""
@@ -159,14 +217,17 @@ class MultiGraph:
         return EventLog(self._redis, name or self.default_graph, self._prefix)
 
     def wipe(self) -> None:
-        """Remove every graph, bridge, session ref, and event stream under
-        this prefix (reseeding / migration path)."""
+        """Remove every graph, bridge, session/world ref, and event stream
+        under this prefix (reseeding / migration path)."""
         for name in self.graph_names():
-            self.get_store(name).delete_graph_data()
+            self.plain_store(name).delete_graph_data()
+        for record in self.refs.list(self.WORLD_KIND):
+            self.plain_store(worlds_module.world_graph_name(record.id)).delete_graph_data()
         self.bridges.delete_all()
         self.chunk_store().wipe()
         self.run_store().wipe()
         self.refs.wipe(self.SESSION_KIND)
+        self.refs.wipe(self.WORLD_KIND)
         self.refs.events.delete()
         self._redis.delete(self._registry_key)
         self._redis.sadd(self._registry_key, self.default_graph)
@@ -241,6 +302,37 @@ class MultiGraph:
         graphs (one `graph_names()` call shared across all of them)."""
         names = self.graph_names()
         return [_session_doc(record, names) for record in self.refs.list(self.SESSION_KIND)]
+
+    # -- branchable belief worlds (desire 12 / Part 5) ----------------------------
+    #
+    # A world is a `RefRegistry` ref of kind `WORLD_KIND`, exactly as a
+    # session is one of kind `SESSION_KIND` — see `theloom.store.worlds` for
+    # the fork/overlay/copy-on-write mechanism these thinly wrap.
+
+    def fork_world(
+        self,
+        *,
+        name: str | None,
+        graph: str | None,
+        from_world: str | None,
+        as_of: str | None,
+        ttl_seconds: int | None,
+    ) -> dict[str, Any]:
+        record = worlds_module.fork_world(
+            self,
+            name=name,
+            graph=graph,
+            from_world=from_world,
+            as_of=as_of,
+            ttl_seconds=ttl_seconds,
+        )
+        return worlds_module.world_doc(record)
+
+    def list_worlds(self) -> list[dict[str, Any]]:
+        return worlds_module.list_worlds(self)
+
+    def abandon_world(self, world_id: str) -> dict[str, Any]:
+        return worlds_module.abandon_world(self, world_id)
 
     # -- cross-graph relations ------------------------------------------------------
 

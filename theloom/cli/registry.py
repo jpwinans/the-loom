@@ -30,6 +30,7 @@ import pydantic
 from theloom.cli import notices_catalog as notices_catalog_ops
 from theloom.cli.schema import describe_validation_error
 from theloom.composites import analogy_transfer as analogy_transfer_composite
+from theloom.composites import belief_blast_radius as belief_blast_radius_composite
 from theloom.composites import creativity_loop as creativity_loop_composite
 from theloom.composites import enrichment_crawl as enrichment_crawl_composite
 from theloom.composites import entity_deep_dive as entity_deep_dive_composite
@@ -71,8 +72,9 @@ from theloom.operations import symbolic as symbolic_ops
 from theloom.operations import synthesis as synthesis_ops
 from theloom.operations import verification as verification_ops
 from theloom.operations import work_memory as work_memory_ops
+from theloom.operations import worlds as worlds_ops
 from theloom.operations.common import CommandInput
-from theloom.store import receipts
+from theloom.store import receipts, worldctx
 from theloom.store.multigraph import MultiGraph
 from theloom.synthesis import cegis as cegis_module
 from theloom.viz import serve as viz_serve
@@ -1368,6 +1370,16 @@ def _composite_commands() -> list[CommandDescriptor]:
     return _build(
         [
             _Spec(
+                "belief-blast-radius",
+                "Composites",
+                "What would change if I stopped believing this? Fork, propagate-credit inside "
+                "the fork with the hypothetical delta, diff-worlds, abandon -- read-only from "
+                "main's perspective (composite).",
+                belief_blast_radius_composite.BeliefBlastRadiusInput,
+                belief_blast_radius_composite.belief_blast_radius,
+                False,
+            ),
+            _Spec(
                 "graph-reconnaissance",
                 "Composites",
                 "Comprehensive structural overview of a graph (composite).",
@@ -1574,6 +1586,62 @@ def _session_commands() -> list[CommandDescriptor]:
     )
 
 
+def _world_commands() -> list[CommandDescriptor]:
+    """Branchable belief worlds (desire 12 / Part 5): a named ref over the
+    same event-sourced store every graph already is (see
+    ``theloom.store.worlds``). ``belief-blast-radius`` (desire 4) is
+    registered alongside the composites, not here — it is exactly this
+    machinery plus ``propagate-credit``, not a new primitive."""
+    return _build(
+        [
+            _Spec(
+                "fork-world",
+                "Worlds",
+                "Fork a new belief world at a graph's (or another world's) current tip, or a "
+                "historical moment via asOf. Writes no entity data -- O(1).",
+                worlds_ops.ForkWorldInput,
+                worlds_ops.fork_world,
+                True,
+            ),
+            _Spec(
+                "list-worlds",
+                "Worlds",
+                "List belief worlds with their parent, fork point, and status.",
+                worlds_ops.ListWorldsInput,
+                worlds_ops.list_worlds,
+                True,
+            ),
+            _Spec(
+                "abandon-world",
+                "Worlds",
+                "Mark a world's ref dead and delete its segment in one call.",
+                worlds_ops.AbandonWorldInput,
+                worlds_ops.abandon_world,
+                False,
+            ),
+            _Spec(
+                "diff-worlds",
+                "Worlds",
+                "Semantic diff between two worlds: entities added/invalidated, confidences "
+                "changed, relations added/removed, contested claims -- each with event ids.",
+                worlds_ops.DiffWorldsInput,
+                worlds_ops.diff_worlds,
+                False,
+            ),
+            _Spec(
+                "merge-world",
+                "Worlds",
+                "Merge a world's changes into another (default 'main'). 'endorse-all' applies "
+                "every uncontested change and notices the rest as CONTESTED_ON_MERGE; 'select' "
+                "grafts exactly the named entityIds/eventIds.",
+                worlds_ops.MergeWorldInput,
+                worlds_ops.merge_world,
+                False,
+            ),
+        ]
+    )
+
+
 def _tail_commands() -> list[CommandDescriptor]:
     """Everything not grouped by one of the category functions above: pattern
     reification/triggers, Multi-Graph, and Visualization. Same single
@@ -1736,6 +1804,7 @@ COMMANDS: list[CommandDescriptor] = [
     *_work_memory_commands(),
     *_composite_commands(),
     *_session_commands(),
+    *_world_commands(),
     *_tail_commands(),
 ]
 
@@ -1755,10 +1824,19 @@ def run_handler(name: str, input_doc: dict[str, Any], multi: MultiGraph) -> Any:
     command's name and folded onto the response as ``eventIds`` (desire 1).
     A read-only handler that commits nothing collects nothing, so its
     response is untouched.
+
+    Also opens a ``theloom.store.worldctx`` scope from the input's own
+    ``world`` field (branchable belief worlds, desire 12 / Part 5) — every
+    command's input model carries it (``theloom.operations.common.
+    CommandInput``), so this one line is the entire "every command gains a
+    world param" wiring; no handler below this line needs to know worlds
+    exist. A ``raw_handler`` command (bulk-import) reads it straight off the
+    unvalidated doc, since it never goes through a Pydantic model at all.
     """
     descriptor = _BY_NAME[name]
     if descriptor.raw_handler is not None:
-        with receipts.collecting(name) as event_ids:
+        world = input_doc.get("world") if isinstance(input_doc.get("world"), str) else None
+        with worldctx.active(world), receipts.collecting(name) as event_ids:
             result = descriptor.raw_handler(input_doc, multi)
     else:
         try:
@@ -1766,7 +1844,8 @@ def run_handler(name: str, input_doc: dict[str, Any], multi: MultiGraph) -> Any:
         except pydantic.ValidationError as exc:
             raise describe_validation_error(descriptor.input_model, exc, command=name) from exc
         assert descriptor.handler is not None
-        with receipts.collecting(name) as event_ids:
+        world = getattr(params, "world", None)
+        with worldctx.active(world), receipts.collecting(name) as event_ids:
             result = descriptor.handler(params, multi)
     assert not isinstance(result, list), (
         f"command '{name}' returned a bare top-level array — every list-returning "
