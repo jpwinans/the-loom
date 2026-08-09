@@ -770,6 +770,64 @@ def test_invalidate_relation_adopts_an_inherited_relation_instead_of_404ing(
     assert inherited["id"] in {row["id"] for row in in_main["items"]}
 
 
+def test_merge_world_into_a_non_main_world_grafts_relations_for_real(
+    multi: MultiGraph,
+) -> None:
+    """``graft_relation`` was the last unoverridden MATCH-gated write on
+    ``WorldGraphStore`` -- the base class's ``MATCH (a:_Entity {id: $from}),
+    (b:_Entity {id: $to})`` looks for both endpoints in the world's own
+    LOCAL segment directly, which for a world-to-world merge (``into``
+    names a fork, not ``main``) is almost always empty: main happens to be
+    safe only because its overlay read equals a local read there, masking
+    the exact same bug apply_entity_merge's own fix (round 3) already
+    described for its MATCH-gated statement. Without the fix, merge-world
+    reported ``applied: true`` with a real ``eventIds`` while W2's own raw
+    segment stayed genuinely empty -- diff-worlds would then show a
+    phantom ``relationAdded`` sourced from an event whose Cypher touched
+    zero rows. This reads W2's segment directly (``multi.plain_store``,
+    bypassing the overlay entirely) to prove the graft is real, not merely
+    reported."""
+    graph = "g"
+    a = create(multi, graph, "A")
+    b = create(multi, graph, "B")
+
+    w1 = fork(multi, graph, name="w1")
+    w1id = w1["worldId"]
+    w2 = fork(multi, graph, name="w2")
+    w2id = w2["worldId"]
+
+    new_rel = relate(multi, graph, a["id"], b["id"], world=w1id)
+
+    merge_result = run_handler(
+        "merge-world", {"from": w1id, "into": w2id, "strategy": "endorse-all"}, multi
+    )
+    assert merge_result["applied"] is True
+    assert {row["relationId"] for row in merge_result["appliedRelations"]} == {new_rel["id"]}
+
+    # The proof: W2's own RAW segment (bypassing the overlay) genuinely
+    # holds the adopted endpoints and the grafted relation, not just a
+    # ledger entry claiming it does.
+    w2_raw = multi.plain_store(world_graph_name(w2id))
+    raw_relations = w2_raw.list_relations()
+    assert [r.id for r in raw_relations] == [new_rel["id"]]
+    raw_stats = w2_raw.get_stats()
+    assert raw_stats["entityCount"] == 2  # both endpoints copy-on-write adopted
+    assert raw_stats["relationCount"] == 1
+
+    # And through W2's own overlay, which must agree with its raw segment.
+    in_w2 = run_handler(
+        "get-relations", {"graph": graph, "entityId": a["id"], "world": w2id}, multi
+    )
+    assert new_rel["id"] in {row["id"] for row in in_w2["items"]}
+
+    # diff-worlds(main, w2) shows the real write, correctly attributed --
+    # not a phantom sourced from a no-op Cypher statement.
+    diff = run_handler("diff-worlds", {"a": "main", "b": w2id}, multi)
+    relation_added = [row for row in diff["items"] if row["kind"] == "relationAdded"]
+    assert {row["relationId"] for row in relation_added} == {new_rel["id"]}
+    assert all(row["eventId"] for row in relation_added)
+
+
 # =============================================================================
 # Acceptance (e): all existing tests pass with `world` omitted is the full
 # suite's job; here, a focused check that a representative spread of
@@ -987,6 +1045,40 @@ def test_tension_a_embeddings_are_not_forked_and_the_gap_is_declared(multi: Mult
     assert a["id"] in {e["id"] for e in listed["items"]}
 
 
+def test_export_bundle_and_visualize_declare_the_embedding_gap_inside_a_world(
+    multi: MultiGraph, tmp_path: Any
+) -> None:
+    """The same tension (a) gap, for the two commands whose own vector read
+    (``theloom.viz.semantic.assemble_semantic``) lives behind a module
+    neither ``export-bundle`` nor ``visualize`` owns directly -- each must
+    carry its own copy of the notice, from its own handler's module
+    (``theloom.viz.bundle`` / ``theloom.viz.html``), or the notices-catalog
+    reachability walker credits neither (round 4's blocking gap: fixing the
+    shared assembler alone left ``visualize`` silent)."""
+    graph = "g"
+    for i in range(4):
+        e = create(multi, graph, f"E{i}")
+        run_handler("embed-entity", {"graph": graph, "id": e["id"]}, multi)
+    world = fork(multi, graph)
+    wid = world["worldId"]
+
+    main_bundle = run_handler("export-bundle", {"graph": graph}, multi)
+    assert "notices" not in main_bundle
+    fork_bundle = run_handler("export-bundle", {"graph": graph, "world": wid}, multi)
+    assert any(n["code"] == "WORLD_PROJECTION_PARTIAL" for n in fork_bundle["notices"])
+
+    fork_viz = run_handler(
+        "visualize",
+        {"graph": graph, "world": wid, "output": str(tmp_path / "fork.html")},
+        multi,
+    )
+    assert any(n["code"] == "WORLD_PROJECTION_PARTIAL" for n in fork_viz["notices"])
+    main_viz = run_handler(
+        "visualize", {"graph": graph, "output": str(tmp_path / "main.html")}, multi
+    )
+    assert "notices" not in main_viz
+
+
 # =============================================================================
 # Bi-temporal reads inside a world, and main's replay byte-identical
 # before/after fork+abandon.
@@ -1057,6 +1149,50 @@ def test_what_changed_against_a_nonexistent_world_is_not_found(multi: MultiGraph
     with pytest.raises(LoomError) as exc:
         run_handler("what-changed", {"graph": "g", "world": "world-does-not-exist"}, multi)
     assert exc.value.code == "NOT_FOUND"
+
+
+def test_what_changed_replays_an_endpoint_only_relation_revision(multi: MultiGraph) -> None:
+    """A relation whose ONLY change is its endpoints (merge-world redirecting
+    a relation on top of an inherited one with the same id -- the exact
+    ``update_relation`` path this Part 5 build made genuinely mutable) used
+    to produce zero rows: ``_ENDPOINT_FIELDS`` was skipped unconditionally
+    on the premise endpoints never change, so an update whose only diff was
+    ``from``/``to`` had nothing left to report at all -- the event vanished
+    from replay entirely, not merely under-described. The endpoint change
+    must now surface as its own field row, named via oldName/newName like
+    every other id this module resolves."""
+    graph = "g"
+    primary = create(multi, graph, "Primary")
+    secondary = create(multi, graph, "Secondary")
+    third = create(multi, graph, "Third")
+    relate(multi, graph, secondary["id"], third["id"])
+
+    world = fork(multi, graph)
+    wid = world["worldId"]
+    run_handler(
+        "merge-entities",
+        {"graph": graph, "world": wid, "primary": primary["id"], "secondary": secondary["id"]},
+        multi,
+    )
+    merge_result = run_handler(
+        "merge-world", {"from": wid, "into": "main", "strategy": "endorse-all"}, multi
+    )
+
+    replay = run_handler(
+        "what-changed", {"graph": graph, "eventIds": merge_result["eventIds"]}, multi
+    )
+    endpoint_rows = [row for row in replay["items"] if row["field"] in ("from", "to")]
+    assert endpoint_rows, "the endpoint-only revision must produce at least one row"
+    redirect = next(row for row in endpoint_rows if row["field"] == "from")
+    assert redirect["recordType"] == "relation"
+    assert redirect["old"] == secondary["id"]
+    assert redirect["new"] == primary["id"]
+    assert redirect["oldName"] == "Secondary"
+    assert redirect["newName"] == "Primary"
+    # The row-level from/to (always the CURRENT endpoint) still names the
+    # post-redirect state, unchanged from before this fix.
+    assert redirect["from"] == primary["id"]
+    assert redirect["to"] == third["id"]
 
 
 def test_delete_graph_refuses_inside_a_coherent_world_too(multi: MultiGraph) -> None:

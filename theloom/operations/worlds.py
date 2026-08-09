@@ -419,23 +419,32 @@ def _relation_event_rows(event: Event, world_id: str, names: dict[str, str]) -> 
     previous = event.payload.get("previous")
     rows = []
     for field, old_value, new_value in receipts_ops.field_diffs(previous, doc):
-        if field in ("from", "to"):  # endpoints are immutable; already on every row above
-            continue
-        rows.append(
-            {
-                "kind": "relationRevised",
-                "relationId": doc["id"],
-                "from": doc["from"],
-                "fromName": names.get(doc["from"]),
-                "to": doc["to"],
-                "toName": names.get(doc["to"]),
-                "field": field,
-                "old": old_value,
-                "new": new_value,
-                "eventId": event.id,
-                "world": world_id,
-            }
-        )
+        row: Doc = {
+            "kind": "relationRevised",
+            "relationId": doc["id"],
+            "from": doc["from"],
+            "fromName": names.get(doc["from"]),
+            "to": doc["to"],
+            "toName": names.get(doc["to"]),
+            "field": field,
+            "old": old_value,
+            "new": new_value,
+            "eventId": event.id,
+            "world": world_id,
+        }
+        if field in ("from", "to"):
+            # Endpoints are no longer immutable (Part 5's merge-world can
+            # redirect a relation's from/to -- FalkorGraphStore.
+            # update_relation's own docstring), so an endpoint-only
+            # revision is real information the row-level from/to above
+            # doesn't carry on its own (that pair is always the CURRENT
+            # endpoint, i.e. `new`; the OLD one otherwise has no row at
+            # all). Named the same way every other id in this function is.
+            if isinstance(old_value, str):
+                row["oldName"] = names.get(old_value)
+            if isinstance(new_value, str):
+                row["newName"] = names.get(new_value)
+        rows.append(row)
     return rows
 
 

@@ -47,10 +47,16 @@ from theloom.store.worlds import require_world, world_graph_name
 # meaningful "what changed" rows on their own.
 _SKIP_FIELDS = frozenset({"id", "created_at", "updated_at"})
 
-# Relation/bridge endpoints are immutable once created and are already
-# surfaced on every relation-kind row as from/to/fromName/toName — repeating
-# them as field-level diff rows on creation (old=None, new=<id>) would be
-# pure noise, not information the row-level from/to doesn't already carry.
+# Relation/bridge endpoints are skipped as field-level diff rows only on a
+# creation/deletion (old or new is empty) — the row-level from/to/fromName/
+# toName every relation-kind row already carries (`_output_row`) makes a
+# field row saying "from went from nothing to <id>" pure noise there. An
+# UPDATE where the endpoints themselves changed while the record otherwise
+# persisted is the opposite: real information no other row carries (Part 5's
+# merge-world can redirect a relation's from/to — FalkorGraphStore.
+# update_relation's own docstring — and this was the one blind spot in
+# what-changed's replay: an endpoint-only revision produced zero rows,
+# indistinguishable from the event never having been diffed at all).
 _ENDPOINT_FIELDS = frozenset({"from", "to"})
 
 _DEFAULT_LIMIT = 500
@@ -132,7 +138,12 @@ class _RawRow:
 
 def _rows_for(kind: str, record_id: str, old: Doc | None, new: Doc | None) -> list[_RawRow]:
     record = new or old or {}
-    skip = _SKIP_FIELDS | _ENDPOINT_FIELDS if kind in ("relation", "bridge") else _SKIP_FIELDS
+    is_relation_update = kind in ("relation", "bridge") and bool(old) and bool(new)
+    skip = (
+        _SKIP_FIELDS
+        if is_relation_update
+        else (_SKIP_FIELDS | _ENDPOINT_FIELDS if kind in ("relation", "bridge") else _SKIP_FIELDS)
+    )
     return [
         _RawRow(record_id, kind, field, old_value, new_value, record)
         for field, old_value, new_value in _field_diffs(old, new, skip=skip)
@@ -251,9 +262,11 @@ def _resolve_names(
     rows: list[tuple[Event, _RawRow]], multi: MultiGraph, graph: str | None
 ) -> dict[str, str]:
     """One batched ``read_entity_docs`` for every entity id any row
-    references (the changed entity itself, or a relation/bridge's from/to) —
-    the same "hydrate the whole neighbourhood in one query" discipline
-    ``get_neighbors`` uses, never a lookup per row."""
+    references (the changed entity itself, a relation/bridge's current
+    from/to, or — for an endpoint-change field row — the OLD endpoint id
+    too, which ``row.record``'s from/to (the current doc) does not carry
+    on its own) — the same "hydrate the whole neighbourhood in one query"
+    discipline ``get_neighbors`` uses, never a lookup per row."""
     wanted: set[str] = set()
     for _event, row in rows:
         if row.kind == "entity":
@@ -263,6 +276,10 @@ def _resolve_names(
                 value = row.record.get(key)
                 if isinstance(value, str):
                     wanted.add(value)
+            if row.field in ("from", "to"):
+                for value in (row.old, row.new):
+                    if isinstance(value, str):
+                        wanted.add(value)
     if not wanted:
         return {}
     store = multi.get_store(graph)
@@ -291,6 +308,19 @@ def _output_row(event: Event, row: _RawRow, names: dict[str, str]) -> Doc:
         if isinstance(to_id, str):
             out["to"] = to_id
             out["toName"] = names.get(to_id)
+        # An endpoint-change field row's own old/new ARE entity ids (the
+        # relation's before/after from or to) -- named the same way every
+        # other id in this row is, distinct from the row-level from/to
+        # above (which is always the CURRENT endpoint, same value as `new`
+        # here and already named by fromName/toName when the field is "to"
+        # or "from" respectively; oldName/newName cover both unconditionally
+        # so a caller never has to cross-reference which of the two pairs
+        # applies).
+        if row.field in ("from", "to"):
+            if isinstance(row.old, str):
+                out["oldName"] = names.get(row.old)
+            if isinstance(row.new, str):
+                out["newName"] = names.get(row.new)
     return out
 
 

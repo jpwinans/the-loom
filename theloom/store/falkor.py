@@ -942,9 +942,24 @@ class FalkorGraphStore(GraphSpace, GraphStore):
         """Create a verbatim copy of a relation doc — id preserved — as a
         REAL, event-logged creation: ``merge-world``'s counterpart to
         ``adopt_relation`` (see ``graft_entity`` for the full rationale).
-        Both endpoints must already exist in this graph."""
+
+        Both endpoints must already exist in this graph — checked ahead of
+        the commit (``_require_endpoints``'s own "pre-empting beats
+        compensating"), and again against the reply's own
+        ``relationships_created`` count in case a concurrent writer
+        retracted an endpoint between the check and the ``EXEC``. Without
+        the second check, a MATCH that silently matches zero rows would
+        still earn a real ``relation_created`` event and report success for
+        a graft that never happened — the same pathology
+        ``apply_entity_merge``'s docstring describes for its own MATCH-
+        gated statement, which this method shares (it is the closed set's
+        other MATCH-gated committing write; see
+        ``theloom.store.worlds.WorldGraphStore.graft_relation`` for the
+        copy-on-write half of this fix, needed when the caller is a
+        world-to-world merge rather than a merge into ``main``)."""
         doc = dict(doc)
-        self._commit(
+        self._require_endpoints([doc])
+        results, event_ids = self._commit(
             (
                 "MATCH (a:_Entity {id: $from}), (b:_Entity {id: $to}) "
                 f"CREATE (a)-[:{doc['relationType']} {{id: $id, _doc: $doc}}]->(b)",
@@ -957,6 +972,15 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             ),
             [("relation_created", {"relation": doc})],
         )
+        if int(results[0].relationships_created) == 0:
+            # Lost a race with a concurrent delete between the pre-check and
+            # the EXEC: undo both halves so the caller's NOT_FOUND means
+            # what it says, the same compensation create_relations makes.
+            self._delete_relations_by_id([doc["id"]])
+            self._events.discard(event_ids)
+            raise NotFoundError(
+                f"Entity not found: relation endpoints must exist ({doc['from']!r}, {doc['to']!r})"
+            )
         return Relation.model_validate(doc)
 
     def relation_ids_known_live(self) -> set[str]:

@@ -113,7 +113,13 @@ def test_catalog_matches_known_emission_sites() -> None:
     # composites whose own sections touch vectors directly --
     # far-analogy-retrieval (get_entity_vectors), explore-frontier
     # (CoverageGap), hypothesis-engine (its 'gaps' section calls
-    # semantic_gaps) -- were missing from this set.
+    # semantic_gaps) -- were missing from this set. Round 4 widened the
+    # grep to theloom/viz too: export-bundle/visualize's semantic section
+    # (theloom.viz.semantic.assemble_semantic) reads entity vectors the
+    # same way, and each needed its own copy of the notice from its own
+    # handler's module (theloom.viz.bundle / theloom.viz.html) per the
+    # reachability walker's same-module-only rule -- fixing the shared
+    # assembler alone covered export-bundle but left visualize silent.
     assert catalog["WORLD_PROJECTION_PARTIAL"] == {
         "embed-entity",
         "embed-entities",
@@ -134,6 +140,8 @@ def test_catalog_matches_known_emission_sites() -> None:
         "far-analogy-retrieval",
         "explore-frontier",
         "hypothesis-engine",
+        "export-bundle",
+        "visualize",
     }
     # documents.py's graph-ignored notice is shared by every document command
     # that accepts (and ignores) `graph` -- pin the full set so a command

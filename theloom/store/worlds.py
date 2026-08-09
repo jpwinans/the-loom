@@ -193,27 +193,48 @@ class WorldGraphStore(FalkorGraphStore):
     ``postmortem-evaluate`` (``theloom.operations.epistemic``),
     ``trigger-status``/``process-triggers``
     (``theloom.operations.reification``), ``self-model-update``
-    (``theloom.operations.extraction``)), and the three composites whose own
-    sections read entity vectors directly (``far-analogy-retrieval``'s
-    fingerprint section, ``get_entity_vectors``; ``explore-frontier``'s
-    CoverageGap signal, ``theloom.exploration.coverage_gap``;
-    ``hypothesis-engine``'s ``gaps`` section, which calls
-    ``theloom.operations.semantic.semantic_gaps`` directly and so must
-    attach its own copy of the notice rather than inherit one that command
-    never forwards) — checks ``params.world`` itself and attaches a
-    ``WORLD_PROJECTION_PARTIAL`` notice naming exactly what it did not
-    reconstruct; this list is a checked inventory (``grep -rn
-    'get_entity_vectors\\|set_entity_vector\\|vector_knn\\|has_entity_vectors\\|
-    get_metadata\\|set_metadata' theloom/operations theloom/composites
-    theloom/extraction theloom/synthesis theloom/exploration
-    theloom/semantic``), not a memory of what was wired — re-run any time a
-    new command starts touching either family, this docstring's own list is
-    the thing that goes stale first. Two known gaps the same grep turns up
-    and this build does NOT cover, both verified to be genuinely
-    unreachable from any live command rather than merely unfixed: (1) the
-    LLM-synthesis pipeline (``theloom.operations.synthesis``'s
-    ``anchor_search_for``, behind ``synthesize``/``synthesize-and-ingest``/
-    ``plan-synthesis``/``traverse-synthesis``/``verify-fidelity``) probes
+    (``theloom.operations.extraction``)), and every command whose own
+    section reads entity vectors directly rather than through one of those
+    handlers — ``far-analogy-retrieval``'s fingerprint section
+    (``get_entity_vectors``), ``explore-frontier``'s CoverageGap signal
+    (``theloom.exploration.coverage_gap``), ``hypothesis-engine``'s
+    ``gaps`` section (calls ``theloom.operations.semantic.semantic_gaps``
+    directly), and ``export-bundle``/``visualize``'s semantic section
+    (``theloom.viz.semantic.assemble_semantic`` → ``get_entity_vectors``,
+    ``theloom.viz.bundle``/``theloom.viz.html``) — checks ``params.world``
+    itself and attaches a ``WORLD_PROJECTION_PARTIAL`` notice naming
+    exactly what it did not reconstruct.
+
+    Each of those must attach its own copy from its own handler's module:
+    the notices-catalog reachability walker only credits a command with a
+    code emitted by a same-module bare call starting at its own handler
+    (``theloom.cli.notices_catalog``'s module docstring), so a command
+    whose vector read happens via a call into a DIFFERENT module —
+    ``hypothesis-engine`` calling into ``operations.semantic``,
+    ``visualize`` calling into ``theloom.viz.bundle`` — is not credited
+    with a notice attached only in that other module, even though the read
+    genuinely happens on its behalf. This is the exact shape the round-4
+    gap took: ``theloom.viz.bundle.assemble_bundle`` reading vectors was
+    fixed for ``export-bundle`` (its own handler, same module) without
+    ``visualize`` (a different module's handler that calls it) getting a
+    copy of its own, so ``visualize`` shipped silent regardless of the
+    underlying assembler being fixed.
+
+    This list is a checked inventory (``grep -rn 'get_entity_vectors\\|
+    set_entity_vector\\|vector_knn\\|has_entity_vectors\\|get_metadata\\|
+    set_metadata' theloom/operations theloom/composites theloom/extraction
+    theloom/synthesis theloom/exploration theloom/semantic theloom/viz``),
+    not a memory of what was wired — re-run any time a new command starts
+    touching either family, checking not just *whether* a call site is
+    covered but *which module* its own command handler lives in (a
+    passing grep for the underlying store call proves nothing about
+    whether every reachable command's own module got its own copy). Two
+    known gaps the same grep turns up and this build does NOT cover, both
+    verified to be genuinely unreachable from any live command rather than
+    merely unfixed: (1) the LLM-synthesis pipeline
+    (``theloom.operations.synthesis``'s ``anchor_search_for``, behind
+    ``synthesize``/``synthesize-and-ingest``/``plan-synthesis``/
+    ``traverse-synthesis``/``verify-fidelity``) probes
     ``has_entity_vectors``/vector search as one of several anchor-finding
     signals, not its primary purpose, and degrades to its keyword/graph
     fallback rather than erroring inside a fork; (2)
@@ -222,7 +243,15 @@ class WorldGraphStore(FalkorGraphStore):
     (``hypothesis-engine``'s ``dedup`` section always passes
     ``embedding_manager=None``, so the function returns via its
     name-matching fallback before that branch is ever reached) — nothing to
-    notice about a path nothing can take.
+    notice about a path nothing can take. ``theloom.viz.serve``'s live
+    ``/api/bundle``/``/api/as-of`` routes call ``assemble_bundle`` too (a
+    third cross-module caller) but never thread a ``?world=`` query
+    parameter at all today, so there is currently no way to reach an
+    active world through them in practice; noted here rather than silently
+    left off the inventory, not wired (a live HTTP JSON response is a
+    different contract than this convention was built for, and the
+    reachability walker cannot see into FastAPI's nested route closures
+    regardless).
     """
 
     def __init__(
@@ -548,6 +577,25 @@ class WorldGraphStore(FalkorGraphStore):
             self._ensure_local_entity(spec.from_)
             self._ensure_local_entity(spec.to)
         return super().create_relations(specs)
+
+    def graft_relation(self, doc: Mapping[str, Any]) -> Relation:
+        """Copy-on-write for ``merge-world`` grafting a relation into THIS
+        world's own segment — a world-to-world merge (``into`` names a
+        non-``main`` world), not a merge into ``main``. The base class's
+        ``MATCH (a:_Entity {id: $from}), (b:_Entity {id: $to})`` looks for
+        both endpoints in *this* graph's own local segment directly; for an
+        endpoint the fork has only ever read through the overlay and never
+        itself written, that MATCH finds nothing. ``FalkorGraphStore.
+        graft_relation`` now refuses instead of silently reporting success
+        for a no-op write (its own docstring), but refusing is still wrong
+        here — the endpoints genuinely exist, just not locally yet.
+        Adopting both first (the same copy-on-write ``create_relation``
+        already does) makes the inherited MATCH find real rows, mirroring
+        ``apply_entity_merge``'s fix for the same pathology on its own
+        MATCH-gated statement."""
+        self._ensure_local_entity(str(doc["from"]))
+        self._ensure_local_entity(str(doc["to"]))
+        return super().graft_relation(doc)
 
     def _ensure_local_relation(
         self,

@@ -10,6 +10,7 @@ from pydantic import Field
 
 from theloom.errors import NotFoundError, ValidationError
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import notice, with_notices
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 from theloom.viz.analytics import assemble_analytics
@@ -39,6 +40,33 @@ class ExportBundleInput(CommandInput):
     # `None` (the default) means "no cap" — every existing caller/test that
     # never sets this is byte-for-byte unaffected.
     max_entities: int | None = Field(default=None, alias="maxEntities", ge=1)
+
+
+def _world_partial_notices(params: ExportBundleInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): the semantic
+    section reads entity vectors via ``get_entity_vectors`` (``theloom.viz.
+    semantic.assemble_semantic``) — a direct Cypher property write outside
+    the event log a world's overlay replays, so inside a fork this section
+    reflects only entities embedded within that fork, never ones its
+    parent already had embedded. Gated on ``include.semantic`` too: when
+    the caller excludes that section outright, nothing here touched
+    embeddings and there is no gap to declare. Reached by ``export-bundle``
+    (this module's own handler) and separately declared again by
+    ``visualize`` (``theloom.viz.html.write_visualization``, a different
+    module — the notices-catalog reachability walker only follows same-
+    module calls, so a bundle's notices assembled here are not
+    automatically credited to a caller in another module; see that
+    module's own copy of this function)."""
+    if params.world in (None, "main") or not params.include.semantic:
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's embeddings — the semantic "
+            "section reflects only entities embedded inside this world, not the ones inherited "
+            "from its parent.",
+        )
+    ]
 
 
 def _truncate_by_degree(
@@ -162,4 +190,6 @@ def assemble_bundle(params: ExportBundleInput, multi: MultiGraph) -> dict[str, A
         temporal=temporal,
         semantic=semantic,
     )
-    return bundle.model_dump(by_alias=True, exclude_none=True)
+    return with_notices(
+        bundle.model_dump(by_alias=True, exclude_none=True), _world_partial_notices(params)
+    )

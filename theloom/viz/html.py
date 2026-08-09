@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from theloom.errors import ConfigError, ValidationError
+from theloom.operations.notices import notice, with_notices
 from theloom.store.multigraph import MultiGraph
-from theloom.viz.bundle import ExportBundleInput, assemble_bundle
+from theloom.viz.bundle import Doc, ExportBundleInput, assemble_bundle
 
 DATA_SENTINEL = "__TAPESTRY_BUNDLE__"
 _THEMES = ("auto", "dark", "light")
@@ -22,6 +23,28 @@ _THEMES = ("auto", "dark", "light")
 class VisualizeInput(ExportBundleInput):
     output: str | None = None
     theme: str = "auto"
+
+
+def _world_partial_notices(params: VisualizeInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): ``visualize``'s
+    own copy of ``theloom.viz.bundle``'s check — the bundle it writes to
+    disk already carries the notice added there, but this command's own
+    JSON response (the write receipt: path/counts/sections, not the bundle
+    itself) is a separate document, and the notices-catalog reachability
+    walker only credits a command with a code its own module emits
+    directly (a cross-module call, this one, is not followed) — so
+    ``visualize`` must declare it again here rather than rely on the
+    bundle's own copy."""
+    if params.world in (None, "main") or not params.include.semantic:
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's embeddings — the semantic "
+            "section reflects only entities embedded inside this world, not the ones inherited "
+            "from its parent.",
+        )
+    ]
 
 
 def render_html(bundle: dict[str, Any], template_text: str) -> str:
@@ -56,10 +79,13 @@ def write_visualization(params: VisualizeInput, multi: MultiGraph) -> dict[str, 
     target.parent.mkdir(parents=True, exist_ok=True)
     data = html.encode("utf-8")
     target.write_bytes(data)
-    return {
-        "path": str(target),
-        "entityCount": bundle["meta"]["entityCount"],
-        "relationCount": bundle["meta"]["relationCount"],
-        "bytes": len(data),
-        "sections": bundle["meta"]["sections"],
-    }
+    return with_notices(
+        {
+            "path": str(target),
+            "entityCount": bundle["meta"]["entityCount"],
+            "relationCount": bundle["meta"]["relationCount"],
+            "bytes": len(data),
+            "sections": bundle["meta"]["sections"],
+        },
+        _world_partial_notices(params),
+    )
