@@ -48,6 +48,23 @@ class SinceLastSessionInput(CommandInput):
     graph: str | None = None
 
 
+def _has_consolidation_history(multi: MultiGraph, graph: str) -> bool:
+    """Whether ``consolidate`` has EVER been run against ``graph`` -- any
+    dream-named world ref forked from it, in ANY status (active, merged, or
+    abandoned/reaped), not just the still-unreviewed ones ``_unreviewed_dreams``
+    lists. This is what distinguishes "genuinely never consolidated" from
+    "consolidated, but every dream has since been reviewed (merged or
+    abandoned)" -- the two states ``NO_CONSOLIDATION_HISTORY`` used to
+    conflate by firing whenever ``_unreviewed_dreams`` was merely empty,
+    regardless of which of the two was actually true."""
+    for record in multi.list_worlds(include_reaped=True):
+        if record["baseGraph"] != graph:
+            continue
+        if str(record.get("name") or "").startswith(DREAM_WORLD_NAME_PREFIX):
+            return True
+    return False
+
+
 def _unreviewed_dreams(multi: MultiGraph, graph: str) -> list[Doc]:
     """Every active (not merged/abandoned), unreviewed dream world forked
     from ``graph``, newest first -- (d)'s independence guarantee means two
@@ -188,14 +205,24 @@ def since_last_session(params: SinceLastSessionInput, multi: MultiGraph) -> Doc:
 
     notices: list[Doc] = []
     if not dreams:
-        notices.append(
-            notice(
-                "NO_CONSOLIDATION_HISTORY",
-                f"No consolidation report has ever been generated for '{graph}'; run "
-                "'consolidate' first.",
-                hint="Call consolidate to fork a dream world and populate a report.",
+        if _has_consolidation_history(multi, graph):
+            notices.append(
+                notice(
+                    "ALL_DREAMS_REVIEWED",
+                    f"Every consolidation report for '{graph}' has already been reviewed "
+                    "(merged or abandoned); there is nothing new to surface.",
+                    hint="Call consolidate to fork a fresh dream world.",
+                )
             )
-        )
+        else:
+            notices.append(
+                notice(
+                    "NO_CONSOLIDATION_HISTORY",
+                    f"No consolidation report has ever been generated for '{graph}'; run "
+                    "'consolidate' first.",
+                    hint="Call consolidate to fork a dream world and populate a report.",
+                )
+            )
     if truncated:
         envelope["truncated"] = True
         notices.append(

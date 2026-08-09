@@ -71,10 +71,23 @@ Doc = dict[str, Any]
 
 
 NOTICE_CATALOG: dict[str, str] = {
+    "ALL_DREAMS_REVIEWED": (
+        "since-last-session found consolidation history for this graph, but every "
+        "dream world has already been reviewed (merged or abandoned) -- there is "
+        "nothing unreviewed to surface. Distinct from NO_CONSOLIDATION_HISTORY, "
+        "which means consolidate has never been run at all."
+    ),
     "ALREADY_REAPED": (
         "The ref named in the request (a session workspace, or a belief "
         "world) was already reaped; there was nothing left to delete, so "
         "nothing further happened."
+    ),
+    "ASSERTION_HISTORY_UNAVAILABLE": (
+        "calibration-profile found one or more resolved claims with no readable "
+        "assertion-time snapshot at all (neither the as-of read at the claim's own "
+        "created_at nor the earliest recorded version in this graph segment) -- "
+        "excluded from every bucket rather than scored against a fabricated "
+        "confidence, matching INSUFFICIENT_DATA's philosophy."
     ),
     "AUTO_SCOPED": (
         "A required scoping parameter was omitted, so the command auto-selected "
@@ -126,9 +139,10 @@ NOTICE_CATALOG: dict[str, str] = {
         "found any yet."
     ),
     "NO_CONSOLIDATION_HISTORY": (
-        "No consolidation report has ever been generated for this graph, so "
-        "since-last-session has nothing to surface yet -- run 'consolidate' "
-        "first, then check back."
+        "consolidate has GENUINELY NEVER been run for this graph -- no dream-world ref "
+        "exists in any status (active, merged, or abandoned). Distinct from "
+        "ALL_DREAMS_REVIEWED, which means consolidation history exists but everything "
+        "in it has already been reviewed; run 'consolidate' first, then check back."
     ),
     "NOT_PERSISTED": (
         "The command computed results but did not write them to the graph; a "

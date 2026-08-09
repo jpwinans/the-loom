@@ -379,6 +379,45 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             return Entity.model_validate(json.loads(version_rows[0][0]))
         return None
 
+    def read_entity_earliest_version(self, entity_id: str) -> Entity | None:
+        """This graph segment's own oldest recorded incarnation of an
+        entity -- the fallback ``theloom.operations.calibration.
+        resolved_claims`` reaches for when ``read_entity_as_of`` at a
+        claim's ``created_at`` comes up empty, which happens for an entity
+        ``merge-world`` grafted from another world: the graft (``graft_entity``)
+        preserves the SOURCE world's original ``created_at`` but opens a
+        brand-new ``tx_from`` at graft time, so no live-or-version interval
+        in *this* segment ever covers the original creation instant, even
+        though this segment does hold the graft-time doc -- exactly the
+        value the endorser accepted into this graph and the only
+        "assertion time" this segment can honestly speak to.
+
+        Earliest is the earliest closed ``:_EntityVersion`` snapshot (by
+        ``tx_from``) if the entity has been updated here since; otherwise
+        the live doc itself, which is then -- by construction, nothing has
+        superseded it in this segment -- the only incarnation on file, and
+        therefore trivially the earliest one too.
+
+        Local only: reads ``_read_doc`` directly rather than the
+        (possibly overridden) ``read_entity``, so a ``WorldGraphStore``
+        subclass never falls through to an ancestor's current live value
+        here -- that would silently reintroduce the same "current value
+        masquerading as assertion time" bug this method exists to close,
+        just one layer removed. Returns ``None`` only when this segment
+        has neither a version nor a live doc for the id at all (nothing
+        readable), the caller's signal to exclude and disclose rather than
+        fabricate.
+        """
+        version_rows = self._rows(
+            "MATCH (v:_EntityVersion {entity_id: $id}) "
+            "RETURN v._doc ORDER BY v.tx_from ASC LIMIT 1",
+            {"id": entity_id},
+        )
+        if version_rows:
+            return Entity.model_validate(json.loads(version_rows[0][0]))
+        doc = self._read_doc(entity_id)
+        return Entity.model_validate(doc) if doc is not None else None
+
     def read_graph_as_of(self, timestamp: str) -> GraphSnapshot:
         """The whole graph as it stood at ``timestamp`` (see the read port)."""
         entities = self._entities_as_of(timestamp)

@@ -15,6 +15,9 @@ import pytest
 
 from theloom.cli.registry import run_handler
 from theloom.errors import LoomError
+from theloom.model import Entity
+from theloom.operations import calibration
+from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
 from theloom.timeutil import iso_now
 
@@ -415,3 +418,161 @@ def test_out_of_line_notice_never_fires_without_new_confidence(multi: MultiGraph
         multi,
     )
     assert "notices" not in result
+
+
+# =============================================================================
+# Fix: a merge-grafted claim's assertion-time confidence must be the
+# graft-time value it was endorsed with, never a later live value --
+# calibration.py's module docstring, "what assertion time means for a
+# grafted claim". This is the SYSTEM FAIL the integration arbiter found:
+# fork -> create (confidence 0.20) -> merge-world {strategy: select} ->
+# resolve-claim -> update-entity (confidence 0.95) -> calibration-profile
+# reported the fabricated 0.95, not the endorsed 0.20.
+# =============================================================================
+
+
+def test_grafted_claim_reports_assertion_time_confidence_not_the_live_value(
+    multi: MultiGraph,
+) -> None:
+    """The arbiter's exact repro, end to end through the CLI dispatch path
+    (``run_handler``). Before the fix this produced meanAssertedConfidence
+    0.95 / brierScore 0.9025 -- both fabricated from the LIVE doc because
+    ``read_entity_as_of(claim_id, claim.created_at)`` always misses for a
+    grafted entity (the graft opens a new ``tx_from`` here but keeps the
+    source world's original ``created_at``, which predates this segment's
+    first record of the id). calibration-profile must instead report 0.20,
+    the value actually endorsed into main by the merge."""
+    fork = run_handler("fork-world", {"name": "repro-fork"}, multi)
+    world_id = fork["worldId"]
+
+    grafted = run_handler(
+        "create-entity",
+        {
+            "world": world_id,
+            "name": "Grafted claim",
+            "entityType": "claim",
+            "observations": ["created inside a fork"],
+            "confidence": {"score": 0.20, "basis": "inference"},
+            "session": "grafted-author",
+        },
+        multi,
+    )
+    claim_id = grafted["id"]
+
+    merge = run_handler(
+        "merge-world",
+        {"from": world_id, "into": "main", "strategy": "select", "entityIds": [claim_id]},
+        multi,
+    )
+    assert {row["entityId"] for row in merge["appliedEntities"]} == {claim_id}
+
+    resolve(multi, claim_id, "refuted", evidence="turned out false")
+
+    # The fabrication trigger: an ordinary confidence update AFTER
+    # resolution, exactly like acceptance (b)'s native-claim control above.
+    run_handler(
+        "update-entity",
+        {"id": claim_id, "confidence": {"score": 0.95, "basis": "inference"}},
+        multi,
+    )
+    live = run_handler("read-entity", {"id": claim_id}, multi)
+    assert live["confidence"]["score"] == pytest.approx(0.95)
+
+    result = profile(multi, by="author", minBucketN=1)
+    row = bucket(result, "grafted-author")
+
+    # As-endorsed (graft-time) value, never the live 0.95: refuted at 0.20
+    # -> hit rate 0.0, brier = (0.20 - 0)^2 = 0.04, gap = 0.20 - 0.0 = 0.20.
+    assert row["meanAssertedConfidence"] == pytest.approx(0.20)
+    assert row["empiricalHitRate"] == pytest.approx(0.0)
+    assert row["brierScore"] == pytest.approx(0.04)
+    assert row["gap"] == pytest.approx(0.20)
+    assert result["skippedNoHistory"] == 0
+    assert "notices" not in result or all(
+        n["code"] != "ASSERTION_HISTORY_UNAVAILABLE" for n in result["notices"]
+    )
+
+
+def test_native_claim_control_still_reads_assertion_time_after_resolution(
+    multi: MultiGraph,
+) -> None:
+    """Control for the fix above: a claim created NATIVELY in main (never
+    forked/grafted) hits the ordinary ``read_entity_as_of`` path directly --
+    the earliest-version fallback must change nothing for it."""
+    author = "native-control-author"
+    c = claim(
+        multi,
+        "Native claim",
+        confidence={"score": 0.3, "basis": "inference"},
+        session=author,
+    )
+    resolve(multi, c["id"], "confirmed")
+    run_handler(
+        "update-entity",
+        {"id": c["id"], "confidence": {"score": 0.99, "basis": "inference"}},
+        multi,
+    )
+
+    result = profile(multi, by="author", minBucketN=1)
+    row = bucket(result, author)
+    assert row["meanAssertedConfidence"] == pytest.approx(0.3)
+    assert result["skippedNoHistory"] == 0
+
+
+class _BlindToOneClaim:
+    """A store proxy that makes assertion-time history for exactly one
+    entity id genuinely unrecoverable -- neither the as-of read nor the
+    earliest-version fallback return anything for it. A live
+    ``FalkorGraphStore`` cannot produce this on its own (its earliest-
+    version fallback always has at least the live doc to return, since the
+    id was already confirmed to exist), so this simulates the "no history
+    readable at all" edge the fix's docstring names, proving
+    ``resolved_claims`` excludes-and-discloses rather than guessing when a
+    real store method is asked about a real gap."""
+
+    def __init__(self, real: FalkorGraphStore, blind_to: str) -> None:
+        self._real = real
+        self._blind_to = blind_to
+
+    def read_entity_as_of(self, entity_id: str, timestamp: str) -> Entity | None:
+        if entity_id == self._blind_to:
+            return None
+        return self._real.read_entity_as_of(entity_id, timestamp)
+
+    def read_entity_earliest_version(self, entity_id: str) -> Entity | None:
+        if entity_id == self._blind_to:
+            return None
+        return self._real.read_entity_earliest_version(entity_id)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
+def test_resolved_claim_with_unrecoverable_history_is_excluded_and_disclosed(
+    multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When neither read path can produce a snapshot at all, the claim must
+    be excluded from scoring -- never scored against the live doc -- and
+    the exclusion disclosed via ``skippedNoHistory`` and an
+    ``ASSERTION_HISTORY_UNAVAILABLE`` notice, matching
+    ``INSUFFICIENT_DATA``'s "a fabricated number is worse than none"."""
+    author = "blind-author"
+    c = claim(multi, "Unrecoverable history", confidence=CONF, session=author)
+    resolve(multi, c["id"], "confirmed")
+
+    real_store = multi.get_store(None)
+    blind_store = _BlindToOneClaim(real_store, blind_to=c["id"])
+
+    all_claims, skipped = calibration.resolved_claims(blind_store)  # type: ignore[arg-type]
+    assert c["id"] not in {rc.claim_id for rc in all_claims}
+    assert len(skipped) == 1
+    assert skipped[0].claim_id == c["id"]
+
+    monkeypatch.setattr(multi, "get_store", lambda *args, **kwargs: blind_store)
+    result = calibration.calibration_profile(
+        calibration.CalibrationProfileInput(by="author", minBucketN=1), multi
+    )
+
+    assert result["skippedNoHistory"] == 1
+    codes = {n["code"] for n in result.get("notices", [])}
+    assert "ASSERTION_HISTORY_UNAVAILABLE" in codes

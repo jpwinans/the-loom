@@ -44,6 +44,26 @@ Doc = dict[str, Any]
 _CLAIM_RESOLVED = "CLAIM_RESOLVED"
 _CALIBRATION_GAP = "CALIBRATION_GAP"
 
+#: This provider's alert codes and their meanings -- the alert-side
+#: counterpart to ``theloom.operations.notices.NOTICE_CATALOG``, read by
+#: ``theloom.composites.alerts.alert_catalog`` (the ``notices-catalog``
+#: command's ``alerts`` section) to make these two codes discoverable.
+#: Alert docs are deliberately not ``notice()`` docs (see
+#: ``theloom.composites.alerts``'s module docstring), so there is no
+#: emit-time ``ValueError`` enforcing this the way ``notice()`` enforces
+#: ``NOTICE_CATALOG``; keeping it current is on this module's author.
+ALERT_MEANINGS: dict[str, str] = {
+    _CLAIM_RESOLVED: (
+        "A claim/hypothesis was resolved (resolve-claim) on or after the window's "
+        "'since' bound -- informational, one per newly-judged claim."
+    ),
+    _CALIBRATION_GAP: (
+        "An author's calibration bucket (asserted vs. empirical, from resolved "
+        "claims) is currently over the configured gap threshold, freshly "
+        "evidenced by a claim resolved on or after the window's 'since' bound."
+    ),
+}
+
 
 #: ISO timestamps sort lexicographically; this is the same epoch fallback
 #: ``theloom.operations.epistemic.session_changelog`` uses for an open-ended
@@ -129,7 +149,7 @@ def provide_alerts(graph: str, multi: MultiGraph, since: str | None) -> list[dic
     "message": str, "entityIds": list[str], "entityNames": list[str],
     "data": dict}``. Never mutates."""
     store = multi.get_store(graph)
-    claims = calibration.resolved_claims(store)
+    claims, _skipped_no_history = calibration.resolved_claims(store)
     config = load_config()
     return [
         *_resolved_claim_alerts(claims, since),
@@ -139,4 +159,4 @@ def provide_alerts(graph: str, multi: MultiGraph, since: str | None) -> list[dic
     ]
 
 
-__all__ = ["provide_alerts"]
+__all__ = ["ALERT_MEANINGS", "provide_alerts"]

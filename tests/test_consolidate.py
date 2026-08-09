@@ -192,7 +192,65 @@ def test_since_last_session_with_no_history_notices_and_stays_usable(multi: Mult
     surface = run_handler("since-last-session", {"graph": graph}, multi)
     assert surface["unreviewedDreams"] == []
     assert surface["sinceLastConsolidation"] is None
-    assert any(n["code"] == "NO_CONSOLIDATION_HISTORY" for n in surface.get("notices", []))
+    codes = {n["code"] for n in surface.get("notices", [])}
+    assert "NO_CONSOLIDATION_HISTORY" in codes
+    assert "ALL_DREAMS_REVIEWED" not in codes
+
+
+# =============================================================================
+# Fix: since-last-session must not claim "no consolidation report has ever
+# been generated" once every dream has been reviewed (merged or abandoned) --
+# the tested condition was "no UNREVIEWED dreams", not "never consolidated",
+# and the two are different truths that need different notices.
+# =============================================================================
+
+
+def test_since_last_session_all_dreams_reviewed_after_abandon_is_distinct_from_never_run(
+    multi: MultiGraph,
+) -> None:
+    graph = "g"
+    _plant_scenario(multi, graph)
+    consolidated = run_handler("consolidate", {"graph": graph}, multi)
+    world_id = consolidated["worldId"]
+
+    run_handler("abandon-world", {"worldId": world_id}, multi)
+
+    surface = run_handler("since-last-session", {"graph": graph}, multi)
+    assert surface["unreviewedDreams"] == []
+    codes = {n["code"] for n in surface.get("notices", [])}
+    assert "ALL_DREAMS_REVIEWED" in codes
+    assert "NO_CONSOLIDATION_HISTORY" not in codes
+
+
+def test_since_last_session_all_dreams_reviewed_after_merge_is_distinct_from_never_run(
+    multi: MultiGraph,
+) -> None:
+    """The same distinction, reached via the other review path (endorsing a
+    finding through merge-world rather than abandoning the whole dream)."""
+    graph = "g"
+    _plant_scenario(multi, graph)
+    consolidated = run_handler("consolidate", {"graph": graph}, multi)
+    world_id = consolidated["worldId"]
+    tension_finding = next(
+        f for f in consolidated["report"]["topFindings"] if f["pass"] == "contradiction"
+    )
+
+    run_handler(
+        "merge-world",
+        {"from": world_id, "strategy": "select", "entityIds": [tension_finding["entityId"]]},
+        multi,
+    )
+
+    surface = run_handler("since-last-session", {"graph": graph}, multi)
+    # merge-world does not reap the dream's own ref (theloom.store.worlds's
+    # own documented design), but it DOES flip domainStatus to "merged", so
+    # _unreviewed_dreams (which lists only include_reaped=False worlds --
+    # both axes checked, per list_worlds's own docstring) must already
+    # exclude it without abandon-world's help.
+    assert surface["unreviewedDreams"] == []
+    codes = {n["code"] for n in surface.get("notices", [])}
+    assert "ALL_DREAMS_REVIEWED" in codes
+    assert "NO_CONSOLIDATION_HISTORY" not in codes
 
 
 # =============================================================================

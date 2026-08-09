@@ -17,6 +17,25 @@ or an ordinary update-entity may have moved since. This is bi-temporal
 history doing exactly what it is for: recalibration must never rewrite what
 was actually asserted.
 
+**What "assertion time" means for a grafted claim.** A claim created inside
+a fork and later grafted into another world (``merge-world``) has TWO
+candidate "creation" instants: the ``created_at`` it carries from the
+source world, and the moment it was grafted (``graft_entity`` opens a
+brand-new ``tx_from`` here but preserves the original ``created_at`` verbatim).
+``read_entity_as_of(claim_id, claim.created_at)`` asks the first question and,
+for a grafted entity, always misses -- no live-or-version interval in the
+graft's own segment ever covers an instant that predates the segment's very
+first record of that id. This module's answer: assertion time for a grafted
+claim is the graft-time doc -- what the endorser actually accepted into this
+graph via ``merge-world`` -- read back via ``FalkorGraphStore.
+read_entity_earliest_version``, never the live doc that a later
+``update-entity``/``propagate-credit`` may have moved since (see that
+method's docstring for the exact mechanics and why it never resurrects a
+different world's current value on a further miss). A native claim's own
+``created_at`` already covers this segment's real first record, so this
+fallback changes nothing for it; the ordinary path already returns the
+right answer.
+
 **Expired claims are not scored.** Confirmed=1, refuted=0 is the binary
 Brier target; ``expired`` means the claim went moot before anyone could
 tell, so it carries no truth value to score against. Expired claims still
@@ -25,6 +44,16 @@ count toward a bucket's resolved total (``expiredCount``) but never enter
 score -- fabricating a truth value for them would be worse than excluding
 them. A claim resolved without ever having a confidence score is excluded
 the same way (see ``skippedNoConfidence``).
+
+**When no history is readable at all.** If neither the as-of read nor the
+earliest-version fallback can produce a snapshot (a segment with genuinely
+nothing on file for the id -- not reached by any test-planted scenario
+today, but a real store method can be asked about a real gap), the claim is
+excluded from the fold entirely rather than falling back to the live doc --
+the same "a fabricated number is worse than none" rule ``INSUFFICIENT_DATA``
+already lives by. Disclosed via ``skippedNoHistory`` in
+``calibration-profile``'s response (and an ``ASSERTION_HISTORY_UNAVAILABLE``
+notice when it's nonzero), never silently dropped.
 
 **The floor.** A bucket with fewer than ``calibrationMinBucketN`` (see
 ``theloom.config``) judged claims reports ``INSUFFICIENT_DATA`` rather than
@@ -273,9 +302,27 @@ class ResolvedClaim:
     session: str
 
 
-def resolved_claims(store: FalkorGraphStore) -> list[ResolvedClaim]:
+@dataclass(frozen=True)
+class SkippedResolution:
+    """One resolved claim excluded entirely from ``resolved_claims``'s fold
+    because no assertion-time snapshot -- neither the as-of read nor the
+    earliest-version fallback -- could be read for it at all (see
+    ``resolved_claims``'s and the module docstring's "when no history is
+    readable" section). Carries just enough to window-filter and disclose
+    it the same way a scored claim would be, without carrying any of the
+    fields this module refuses to fabricate."""
+
+    claim_id: str
+    claim_name: str
+    resolved_at: str
+
+
+def resolved_claims(
+    store: FalkorGraphStore,
+) -> tuple[list[ResolvedClaim], list[SkippedResolution]]:
     """Every claim/hypothesis with a live ``resolves`` edge, at its
-    assertion-time confidence.
+    assertion-time confidence, plus the resolved claims excluded because no
+    assertion-time snapshot was readable at all (see the module docstring).
 
     A claim resolved more than once (a later resolve-claim call superseding
     an earlier one -- e.g. re-resolving after reopening via 'investigating')
@@ -291,6 +338,7 @@ def resolved_claims(store: FalkorGraphStore) -> list[ResolvedClaim]:
             latest_by_claim[relation.to] = relation
 
     claims: list[ResolvedClaim] = []
+    skipped: list[SkippedResolution] = []
     for claim_id, relation in latest_by_claim.items():
         claim = store.read_entity(claim_id)
         if claim is None or claim.entity_type.value not in _RESOLVABLE_TYPES:
@@ -307,8 +355,21 @@ def resolved_claims(store: FalkorGraphStore) -> list[ResolvedClaim]:
 
         # Assertion time, not now: the claim's confidence/domain/session as
         # they stood at its own creation, immune to any update-entity or
-        # propagate-credit write since (bi-temporal read at created_at).
-        snapshot = store.read_entity_as_of(claim_id, claim.created_at) or claim
+        # propagate-credit write since (bi-temporal read at created_at). A
+        # grafted claim's own created_at predates its own graft world's
+        # first record of it, so the as-of read misses by construction --
+        # read_entity_earliest_version is the graft-time doc, the earliest
+        # thing this segment ever actually held (see the module docstring's
+        # "what assertion time means for a grafted claim"). NEVER falls
+        # back to the live doc: a miss on both is excluded, not guessed.
+        snapshot = store.read_entity_as_of(
+            claim_id, claim.created_at
+        ) or store.read_entity_earliest_version(claim_id)
+        if snapshot is None:
+            skipped.append(
+                SkippedResolution(claim_id=claim_id, claim_name=claim.name, resolved_at=resolved_at)
+            )
+            continue
         confidence = snapshot.confidence
         claims.append(
             ResolvedClaim(
@@ -323,7 +384,7 @@ def resolved_claims(store: FalkorGraphStore) -> list[ResolvedClaim]:
                 session=snapshot.session or load_config().default_session,
             )
         )
-    return claims
+    return claims, skipped
 
 
 def bucket_stats(
@@ -434,14 +495,15 @@ def calibration_profile(params: CalibrationProfileInput, multi: MultiGraph) -> d
         else load_config().calibration_min_bucket_n
     )
 
-    windowed = [
-        claim for claim in resolved_claims(store) if _in_window(claim.resolved_at, params.window)
-    ]
+    all_claims, all_skipped = resolved_claims(store)
+    windowed = [claim for claim in all_claims if _in_window(claim.resolved_at, params.window)]
+    windowed_skipped = [skip for skip in all_skipped if _in_window(skip.resolved_at, params.window)]
     skipped_no_confidence = sum(
         1
         for claim in windowed
         if claim.resolution in _JUDGED_RESOLUTIONS and claim.asserted_score is None
     )
+    skipped_no_history = len(windowed_skipped)
     buckets = bucket_stats(windowed, _BUCKET_DIMENSIONS[by], floor)
 
     notices = [
@@ -453,12 +515,23 @@ def calibration_profile(params: CalibrationProfileInput, multi: MultiGraph) -> d
         for row in buckets
         if row["insufficientData"]
     ]
+    if skipped_no_history:
+        notices.append(
+            notice(
+                "ASSERTION_HISTORY_UNAVAILABLE",
+                f"{skipped_no_history} resolved claim(s) had no readable assertion-time "
+                "history (neither the as-of read nor the earliest recorded version) and "
+                "were excluded from every bucket rather than scored against a fabricated "
+                "confidence.",
+            )
+        )
     return with_notices(
         {
             "by": by,
             "buckets": buckets,
             "totalResolvedClaims": len(windowed),
             "skippedNoConfidence": skipped_no_confidence,
+            "skippedNoHistory": skipped_no_history,
             "minBucketN": floor,
         },
         notices,
@@ -493,9 +566,10 @@ def assertion_time_gap(
     when given): resolved claims this author asserted with a matching basis
     (and domain, if not None). ``None`` when fewer than ``floor`` judged
     claims sit in that bucket -- too little history to say anything."""
+    all_claims, _skipped = resolved_claims(store)
     claims = [
         claim
-        for claim in resolved_claims(store)
+        for claim in all_claims
         if claim.session == session
         and claim.basis == basis
         and (domain is None or claim.domain == domain)
@@ -519,7 +593,8 @@ def author_reliability(store: FalkorGraphStore, *, session: str, floor: int) -> 
     ``dampingFactor: "calibrated"`` resolves per hop from the hop's SOURCE
     author. ``None`` when this author has fewer than ``floor`` judged
     resolved claims -- the caller falls back to the ordinary constant."""
-    claims = [claim for claim in resolved_claims(store) if claim.session == session]
+    all_claims, _skipped = resolved_claims(store)
+    claims = [claim for claim in all_claims if claim.session == session]
     rows = bucket_stats(claims, lambda _claim: "bucket", floor)
     if not rows or rows[0]["insufficientData"]:
         return None
@@ -535,6 +610,7 @@ __all__ = [
     "GapResult",
     "ResolveClaimInput",
     "ResolvedClaim",
+    "SkippedResolution",
     "assertion_time_gap",
     "author_reliability",
     "bucket_stats",

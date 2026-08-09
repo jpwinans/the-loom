@@ -188,7 +188,7 @@ def test_notices_catalog_command_is_registered_read_only_and_allow_empty() -> No
 
 def test_notices_catalog_handler_returns_the_uniform_envelope() -> None:
     result = notices_catalog(EmptyInput(), None)  # type: ignore[arg-type]
-    assert set(result) == {"items", "count"}
+    assert set(result) == {"items", "count", "alerts"}
     assert result["count"] == len(result["items"]) == len(NOTICE_CATALOG)
     codes = {row["code"] for row in result["items"]}
     assert codes == set(NOTICE_CATALOG)
@@ -196,6 +196,23 @@ def test_notices_catalog_handler_returns_the_uniform_envelope() -> None:
         assert set(row) == {"code", "meaning", "commands"}
         assert isinstance(row["commands"], list)
         assert row["commands"] == sorted(row["commands"])
+
+
+# =============================================================================
+# alerts section: session-alert codes (deliberately outside NOTICE_CATALOG,
+# see theloom.composites.alerts's module docstring) get their own hand-kept
+# discoverability entry instead.
+# =============================================================================
+
+
+def test_notices_catalog_alerts_section_lists_every_alert_code() -> None:
+    result = notices_catalog(EmptyInput(), None)  # type: ignore[arg-type]
+    codes = {row["code"] for row in result["alerts"]}
+    assert codes == {"CLAIM_RESOLVED", "CALIBRATION_GAP", "DREAM_EXPIRING_SOON"}
+    for row in result["alerts"]:
+        assert set(row) == {"code", "meaning", "commands"}
+        assert isinstance(row["meaning"], str) and row["meaning"].strip()
+        assert row["commands"] == ["since-last-session"]
 
 
 def test_notices_catalog_survives_run_handler_with_no_receipts() -> None:

@@ -172,5 +172,17 @@ def notices_catalog(_: EmptyInput, _multi: MultiGraph) -> Doc:
     and which commands can surface it in their own response -- generated
     from source (the registry plus each emitting module's own code), never
     hand-maintained, so a new code lands in the catalog the same commit it
-    lands in code."""
-    return list_envelope(build_catalog())
+    lands in code.
+
+    Also carries an ``alerts`` section: since-last-session's calibration/
+    dream-expiry alert codes (``theloom.composites.alerts.alert_catalog``)
+    are a sibling vocabulary that deliberately sits outside ``notice()``/
+    ``NOTICE_CATALOG`` (see that module's docstring), so they get no
+    reachability walk here -- just the same discoverability, hand-kept.
+    """
+    envelope = list_envelope(build_catalog())
+
+    from theloom.composites.alerts import alert_catalog  # deferred: same reason as COMMANDS above
+
+    envelope["alerts"] = alert_catalog()
+    return envelope
