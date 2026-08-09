@@ -166,9 +166,14 @@ whether or not the target is running the shipped ACL'd config.
 If any step from `docker stop` onward fails, the script reports the failure
 on stderr and exits non-zero. Because the target may be left stopped at that
 point, it makes one best-effort attempt to start it again before exiting,
-and reports separately on stderr if that recovery attempt also fails.
-Failures before `docker stop` (missing dump file, nonexistent target
-container) never touch the target at all.
+and reports separately on stderr if that recovery attempt also fails. Every
+`docker` step is itself bounded at 120 seconds (`_DOCKER_TIMEOUT_SECONDS`),
+so a wedged restore (a hung `docker cp`, a stuck daemon) self-terminates in
+~120s rather than hanging forever -- ~240s worst case, if the recovery
+restart also hangs -- with the recovery-restart attempt still firing on the
+way out; an operator never needs to kill a hung restore by hand.
+Failures before `docker stop` (missing dump file, unreadable dump file,
+nonexistent target container) never touch the target at all.
 
 ### Flags
 
