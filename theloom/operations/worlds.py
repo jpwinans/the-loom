@@ -439,12 +439,13 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
 
     notices = []
     if contested:
+        plural = len(contested) != 1
         notices.append(
             notice(
                 "CONTESTED_ON_MERGE",
-                f"{len(contested)} entit{'y' if len(contested) == 1 else 'ies'} were revised in "
-                f"both '{params.from_}' and '{into_id}' since the fork and were not merged; see "
-                "'contested'.",
+                f"{len(contested)} entit{'ies' if plural else 'y'} {'were' if plural else 'was'} "
+                f"revised in both '{params.from_}' and '{into_id}' since the fork and were not "
+                "merged; see 'contested'.",
                 hint="Retry with strategy: 'select' and entityIds naming exactly which side wins, "
                 "once resolved.",
             )
