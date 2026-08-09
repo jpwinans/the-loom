@@ -1,7 +1,7 @@
 # Operations
 
 Day-2 operational tasks for a local FalkorDB-backed Loom store: backing it
-up on a schedule, and (eventually) restoring from a backup.
+up on a schedule, and restoring from a backup.
 
 ## Backups
 
@@ -127,6 +127,104 @@ asleep) the next time it wakes, unlike `cron`.
 
 ## Restore
 
-_To be added by a sibling change: a tested restore script that reverses
-this process (stop the store, replace `dump.rdb` from a chosen backup,
-restart, verify)._
+### Why file-level, not the redis `RESTORE` command
+
+`users.acl` denies the redis `RESTORE` command (it deserializes
+attacker-supplied bytes into a single key and the app never uses it -- see
+[docs/adr/0002-falkordb-acl-store-protection.md](docs/adr/0002-falkordb-acl-store-protection.md)).
+That denial is irrelevant here: restoring a backup means putting a whole
+snapshot back, not one key, so `scripts/restore_store.py` never sends
+`RESTORE` (or any other denied command) over the wire. It only does
+docker-level operations (`docker stop` / `docker cp` / `docker start`) plus
+`PING` and `GRAPH.LIST` against the restarted server -- both allowed for the
+restricted `default` user. **Restore needs no ACL exception, no break-glass
+override, and no change to `docker-compose.yml`.** It works exactly the same
+whether or not the target is running the shipped ACL'd config.
+
+### What `scripts/restore_store.py` does
+
+1. Resolves which backup to restore: either the file passed via `--dump`,
+   or, with `--latest`, the lexically-last `dump-*.rdb` in `--source-dir`
+   (default `~/.loom/backups/`, matching `backup_store.py`'s default
+   destination and `dump-*.rdb` naming contract).
+2. **Without `--yes`**, prints a dry-run summary -- target container,
+   resolved dump path, that file's mtime and size -- and exits non-zero
+   without touching anything. This is the confirmation gate: restore is
+   destructive, so nothing happens by accident.
+3. **With `--yes`**, after confirming the dump file and target container
+   both exist:
+   - `docker stop <target>`
+   - `docker cp <dump> <target>:/var/lib/falkordb/data/dump.rdb` (the same
+     in-container path `backup_store.py` copies out of, see
+     [Dump naming and location](#dump-naming-and-location))
+   - `docker start <target>`
+   - polls `PING` until the restarted server answers, bounded by `--timeout`
+     (default 30s)
+   - prints `GRAPH.LIST` of the restored store
+   - exits 0
+
+If any step from `docker stop` onward fails, the script reports the failure
+on stderr and exits non-zero. Because the target may be left stopped at that
+point, it makes one best-effort attempt to start it again before exiting,
+and reports separately on stderr if that recovery attempt also fails.
+Failures before `docker stop` (missing dump file, nonexistent target
+container) never touch the target at all.
+
+### Flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--container` | _(required, no default)_ | Target FalkorDB container to restore into. Restore overwrites the target's entire dataset, so the victim must always be named explicitly. |
+| `--dump` | -- | Path to a specific `dump-*.rdb` file. Mutually exclusive with `--latest`; exactly one is required. |
+| `--latest` | -- | Restore the lexically-last `dump-*.rdb` file in `--source-dir`. Mutually exclusive with `--dump`. |
+| `--source-dir` | `~/.loom/backups/` | Directory searched when using `--latest`. |
+| `--yes` | off | Actually perform the restore. Without it, only the dry-run preview runs. |
+| `--timeout` | `30` | Seconds to wait for the target to answer `PING` after restart. |
+
+Connection host/port for the post-restore `PING`/`GRAPH.LIST` checks are not
+flags -- like `backup_store.py`, they come from
+`theloom.config.load_config()` (`GRAPH_HOST`/`GRAPH_PORT` env vars, or
+`~/.loom/config.json`), which is how a rehearsal run points the checks at a
+scratch container instead of the real store.
+
+### Running it manually (rehearsal)
+
+```bash
+uv run python scripts/restore_store.py --container my-scratch-falkordb --latest
+# dry run (no --yes): prints target/dump/mtime/size, exits non-zero, touches nothing
+
+uv run python scripts/restore_store.py --container my-scratch-falkordb --latest --yes
+# stops the container, replaces dump.rdb, restarts it, waits for PING, prints GRAPH.LIST
+```
+
+### The live recovery procedure
+
+This is the documented procedure for restoring the real store
+(`theloom-falkordb`) from the most recent backup. **It is a last resort** --
+run it only when the live store's data is already gone or known-bad (a
+destructive command got through, a bad migration, volume loss); restoring
+overwrites everything currently in the container with whatever `dump.rdb`
+was captured at backup time, discarding any writes made since.
+
+1. Confirm the incident: what happened, and that restoring is the right
+   response (not, say, a transient connection issue).
+2. From the main checkout (not a worktree -- this touches the real
+   container), inspect the available backups: `ls -la ~/.loom/backups/`.
+3. Run the restore against the real container, from `~/.loom/backups/`
+   (both defaults, so no `--container` other than the real name and no
+   `--source-dir` override are needed beyond naming the target):
+
+   ```bash
+   uv run python scripts/restore_store.py --container theloom-falkordb --latest
+   ```
+
+   First **without** `--yes` -- read the dry-run output and confirm the
+   dump file it picked (path, mtime, size) is the one intended. Only then
+   re-run the identical command with `--yes` appended.
+4. Confirm recovery: the command's own `GRAPH.LIST` output at the end shows
+   the expected graphs; spot-check with `uv run loom graph-stats
+   '{"graph": "<name>"}'` against a graph known to matter (e.g. the
+   production default graph).
+5. Note in the incident record which backup was restored and what, if
+   anything, was lost (any write between that backup's timestamp and the
+   incident is gone).
