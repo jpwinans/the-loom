@@ -45,7 +45,7 @@ from typing import Any
 
 from falkordb import FalkorDB
 
-from theloom.config import load_config
+from theloom.config import credential_kwargs, load_config
 
 # The falkordb/falkordb image always writes its RDB snapshot here inside the
 # container (see docker-compose.yml) -- a load-bearing repo fact, not
@@ -154,7 +154,7 @@ def main() -> None:
         _fail(f"container {args.container!r} is not running (or does not exist).")
 
     config = load_config()
-    db = FalkorDB(host=config.host, port=config.port)
+    db = FalkorDB(host=config.host, port=config.port, **credential_kwargs(config))
 
     _wait_for_bgsave(db.connection)
     target = _copy_dump(args.container, args.dest)
