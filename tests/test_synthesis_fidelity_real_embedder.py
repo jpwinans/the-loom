@@ -1,23 +1,36 @@
-"""Desire 10 (claude-desires.md), round 4: real-embedder probes covering
-both directions (genuine paraphrase grounds; coincidental word-overlap does
-not) under the sense-anchored mechanism, including FRESH cases beyond every
-named regression case from rounds 1-4 — per the round-3/4 critics' own
-finding that a fixed set of named examples can be gamed while the underlying
-mechanism stays broken on anything unseen.
+"""Desire 10 (claude-desires.md), round 5: real-embedder probes covering
+three classes (false friends must reject; word-SHARING genuine mentions,
+including full-phrase idiom reuse, must ground; no-shared-word paraphrases
+must ground) under the sense-anchored mechanism, including FRESH cases
+beyond every named regression case from rounds 1-4 — per the round-3/4/5
+critics' own finding that a fixed set of named examples can be gamed while
+the underlying mechanism stays broken on anything unseen.
 
-Round 4's design point: when a candidate span shares a significant word with
-the entity name (the trap this whole feature exists to defuse), the entity's
-OWN observations — required at creation, so real entities always have them —
-anchor the comparison instead of the bare name. Every entity below except
-the small "degraded fallback" group at the end therefore carries
-observations, matching how a real Loom entity is actually created.
+Round 5's design point: when a candidate span shares a significant word
+with the entity name (the trap this whole feature exists to defuse), the
+entity's OWN observations — required at creation, so real entities always
+have them — anchor the comparison, with NO reference to the entity's name
+at all (``theloom.semantic.landscape.observation_anchor``), against the
+candidate span INTACT (never stripped). Round 4 anchored on "Name:
+definition" and stripped the span instead; that still rejected genuine
+word-sharing mentions (the failure ``TestRound5WordSharingGenuineMentions``
+below exists to pin shut). Every entity below except the small "degraded
+fallback" group at the end therefore carries observations, matching how a
+real Loom entity is actually created.
 
 The six ``TestRound4NewCases`` entities (``Cash Cow``, ``Breaking Point``,
 ``Ghost Writer``, ``Golden Handcuffs``, ``Watershed Moment``, ``Trojan
 Horse``) were constructed independently of the mechanism's implementation,
 after round 4 was finalized, specifically to check generalization rather
 than replay known-good inputs — the same discipline round 3's ``Memory
-Leak``/``Critical Path``/``Dead Letter Queue`` cases (still below) used.
+Leak``/``Critical Path``/``Dead Letter Queue`` cases (still below) used. The
+six ``TestRound5WordSharingGenuineMentions`` entities (``Circuit Breaker
+Protection``, ``Poison Pill Defense``, ``Glass Ceiling Barrier``, ``Black
+Box Testing``, ``Snowball Effect Growth``, ``Tipping Point Threshold``) were
+constructed the same way after round 5 was finalized, specifically to stress
+the NEW bar: a genuine mention that reuses the entity's own idiom verbatim
+(not just a coincidental word) must still ground, not just fail to be a
+false friend.
 
 Deliberately its own file, with no autouse corpus-monkeypatching fixture:
 tests/test_synthesis_fidelity_semantic_grounding.py's fixtures patch
@@ -104,7 +117,11 @@ def test_a_single_shared_word_false_friend_does_not_ground_via_the_real_embedder
 ) -> None:
     """The live bug report's own anecdote: an entity name containing
     "silent" must NOT be credited as grounded merely because an unrelated
-    sentence also contains the word "silent"."""
+    sentence also contains the word "silent". Round 5 disclosure: the
+    rejection still names the mechanism ATTEMPTED (the sense anchor, since
+    this entity carries observations) and carries its full evidence — "an
+    honest no must be as auditable as a yes" — rather than nulling
+    everything out."""
     result = check_entity_grounding(
         "The orchestra performed a silent movie score.",
         [SILENT_ENTITY],
@@ -113,7 +130,10 @@ def test_a_single_shared_word_false_friend_does_not_ground_via_the_real_embedder
     )
 
     assert result[0]["status"] == "omitted"
-    assert result[0]["matchBasis"] is None
+    assert result[0]["matchBasis"] == "semantic"
+    assert isinstance(result[0]["matchScore"], float)
+    assert isinstance(result[0]["zScore"], float)
+    assert isinstance(result[0]["zCutoff"], float)
 
 
 def test_both_in_one_call_via_the_real_embedder(real_embedder: object) -> None:
@@ -378,6 +398,19 @@ class TestRound3CriticsRoundThreeVerdictCases:
             "The werewolf hunter loaded a single silver bullet before entering the moonlit forest.",
             observations=observations,
         )
+        # Round 5's own bar: a genuine mention reusing the idiom itself
+        # ("silver bullet", short of the full exact name so this stays a
+        # semantic decision rather than an exact-substring match) must
+        # still ground.
+        assert _grounds(
+            real_embedder,
+            "Silver Bullet Solution",
+            (
+                "everyone hoped the new framework would be the silver bullet "
+                "that finally solved everything overnight"
+            ),
+            observations=observations,
+        )
 
     def test_boiling_point_threshold(self, real_embedder: object) -> None:
         observations = [
@@ -597,6 +630,155 @@ class TestRound4NewCases:
 
 
 # =============================================================================
+# Round-5 NEW cases: constructed independently after round 5 was finalized,
+# never used to tune it. This is the NEW bar round 5 exists for: a genuine
+# mention that reuses one of the entity's own words — including reusing a
+# FULL idiomatic phrase, not just a coincidental term — must still ground,
+# right alongside a false friend that uses the exact same word or phrase but
+# means something else entirely. Round 4's mechanism (strip the shared word
+# from the SPAN, keep the name in the anchor) rejected mentions like these;
+# round 5 (observations-only anchor, intact span) is the fix this class
+# exists to pin.
+# =============================================================================
+
+
+class TestRound5WordSharingGenuineMentions:
+    def test_circuit_breaker_protection(self, real_embedder: object) -> None:
+        observations = [
+            "a safety mechanism that automatically stops an operation once "
+            "repeated failures cross a threshold, preventing cascading damage"
+        ]
+        assert not _grounds(
+            real_embedder,
+            "Circuit Breaker Protection",
+            "The electrician replaced a blown circuit breaker in the garage's fuse panel.",
+            observations=observations,
+        )
+        assert _grounds(
+            real_embedder,
+            "Circuit Breaker Protection",
+            (
+                "the circuit breaker automatically stopped the operation once "
+                "repeated failures crossed the threshold, preventing the damage "
+                "from cascading downstream"
+            ),
+            observations=observations,
+        )
+
+    def test_poison_pill_defense(self, real_embedder: object) -> None:
+        observations = [
+            "a defensive corporate tactic that makes a company deliberately "
+            "unattractive to stop a hostile takeover"
+        ]
+        assert not _grounds(
+            real_embedder,
+            "Poison Pill Defense",
+            "The detective found a poison pill hidden inside the antique medicine cabinet.",
+            observations=observations,
+        )
+        assert _grounds(
+            real_embedder,
+            "Poison Pill Defense",
+            (
+                "the company used a poison pill, a defensive tactic that made "
+                "it deliberately unattractive to stop the hostile takeover"
+            ),
+            observations=observations,
+        )
+
+    def test_glass_ceiling_barrier(self, real_embedder: object) -> None:
+        observations = [
+            "an invisible, unacknowledged barrier that keeps qualified people "
+            "from advancing beyond a certain level"
+        ]
+        assert not _grounds(
+            real_embedder,
+            "Glass Ceiling Barrier",
+            "The contractor installed a new glass ceiling panel in the greenhouse roof.",
+            observations=observations,
+        )
+        assert _grounds(
+            real_embedder,
+            "Glass Ceiling Barrier",
+            (
+                "she kept hitting a glass ceiling, an invisible barrier that "
+                "kept qualified people like her from advancing beyond a "
+                "certain level"
+            ),
+            observations=observations,
+        )
+
+    def test_black_box_testing(self, real_embedder: object) -> None:
+        observations = [
+            "evaluating a system's behavior purely from its external inputs "
+            "and outputs, without inspecting its internal implementation"
+        ]
+        assert not _grounds(
+            real_embedder,
+            "Black Box Testing",
+            "Investigators recovered the airplane's black box from the wreckage after the crash.",
+            observations=observations,
+        )
+        assert _grounds(
+            real_embedder,
+            "Black Box Testing",
+            (
+                "the QA team tested it as a black box, judging it purely by "
+                "its external inputs and outputs without inspecting the "
+                "internal implementation"
+            ),
+            observations=observations,
+        )
+
+    def test_snowball_effect_growth(self, real_embedder: object) -> None:
+        observations = [
+            "a process that starts small and builds on itself, growing "
+            "larger and more powerful the longer it continues"
+        ]
+        assert not _grounds(
+            real_embedder,
+            "Snowball Effect Growth",
+            "The kids packed a snowball and threw it at the fence during recess.",
+            observations=observations,
+        )
+        assert _grounds(
+            real_embedder,
+            "Snowball Effect Growth",
+            (
+                "the delay created a snowball effect, a process that started "
+                "small and built on itself, growing larger and more powerful "
+                "the longer it continued"
+            ),
+            observations=observations,
+        )
+
+    def test_tipping_point_threshold(self, real_embedder: object) -> None:
+        observations = [
+            "the critical moment when a series of small changes becomes "
+            "significant enough to cause a larger, sudden shift"
+        ]
+        assert not _grounds(
+            real_embedder,
+            "Tipping Point Threshold",
+            (
+                "The waiter accidentally knocked the tray past its tipping "
+                "point and spilled the drinks."
+            ),
+            observations=observations,
+        )
+        assert _grounds(
+            real_embedder,
+            "Tipping Point Threshold",
+            (
+                "the complaints finally reached a tipping point, the critical "
+                "moment when small changes become significant enough to cause "
+                "a larger, sudden shift"
+            ),
+            observations=observations,
+        )
+
+
+# =============================================================================
 # Degraded fallback: an entity with no meaningful observations still gets
 # SOME semantic check (the round-3 name-based dual z-score), honestly
 # disclosed as a weaker basis rather than silently reusing the sense-anchor
@@ -615,6 +797,8 @@ def test_no_observations_degrades_to_name_only_and_says_so(real_embedder: object
     assert result[0]["status"] == "grounded"
     assert result[0]["matchBasis"] == "semantic-name-only"
     assert isinstance(result[0]["asymZScore"], float)
+    assert isinstance(result[0]["zCutoff"], float)
+    assert isinstance(result[0]["asymZCutoff"], float)
 
 
 def test_only_the_guard_placeholder_observation_also_degrades(real_embedder: object) -> None:

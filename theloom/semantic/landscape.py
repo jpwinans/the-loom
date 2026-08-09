@@ -125,21 +125,61 @@ carries the information needed to tell "about this entity" apart from
 
 That information exists elsewhere: an entity's OWN observations (The Loom
 requires at least one at creation — ``guards.entity_gate_warnings``) are its
-definition. :func:`sense_anchor` builds "Name: obs1. obs2." — a dictionary-
-entry, not a bag of words — and ``measure_specificity(...,
-representation="sense")`` calibrates a z-cutoff for comparing THAT anchor
-(not the bare name) against a candidate. Live-measured over 8 calibration
-pairs (:data:`SENSE_ANCHOR_PROBE_PAIRS`) built from definitions + a
-coincidental-word-overlap sentence + a genuine paraphrase each: with the
-entity's own significant words stripped from the false-friend side first
-(the SAME residual guard as before — still the right first move, it just
-was not, on its own, a strong enough signal), every one of the 8 pairs
-scores its genuine paraphrase higher than its false friend, both on the raw
-score and the resulting per-entity z-score. This does NOT replace
+definition. Round 4's first attempt at using it (below, kept for the
+history) still failed; round 5's fix (further below) is the current design.
+
+Round 4 (superseded): built "Name: obs1. obs2." — a dictionary entry
+including the name — and compared it against the candidate SPAN with the
+entity's own significant words stripped out first, the same residual guard
+the name-based checks already used. This does NOT replace
 :func:`entity_representation`'s bare-name representations — an entity
 without meaningful observations has no sense anchor to build (see
 ``theloom.synthesis.fidelity``'s guard-placeholder filter) and must fall
-back to them, disclosed as a degraded basis.
+back to them, disclosed as a degraded basis. That part of the design still
+holds; the anchor's own shape did not survive round 5 (below).
+
+=== Round 5: the one-sided cut — cut the ANCHOR's name, not the SPAN ===
+
+Round 4's anchor still lost to a fresh critic: word-SHARING GENUINE
+mentions (a paraphrase that legitimately reuses one of the entity's own
+words, including reusing a full idiomatic phrase — "the elephant in the
+room" said about the actual idiom, not a zoo animal) were being rejected
+right along with the false friends they were supposed to be told apart
+from. Stripping the shared word out of the SPAN removes the entity's own
+vocabulary from that side of the comparison regardless of whether that
+vocabulary was a coincidental trap or the genuine mention's own real
+content — a false friend's stripped residual and a genuine word-sharing
+mention's stripped residual ended up statistically indistinguishable
+(live-measured: overlapping z-bands, roughly 1.14-3.15 for wrongly-rejected
+genuine mentions vs. roughly 1.11-2.87 for correctly-rejected false
+friends against round 4's cutoff) because stripping erased the
+discriminating signal on both classes evenly.
+
+The shared-word channel that inflates similarity exists on BOTH sides of a
+name-vs-span comparison: the entity's own name, and the span that (by
+construction, in the trap this whole check exists for) also contains it.
+Only ONE side needs to be cut to break the channel. :func:`observation_anchor`
+builds the anchor from the entity's observations ALONE — no name, and
+structurally no way to reintroduce one by mistake: the function does not
+accept a ``name`` parameter at all. The candidate span is then compared
+INTACT, never stripped, against that anchor. A false friend's span still
+contains the entity's name-shaped words, but the anchor no longer contains
+them either, so their literal overlap no longer inflates the comparison;
+what is left on both sides is genuine semantic content, exactly the
+question this check exists to ask. A genuine word-sharing mention keeps its
+own real meaning completely intact, including when it reuses the entity's
+name as part of a full idiomatic phrase.
+
+:data:`SENSE_ANCHOR_PROBE_PAIRS` was rebuilt to match: every false-friend
+and related document is now the INTACT sentence (never pre-stripped), and
+several related documents deliberately reuse a significant word from their
+entity's name — some as a full-phrase idiom ("a silver bullet solution",
+"the elephant in the room") — matching the actual shape of the case this
+cutoff has to separate: two documents that both contain the entity's own
+words, one meaning it and one not. The z-cutoff is still derived live from
+:func:`_calibrate_cutoff` against whatever this corpus currently measures;
+editing the corpus changes the next measurement, same guarantee as
+everywhere else in this module.
 """
 
 from __future__ import annotations
@@ -428,35 +468,36 @@ def unrelated_document_battery(
     return tuple(document for _, document in pairs)
 
 
-def sense_anchor(name: str, observations: list[str]) -> str:
-    """An entity's OWN definition as embeddable text: ``"Name: obs1. obs2."``
-    — a dictionary-entry shape, so a candidate is compared against what the
-    entity MEANS, not just what it is spelled (see the module docstring's
-    "Sense anchoring" section for why the name alone is not enough). Falls
-    back to the bare name when there are no observations to anchor with —
-    still usable (:func:`entity_representation`'s own representation), just
-    without the disambiguating context; callers decide whether "no
-    observations" should even reach here (theloom.synthesis.fidelity filters
-    the OBSERVATIONS_REQUIRED guard placeholder before calling this).
+def observation_anchor(observations: list[str]) -> str:
+    """An entity's OWN definition as embeddable text, built from its
+    observations ALONE — no name, no reference to the entity's own words at
+    all. There is deliberately no ``name`` parameter: round 4's anchor took
+    one and interpolated it into the text ("Name: obs1. obs2."), which put
+    the entity's own words back on the anchor side of the comparison and
+    caused round 5's regression (see the module docstring's "the one-sided
+    cut" section). Structurally omitting the parameter means there is no way
+    to reintroduce that channel by accident. Returns ``""`` when there are no
+    observations to anchor with; callers decide whether "no observations"
+    should even reach here (theloom.synthesis.fidelity filters the
+    OBSERVATIONS_REQUIRED guard placeholder before calling this, and falls
+    back to :func:`entity_representation`'s name-based check instead of
+    calling this with nothing to work with).
     """
-    if not observations:
-        return name
     joined = ". ".join(o.rstrip(". ") for o in observations if o.strip())
-    return f"{name}: {joined}." if joined else name
+    return f"{joined}." if joined else ""
 
 
 # Calibration pairs for the "sense" specificity representation: each entry is
-# (name, observations, false_friend_document, related_document). The
-# false-friend document already has the entity's own significant words
-# stripped out (as theloom.synthesis.fidelity does at decision time — see
-# _strip_shared_words there; duplicated here as plain stripped literals,
-# inspectable without re-deriving them, rather than importing fidelity's
-# helper into this lower-level module). All 8 pairs were validated live
-# (see the module docstring) to score their genuine paraphrase above their
-# false friend, both on the raw score and the resulting per-entity z-score
-# — none of these pairs, or their un-stripped originals, appear in
-# theloom.synthesis.fidelity's own test suite, so calibration and
-# validation stay independent.
+# (name, observations, false_friend_document, related_document). Both
+# documents are INTACT — never pre-stripped (round 5; see the module
+# docstring's "one-sided cut" section for why stripping the SPAN was the
+# defect, not a safeguard) — and several related documents deliberately
+# reuse a significant word from their entity's name, several as a
+# full-phrase idiom, matching the actual shape of what this cutoff has to
+# separate at decision time: two documents that both contain the entity's
+# own words, one meaning it and one not. None of these pairs, or their
+# variants, appear in theloom.synthesis.fidelity's own test suite, so
+# calibration and validation stay independent.
 SENSE_ANCHOR_PROBE_PAIRS: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
     (
         "Hot Take",
@@ -464,16 +505,16 @@ SENSE_ANCHOR_PROBE_PAIRS: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
             "a deliberately provocative or contrarian opinion expressed quickly "
             "without much reflection",
         ),
-        "She burned her tongue on the soup.",
-        "an off-the-cuff, deliberately provocative opinion posted online",
+        "She burned her tongue on the hot soup during dinner.",
+        ("his hot take on the trade got picked apart by fans within minutes of the announcement"),
     ),
     (
         "Anchor Tenant",
         ("a major, well-known store that draws customer traffic to a shopping center",),
-        "The old sailor spent the whole afternoon lowering the ship's heavy into the bay.",
+        "The old sailor spent the whole afternoon lowering the ship's heavy anchor into the bay.",
         (
-            "the flagship store that anchors a mall and pulls in shoppers for the "
-            "smaller retailers around it"
+            "the anchor tenant at the new mall pulls in shoppers for every "
+            "smaller retailer around it"
         ),
     ),
     (
@@ -482,38 +523,56 @@ SENSE_ANCHOR_PROBE_PAIRS: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
             "continuing to invest in a decision because of resources already spent "
             "rather than future value",
         ),
-        "The rusted shipwreck had in the harbor decades before anyone thought to raise it.",
-        "throwing good money after bad because you can't get back what you already spent",
+        "The rusted shipwreck had sunk in the harbor decades before anyone thought to raise it.",
+        (
+            "he kept funding the doomed project purely out of sunk cost, unable "
+            "to accept what was already spent"
+        ),
     ),
     (
         "Low Hanging Fruit Strategy",
         ("prioritizing the easiest, most accessible wins before tackling harder problems",),
-        "The children spent the afternoon picking from the orchard trees.",
-        "go after the easy wins first before the hard problems",
+        "The children spent the afternoon picking fruit from the orchard trees.",
+        (
+            "the team grabbed the low hanging fruit first, knocking out the easy "
+            "wins before anything harder"
+        ),
     ),
     (
         "Silver Bullet Solution",
         ("a single simple fix believed to solve a complex problem completely",),
-        "The werewolf hunter loaded a single before entering the moonlit forest.",
-        "we hoped the new framework would fix everything at once",
+        "The werewolf hunter loaded a single silver bullet before entering the moonlit forest.",
+        (
+            "everyone hoped the new framework would be the silver bullet solution "
+            "that fixed everything overnight"
+        ),
     ),
     (
         "Boiling Point Threshold",
         ("the point at which accumulated pressure or frustration causes a sudden reaction",),
-        "The chemist recorded the exact of the unknown liquid sample in her notebook.",
-        "the moment built-up tension finally erupts",
+        (
+            "The chemist recorded the exact boiling point of the unknown liquid "
+            "sample in her notebook."
+        ),
+        "months of built-up frustration finally reached its boiling point during the meeting",
     ),
     (
         "Elephant In The Room",
         ("an obvious problem or difficult topic that everyone is avoiding discussing",),
-        "The zoo's newest delighted children visiting the outdoor exhibit.",
-        "nobody wanted to bring up the layoffs, even though it was all anyone could think about",
+        "The zoo's newest baby elephant delighted children gathered in the same viewing room.",
+        (
+            "nobody wanted to be the one to mention the elephant in the room "
+            "during the layoffs meeting"
+        ),
     ),
     (
         "Rubber Stamp",
         ("approving something automatically without real scrutiny or independent judgment",),
-        "The office supply store restocked ink pads and a for the librarian's desk.",
-        "the board approved every proposal without asking a single question",
+        "The office supply store restocked ink pads and a rubber stamp for the librarian's desk.",
+        (
+            "the board treated every proposal as a rubber stamp, approving it "
+            "without asking a single question"
+        ),
     ),
 )
 
@@ -642,12 +701,13 @@ def measure_specificity(
 
 # =============================================================================
 # Sense specificity: measure_specificity's z-score machinery, applied to
-# theloom.semantic.landscape.sense_anchor's "Name: definition." anchors
-# instead of bare names. A dedicated function rather than a third
-# ``representation`` value on measure_specificity: :data:`SENSE_ANCHOR_PROBE_PAIRS`
-# carries observations and a pre-stripped false-friend document per entry
-# (4-tuples), a genuinely different shape from measure_specificity's
-# (name, document) 2-tuples, not just a different name-embedding function.
+# theloom.semantic.landscape.observation_anchor's observations-only anchors
+# instead of bare (or type-anchored) names. A dedicated function rather than
+# a third ``representation`` value on measure_specificity:
+# :data:`SENSE_ANCHOR_PROBE_PAIRS` carries observations and an intact
+# false-friend document per entry (4-tuples), a genuinely different shape
+# from measure_specificity's (name, document) 2-tuples, not just a
+# different name-embedding function.
 # =============================================================================
 
 
@@ -673,8 +733,10 @@ def _measure_sense_specificity(
 
     unrelated_zs: list[float] = []
     related_zs: list[float] = []
-    for name, observations, false_friend_document, related_document in pairs:
-        anchor = sense_anchor(name, list(observations))
+    for _name, observations, false_friend_document, related_document in pairs:
+        # _name is not used to build the anchor -- see observation_anchor's
+        # own docstring for why that omission is structural, not incidental.
+        anchor = observation_anchor(list(observations))
         mean, stdev, anchor_vector = _sense_baseline(embedder, anchor, battery_vectors)
         false_friend_score = l2_similarity(
             cosine_similarity(anchor_vector, embedder.embed_document(false_friend_document))
@@ -707,8 +769,9 @@ def measure_sense_specificity(
     unrelated_pairs: tuple[tuple[str, str], ...] | None = None,
     use_cache: bool = True,
 ) -> SpecificityProfile:
-    """Measure the z-score margin for sense-anchored ("Name: definition.")
-    comparisons — see the module docstring's "Sense anchoring" section.
+    """Measure the z-score margin for sense-anchored (observations-only,
+    round 5) comparisons — see the module docstring's "one-sided cut"
+    section.
 
     Live by default, same caching contract as :func:`measure_landscape`;
     edit :data:`SENSE_ANCHOR_PROBE_PAIRS` and the next measurement reports

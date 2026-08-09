@@ -27,8 +27,8 @@ from theloom.semantic.landscape import (
     measure_landscape,
     measure_sense_specificity,
     measure_specificity,
+    observation_anchor,
     pair_doc,
-    sense_anchor,
     unrelated_document_battery,
 )
 from theloom.semantic.search import l2_similarity
@@ -425,26 +425,24 @@ class TestSpecificityCaching:
 
 
 # =============================================================================
-# Sense anchoring (round 4): identity is what an entity MEANS, not its name.
-# See theloom/synthesis/fidelity.py's own module docstring for why rounds
-# 1-3 (absolute cutoff, residual stripping, per-entity/dual-representation
-# z-score) all failed against fresh adversarial cases that shared a
-# significant word with the entity's name.
+# Sense anchoring: identity is what an entity MEANS, not its name. See
+# theloom/synthesis/fidelity.py's own module docstring for why rounds 1-4
+# (absolute cutoff, residual stripping, per-entity/dual-representation
+# z-score, name-included anchor) each failed against fresh adversarial
+# cases -- round 5's fix (the current design) cuts the entity's name out of
+# the ANCHOR instead of stripping it from the candidate SPAN.
 # =============================================================================
 
 
-class TestSenseAnchor:
-    def test_builds_a_dictionary_entry_shape(self) -> None:
-        assert (
-            sense_anchor("Silver Bullet Solution", ["a single simple fix"])
-            == "Silver Bullet Solution: a single simple fix."
-        )
+class TestObservationAnchor:
+    def test_joins_observations_with_no_name_reference_at_all(self) -> None:
+        assert observation_anchor(["a single simple fix"]) == "a single simple fix."
 
     def test_joins_multiple_observations_and_normalizes_trailing_periods(self) -> None:
-        assert sense_anchor("X", ["first fact", "second fact."]) == "X: first fact. second fact."
+        assert observation_anchor(["first fact", "second fact."]) == "first fact. second fact."
 
-    def test_falls_back_to_the_bare_name_with_no_observations(self) -> None:
-        assert sense_anchor("X", []) == "X"
+    def test_no_observations_yields_the_empty_string(self) -> None:
+        assert observation_anchor([]) == ""
 
 
 _SENSE_TEST_PAIRS: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
@@ -462,7 +460,10 @@ def _sense_test_vectors() -> dict[str, list[float]]:
     return {
         "bd1": _vector_for_cosine(0.1),
         "bd2": _vector_for_cosine(0.3),
-        "Test Entity: a formal definition of the test entity.": [1.0, 0.0, 0.0],
+        # Keyed by the OBSERVATION-ONLY anchor text (round 5) -- no
+        # "Test Entity: " prefix, since observation_anchor never sees the
+        # name at all.
+        "a formal definition of the test entity.": [1.0, 0.0, 0.0],
         "an unrelated false friend sentence": _vector_for_cosine(0.4),
         "a genuine paraphrase of the definition": _vector_for_cosine(0.9),
     }

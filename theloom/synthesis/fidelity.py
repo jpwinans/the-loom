@@ -1,6 +1,6 @@
 """Fidelity verification.
 
-Entity grounding (desire 10, claude-desires.md; round 4 design): an exact
+Entity grounding (desire 10, claude-desires.md; round 5 design): an exact
 (case-insensitive) substring match is always "exact" grounding — cheap and
 unambiguous, kept as the fast path. Anything short of that is decided
 SEMANTICALLY when an embedder is available. Only when NO embedder is
@@ -40,35 +40,67 @@ load-bearing context for why the current design looks the way it does:
    normalization — the name alone never carries the disambiguating
    information.
 
-**Round 4 (current): anchor identity in what the entity MEANS.** When a
-candidate span shares a significant word with the entity name — the
-condition under which every prior design failed, and the round-2 guard
-already detects it — the discriminating check is no longer name-vs-span at
-all. It is the entity's OWN definition (``theloom.semantic.landscape.
-sense_anchor``: "Name: obs1. obs2.", built from the observations The Loom
+**Round 4: anchor identity in what the entity MEANS.** When a candidate span
+shares a significant word with the entity name — the condition under which
+every prior design failed, and the round-2 guard already detects it — the
+discriminating check is no longer name-vs-span at all. It is the entity's
+OWN definition ("Name: obs1. obs2.", built from the observations The Loom
 already requires at every entity's creation) against the word-stripped
 residual span, judged by the SAME per-entity z-score machinery
 (``theloom.semantic.landscape.measure_sense_specificity``) — live-
-calibrated, never a fresh magic number. A definition-length anchor dilutes a
-single coincidental shared word to noise while a genuine paraphrase (which
-shares the entity's actual MEANING with its own definition, not just a
-word) stays well above the entity's own baseline. When a span shares NO
-word with the entity name, the round-3 dual name-based z-score check still
-applies unchanged — it already works well there (round 3: 4/5 fresh
-paraphrases, 13/14 corpus recall) and observations add nothing a bare name
-doesn't already carry for that direction. When the trap IS live but the
-entity has no meaningful observations (only the OBSERVATIONS_REQUIRED guard
-placeholder, or none at all), grounding falls back to the round-3
-name-based check, honestly disclosed via ``matchBasis:
-"semantic-name-only"`` — a caller can tell a fully-anchored decision from a
-degraded one.
+calibrated, never a fresh magic number. When a span shares NO word with the
+entity name, the round-3 dual name-based z-score check still applies
+unchanged — it already works well there and observations add nothing a
+bare name doesn't already carry for that direction. When the trap IS live
+but the entity has no meaningful observations (only the
+OBSERVATIONS_REQUIRED guard placeholder, or none at all), grounding falls
+back to the round-3 name-based check, honestly disclosed via ``matchBasis:
+"semantic-name-only"``.
 
-Every grounding decision discloses ``matchBasis``, ``mentionedAs``,
-``matchScore`` (the score the z-score was computed from), ``nullMean``/
-``nullStdev`` (the baseline the z-score is relative to) and ``zScore`` —
-plus ``asymZScore`` when the round-3 dual check (not the sense anchor) made
-the decision — so a caller can recompute and audit any single decision from
-those fields.
+Round 4 FAILED against a fresh critic too: word-SHARING GENUINE mentions —
+a paraphrase that legitimately reuses one of the entity's own words,
+including reusing a full idiomatic phrase — were rejected right along with
+the false friends they needed to be told apart from. Stripping the shared
+word out of the candidate SPAN (round 4's move) removes the entity's own
+vocabulary from that side of the comparison regardless of whether that
+vocabulary was a coincidental trap or the genuine mention's own real
+content; a false friend's stripped residual and a genuine word-sharing
+mention's stripped residual ended up statistically indistinguishable
+(live-measured, overlapping z-bands: roughly 1.14-3.15 for wrongly-rejected
+genuine mentions vs. roughly 1.11-2.87 for correctly-rejected false
+friends).
+
+**Round 5 (current): cut the ANCHOR's name, not the SPAN.** The
+shared-word channel exists on BOTH sides of a name-vs-span comparison — the
+entity's own name, and the span that (by construction, in the trap this
+check exists for) also contains it. Only ONE side needs to be cut.
+``theloom.semantic.landscape.observation_anchor`` builds the sense anchor
+from the entity's observations ALONE — no name, and structurally no way to
+reintroduce one, since the function does not accept a ``name`` parameter at
+all. The candidate span is then compared INTACT — never stripped — against
+that anchor. A false friend's span still contains the entity's name-shaped
+words, but the anchor no longer contains them either, so the literal
+overlap no longer inflates the comparison; a genuine word-sharing mention
+keeps its own real meaning completely intact, including full-phrase idiom
+reuse. Stripping is kept ONLY on the degraded, no-observations path (below)
+— there, the comparison is still name-vs-span, and stripping the shared
+word from the span is still the right move for that weaker representation.
+
+Every grounding decision — grounded **and omitted** — discloses the full
+audit trail: ``matchBasis`` (the mechanism used, or, when omitted, the
+mechanism ATTEMPTED — "an honest no must be as auditable as a yes"),
+``mentionedAs``, ``matchScore`` (the score the z-score was computed from),
+``nullMean``/``nullStdev`` (the baseline the z-score is relative to),
+``zScore``, and ``zCutoff`` (the live-calibrated cutoff ``zScore`` was
+judged against) — plus ``asymZScore``/``asymZCutoff`` when the round-3 dual
+check (not the sense anchor) made or attempted the decision. When several
+spans were examined and none grounded the entity, the disclosed evidence is
+the single BEST attempt across all of them — whichever mechanism came
+closest to clearing its own cutoff (largest z-score-minus-cutoff margin,
+even when negative) — so a caller can recompute and audit any single
+decision, grounded or not, from those fields. An entity with no spans to
+examine at all (nothing attempted, as opposed to attempted and rejected)
+still carries fully null evidence — there is nothing to disclose.
 
 Structural mode is positional: both entity names must appear as substrings
 (first-occurrence indices decide preserved vs inverted); narrative mode
@@ -293,33 +325,44 @@ def _semantic_grounding(
     text: str, entities: list[Doc], embedder: SupportsMentionEmbedding
 ) -> dict[str, Doc]:
     """Semantic match basis for ``entities`` (already known not to appear as
-    an exact substring of ``text``) — round 4 design; see this module's own
-    docstring for why rounds 1-3 each failed against fresh adversarial
+    an exact substring of ``text``) — round 5 design; see this module's own
+    docstring for why rounds 1-4 each failed against fresh adversarial
     cases.
 
     For each candidate span, the round-2 guard (does it share a significant
     word with the entity name?) decides which check judges it:
 
     - **Shared word** (the trap this whole feature exists to defuse): the
-      word-stripped residual span is compared against the entity's OWN
-      definition (``theloom.semantic.landscape.sense_anchor`` — "Name:
-      obs1. obs2.", when the entity has real observations) rather than its
-      name, as a z-score against the entity's own baseline
+      candidate span, INTACT — never stripped — is compared against the
+      entity's OWN definition (``theloom.semantic.landscape.
+      observation_anchor``, built from observations ALONE, with no
+      reference to the entity's name at all, when the entity has real
+      observations), as a z-score against the entity's own baseline
       (``theloom.semantic.landscape.measure_sense_specificity``). No
       observations to anchor with (``_meaningful_observations`` empty)?
-      Fall back to the round-3 name-based dual check, disclosed via
-      ``matchBasis: "semantic-name-only"`` — a caller can tell a
-      fully-anchored decision from a degraded one.
+      Fall back to the round-3 name-based dual check on the word-STRIPPED
+      residual span (stripping is still correct there — that check stays
+      name-anchored, so the same channel it exists to sever is still live),
+      disclosed via ``matchBasis: "semantic-name-only"`` — a caller can
+      tell a fully-anchored decision from a degraded one.
     - **No shared word**: the round-3 dual name-based z-score check
       (symmetric + asymmetric representations, both must clear their own
-      cutoff) — unchanged, since it already works well for genuine
-      paraphrases that share no vocabulary with the name.
+      cutoff) on the intact span — unchanged, since it already works well
+      for genuine paraphrases that share no vocabulary with the name.
 
     An entity grounds on the first span whose applicable check clears its
     cutoff (each span independently decides which check applies — a
     multi-sentence text can have one span hit the word-overlap trap and
-    another not). Returns a dict keyed by entity id — only grounded
-    entities appear in it; the caller decides what "not present" means.
+    another not). Returns a dict keyed by entity id with ONE entry per
+    entity that had at least one span to examine: ``status: "grounded"``
+    with the winning check's evidence, or ``status: "omitted"`` with the
+    BEST attempt's evidence (whichever mechanism came closest to its own
+    cutoff — the largest z-score-minus-cutoff margin — across every span
+    examined, even though nothing cleared it). An entity with no spans to
+    examine at all is absent from this dict entirely — "nothing attempted"
+    is honestly different from "attempted and rejected", and the caller
+    (:func:`check_entity_grounding`) keeps its fields null in that case
+    rather than inventing evidence that was never computed.
     """
     if not entities:
         return {}
@@ -363,24 +406,19 @@ def _semantic_grounding(
         if observations:
             if sense_cutoff is None:
                 sense_cutoff = landscape.measure_sense_specificity(embedder).specificity_z_cutoff
-            anchor_vector = embedder.embed_document(
-                landscape.sense_anchor(entity["name"], observations)
-            )
+            anchor_vector = embedder.embed_document(landscape.observation_anchor(observations))
             sense_null_mean, sense_null_stdev = _entity_null_baseline(
                 anchor_vector, unrelated_doc_vectors
             )
 
         grounding: Doc | None = None
         grounded_span: str | None = None
+        best_margin: float | None = None
+        best_attempt: Doc | None = None
         for span, span_lower, span_vector in zip(spans, span_lowers, span_vectors, strict=True):
             shared_words = [w for w in _significant_words(name_lower) if _word_match(span_lower, w)]
 
             if shared_words:
-                residual_span = _strip_shared_words(span, name_lower)
-                if not residual_span:
-                    continue  # nothing left once the shared word(s) are removed
-                residual_vector = embedder.embed_document(residual_span)
-
                 if anchor_vector is not None:
                     # The trap is live and this entity has a real
                     # definition: the sense anchor IS the decision, not
@@ -389,57 +427,86 @@ def _semantic_grounding(
                     # reintroduce exactly the false positive this anchor
                     # exists to prevent. sense_cutoff was computed above,
                     # in the same "observations truthy" branch that set
-                    # anchor_vector, so it is never None here.
+                    # anchor_vector, so it is never None here. The span is
+                    # compared INTACT (round 5: see the module docstring's
+                    # "cut the ANCHOR's name, not the SPAN" section) — the
+                    # anchor already excludes the entity's name, so there is
+                    # nothing left to strip from this side of the check.
                     assert sense_cutoff is not None
-                    score = l2_similarity(cosine_similarity(anchor_vector, residual_vector))
+                    score = l2_similarity(cosine_similarity(anchor_vector, span_vector))
                     z = _z_score(score, sense_null_mean, sense_null_stdev)
-                    if z > sense_cutoff:
-                        grounding = {
-                            "matchBasis": "semantic",
-                            "matchScore": score,
-                            "nullMean": sense_null_mean,
-                            "nullStdev": sense_null_stdev,
-                            "zScore": z,
-                            "asymZScore": None,
-                        }
-                        grounded_span = span
+                    attempt: Doc = {
+                        "matchBasis": "semantic",
+                        "matchScore": score,
+                        "nullMean": sense_null_mean,
+                        "nullStdev": sense_null_stdev,
+                        "zScore": z,
+                        "zCutoff": sense_cutoff,
+                        "asymZScore": None,
+                        "asymZCutoff": None,
+                    }
+                    margin = z - sense_cutoff
+                    if best_margin is None or margin > best_margin:
+                        best_margin, best_attempt = margin, attempt
+                    if margin > 0:
+                        grounding, grounded_span = attempt, span
                         break
                     continue
 
                 # No observations to anchor with: honest degradation to
-                # the round-3 name-based dual check.
+                # the round-3 name-based dual check. This representation
+                # stays anchored on the entity's NAME, so stripping the
+                # shared word out of the span first is still the right
+                # move here — it is the sense-anchor path (above) that
+                # stopped stripping, not this one.
+                residual_span = _strip_shared_words(span, name_lower)
+                if not residual_span:
+                    continue  # nothing left once the shared word(s) are removed
+                residual_vector = embedder.embed_document(residual_span)
                 sym_score = l2_similarity(cosine_similarity(sym_name_vector, residual_vector))
                 sym_z = _z_score(sym_score, sym_null_mean, sym_null_stdev)
                 asym_score = l2_similarity(cosine_similarity(asym_name_vector, residual_vector))
                 asym_z = _z_score(asym_score, asym_null_mean, asym_null_stdev)
-                if sym_z > sym_cutoff and asym_z > asym_cutoff:
-                    grounding = {
-                        "matchBasis": "semantic-name-only",
-                        "matchScore": sym_score,
-                        "nullMean": sym_null_mean,
-                        "nullStdev": sym_null_stdev,
-                        "zScore": sym_z,
-                        "asymZScore": asym_z,
-                    }
-                    grounded_span = span
-                    break
-                continue
-
-            # No shared word: the round-3 dual name-based check, unchanged.
-            sym_score = l2_similarity(cosine_similarity(sym_name_vector, span_vector))
-            sym_z = _z_score(sym_score, sym_null_mean, sym_null_stdev)
-            asym_score = l2_similarity(cosine_similarity(asym_name_vector, span_vector))
-            asym_z = _z_score(asym_score, asym_null_mean, asym_null_stdev)
-            if sym_z > sym_cutoff and asym_z > asym_cutoff:
-                grounding = {
-                    "matchBasis": "semantic",
+                attempt = {
+                    "matchBasis": "semantic-name-only",
                     "matchScore": sym_score,
                     "nullMean": sym_null_mean,
                     "nullStdev": sym_null_stdev,
                     "zScore": sym_z,
+                    "zCutoff": sym_cutoff,
                     "asymZScore": asym_z,
+                    "asymZCutoff": asym_cutoff,
                 }
-                grounded_span = span
+                margin = min(sym_z - sym_cutoff, asym_z - asym_cutoff)
+                if best_margin is None or margin > best_margin:
+                    best_margin, best_attempt = margin, attempt
+                if margin > 0:
+                    grounding, grounded_span = attempt, span
+                    break
+                continue
+
+            # No shared word: the round-3 dual name-based check, unchanged,
+            # on the intact span (nothing to strip — it never shared a word
+            # with the name to begin with).
+            sym_score = l2_similarity(cosine_similarity(sym_name_vector, span_vector))
+            sym_z = _z_score(sym_score, sym_null_mean, sym_null_stdev)
+            asym_score = l2_similarity(cosine_similarity(asym_name_vector, span_vector))
+            asym_z = _z_score(asym_score, asym_null_mean, asym_null_stdev)
+            attempt = {
+                "matchBasis": "semantic",
+                "matchScore": sym_score,
+                "nullMean": sym_null_mean,
+                "nullStdev": sym_null_stdev,
+                "zScore": sym_z,
+                "zCutoff": sym_cutoff,
+                "asymZScore": asym_z,
+                "asymZCutoff": asym_cutoff,
+            }
+            margin = min(sym_z - sym_cutoff, asym_z - asym_cutoff)
+            if best_margin is None or margin > best_margin:
+                best_margin, best_attempt = margin, attempt
+            if margin > 0:
+                grounding, grounded_span = attempt, span
                 break
 
         if grounding is not None and grounded_span is not None:
@@ -449,6 +516,17 @@ def _semantic_grounding(
                 "status": "grounded",
                 "mentionedAs": _mention_preview(grounded_span),
                 **grounding,
+            }
+        elif best_attempt is not None:
+            # Examined at least one span but nothing cleared its cutoff:
+            # disclose the closest attempt rather than silently nulling out
+            # the evidence — round 5's disclosure requirement.
+            results[entity["id"]] = {
+                "entityId": entity["id"],
+                "entityName": entity["name"],
+                "status": "omitted",
+                "mentionedAs": None,
+                **best_attempt,
             }
     return results
 
@@ -487,7 +565,9 @@ def check_entity_grounding(
                 "nullMean": None,
                 "nullStdev": None,
                 "zScore": None,
+                "zCutoff": None,
                 "asymZScore": None,
+                "asymZCutoff": None,
             }
         else:
             unresolved.append(entity)
@@ -515,9 +595,17 @@ def check_entity_grounding(
                     "nullMean": None,
                     "nullStdev": None,
                     "zScore": None,
+                    "zCutoff": None,
                     "asymZScore": None,
+                    "asymZCutoff": None,
                 }
                 continue
+        # Nothing attempted for this entity at all — no embedder (and no
+        # legacy partial-word match either), or _semantic_grounding never
+        # even reached it (no spans in `text` to examine). Genuinely
+        # different from "attempted and rejected" (see
+        # _semantic_grounding's own docstring): null evidence here is
+        # honest, not a disclosure gap.
         results[entity["id"]] = {
             "entityId": entity["id"],
             "entityName": entity["name"],
@@ -528,7 +616,9 @@ def check_entity_grounding(
             "nullMean": None,
             "nullStdev": None,
             "zScore": None,
+            "zCutoff": None,
             "asymZScore": None,
+            "asymZCutoff": None,
         }
 
     groundings = [results[entity["id"]] for entity in entities]
@@ -606,7 +696,9 @@ def _refine_grounding_with_llm(
                     "nullMean": None,
                     "nullStdev": None,
                     "zScore": None,
+                    "zCutoff": None,
                     "asymZScore": None,
+                    "asymZCutoff": None,
                 }
             )
     return refined

@@ -232,14 +232,21 @@ class TestStripSharedWords:
 
 
 class TestSenseAnchoredDecision:
-    """Round 4: when a word-overlap candidate's entity has real
-    observations, the sense anchor (name + definition) IS the decision for
-    that span — not the round-3 name-based dual check, and not merely an
-    extra check layered on top of it. Both directions are pinned by
-    engineering the SAME residual vector to clear one mechanism's mocked
-    cutoff and fail the other's, so the two mechanisms visibly disagree and
-    the sense anchor's verdict is the one that wins whenever observations
-    exist."""
+    """Round 5: when a word-overlap candidate's entity has real
+    observations, the sense anchor -- built from observations ALONE, no
+    entity name (``landscape.observation_anchor``) -- is compared against
+    the INTACT span (never stripped) and IS the decision for that span, not
+    the round-3 name-based dual check and not merely an extra check layered
+    on top of it. Both directions are pinned by engineering the SAME span
+    vector to clear one mechanism's mocked cutoff and fail the other's, so
+    the two mechanisms visibly disagree and the sense anchor's verdict is
+    the one that wins whenever observations exist. The degraded
+    (no-observations) path still strips the shared word from the span
+    first, scored against the NAME axis -- that representation stays
+    name-anchored, so a SEPARATE, independently-chosen cosine on the
+    stripped RESIDUAL text drives it, proving the two mechanisms read
+    different texts entirely, not just different cutoffs on the same text.
+    """
 
     DIM = 4
     NAME_AXIS = 0
@@ -249,10 +256,11 @@ class TestSenseAnchoredDecision:
     SPAN = "The scientist explained a completely unrelated concept about anthropomorphizing plants."
     # _strip_shared_words(SPAN, "test concept") -- verified directly, see
     # TestStripSharedWords's own tests for the mechanism this depends on.
+    # Only reached by the DEGRADED (no-observations) path (round 5).
     RESIDUAL = "The scientist explained a completely unrelated about anthropomorphizing plants."
 
     def _vectors(
-        self, residual_cosine_to_name: float, residual_cosine_to_sense: float
+        self, span_cosine_to_sense: float, residual_cosine_to_name: float
     ) -> dict[str, list[float]]:
         vectors = _battery_vectors(self.DIM)
         vectors["distractor one"] = _shared_cosine_vec(
@@ -265,23 +273,25 @@ class TestSenseAnchoredDecision:
         name_unit[self.NAME_AXIS] = 1.0
         vectors[f"[concept] {self.ENTITY_NAME}"] = name_unit
         vectors[self.ENTITY_NAME] = name_unit
-        vectors[f"{self.ENTITY_NAME}: {self.OBSERVATIONS[0]}."] = [
+        # Keyed by the OBSERVATION-ONLY anchor text (round 5) -- no entity
+        # name prefix at all.
+        vectors[f"{self.OBSERVATIONS[0]}."] = [
             0.0 if i != self.SENSE_AXIS else 1.0 for i in range(self.DIM)
         ]
-        # RESIDUAL needs SOME cosine to both axes at once -- reuse the same
-        # two-axis mixing trick as the battery distractors, just with two
-        # independently chosen target cosines instead of one shared value.
+        # The INTACT SPAN is what the sense-anchor path compares -- only its
+        # cosine to the SENSE axis matters to that decision (the anchor
+        # never sees the NAME axis at all).
+        span_vector = [0.0] * self.DIM
+        span_vector[self.SENSE_AXIS] = span_cosine_to_sense
+        span_vector[1] = math.sqrt(max(0.0, 1 - span_cosine_to_sense**2))
+        vectors[self.SPAN] = span_vector
+        # The STRIPPED RESIDUAL is what the DEGRADED (no-observations) path
+        # compares instead -- an independently chosen cosine to the NAME
+        # axis, unrelated to the span's own sense-axis cosine above.
         residual_vector = [0.0] * self.DIM
         residual_vector[self.NAME_AXIS] = residual_cosine_to_name
-        residual_vector[self.SENSE_AXIS] = residual_cosine_to_sense
-        remaining = 1 - residual_cosine_to_name**2 - residual_cosine_to_sense**2
-        residual_vector[1] = math.sqrt(max(0.0, remaining))
+        residual_vector[1] = math.sqrt(max(0.0, 1 - residual_cosine_to_name**2))
         vectors[self.RESIDUAL] = residual_vector
-        # The RAW span is also embedded upfront (batched across every
-        # candidate span, before any per-entity word-overlap check runs) --
-        # unused by the word-overlap branch's own decision, but must still
-        # resolve to SOME vector.
-        vectors[self.SPAN] = residual_vector
         return vectors
 
     def _entity(self, with_observations: bool) -> dict[str, object]:
@@ -296,16 +306,21 @@ class TestSenseAnchoredDecision:
     ) -> None:
         _mock_specificity(monkeypatch, symmetric=0.1, asymmetric=0.1)  # easy to clear
         _mock_sense_specificity(monkeypatch, cutoff=1000.0)  # impossible to clear
-        # High cosine to the NAME axis (the degraded check would ground this
-        # easily) but the sense-anchor cutoff can never be cleared, so the
-        # entity, which HAS observations, is rejected regardless.
-        vectors = self._vectors(residual_cosine_to_name=0.9, residual_cosine_to_sense=0.5)
+        # Low cosine to the SENSE axis (the sense anchor correctly finds
+        # nothing here) but a high cosine to the NAME axis in the STRIPPED
+        # residual, which the degraded check would ground easily.
+        vectors = self._vectors(span_cosine_to_sense=0.1, residual_cosine_to_name=0.9)
         embedder = _MappedEmbedder(vectors)
 
         with_observations = check_entity_grounding(
             self.SPAN, [self._entity(with_observations=True)], None, embedder
         )
         assert with_observations[0]["status"] == "omitted"
+        # Round 5 disclosure: an omitted decision still names the mechanism
+        # ATTEMPTED and carries its full evidence, not nulls.
+        assert with_observations[0]["matchBasis"] == "semantic"
+        assert isinstance(with_observations[0]["zScore"], float)
+        assert with_observations[0]["zCutoff"] == 1000.0
 
         # The SAME vectors, but this entity has no observations: the sense
         # anchor never applies, so the (easy) degraded check decides instead
@@ -322,10 +337,10 @@ class TestSenseAnchoredDecision:
     ) -> None:
         _mock_specificity(monkeypatch, symmetric=1000.0, asymmetric=1000.0)  # impossible to clear
         _mock_sense_specificity(monkeypatch, cutoff=0.1)  # easy to clear
-        # Low cosine to the NAME axis (the degraded check could never ground
-        # this) but high cosine to the SENSE axis, clearing the easy sense
-        # cutoff.
-        vectors = self._vectors(residual_cosine_to_name=0.05, residual_cosine_to_sense=0.9)
+        # High cosine to the SENSE axis (the anchor grounds this easily) but
+        # a low cosine to the NAME axis in the STRIPPED residual, which the
+        # degraded check could never ground.
+        vectors = self._vectors(span_cosine_to_sense=0.9, residual_cosine_to_name=0.05)
         embedder = _MappedEmbedder(vectors)
 
         with_observations = check_entity_grounding(
@@ -334,12 +349,18 @@ class TestSenseAnchoredDecision:
         assert with_observations[0]["status"] == "grounded"
         assert with_observations[0]["matchBasis"] == "semantic"
         assert isinstance(with_observations[0]["zScore"], float)
+        assert with_observations[0]["zCutoff"] == 0.1
         assert with_observations[0]["asymZScore"] is None
+        assert with_observations[0]["asymZCutoff"] is None
 
         without_observations = check_entity_grounding(
             self.SPAN, [self._entity(with_observations=False)], None, embedder
         )
         assert without_observations[0]["status"] == "omitted"
+        # Round 5 disclosure: the degraded check was attempted (and failed),
+        # so it is named here too, not nulled out.
+        assert without_observations[0]["matchBasis"] == "semantic-name-only"
+        assert isinstance(without_observations[0]["zScore"], float)
 
     def test_only_the_guard_placeholder_observation_still_degrades(
         self, monkeypatch: pytest.MonkeyPatch
@@ -349,7 +370,7 @@ class TestSenseAnchoredDecision:
         must not be mistaken for a real definition."""
         _mock_specificity(monkeypatch, symmetric=0.1, asymmetric=0.1)
         _mock_sense_specificity(monkeypatch, cutoff=1000.0)
-        vectors = self._vectors(residual_cosine_to_name=0.9, residual_cosine_to_sense=0.5)
+        vectors = self._vectors(span_cosine_to_sense=0.5, residual_cosine_to_name=0.9)
         embedder = _MappedEmbedder(vectors)
         entity = {
             "id": "x",

@@ -5,11 +5,12 @@ scenario as tests/test_synthesis_fidelity_semantic_grounding.py: a paraphrase
 that reuses one word from the entity name must ground, and a coincidental
 word-overlap claim sharing that SAME word with a different entity must not.
 
-Round 4: when a word-overlap candidate's entity carries real observations
+Round 5: when a word-overlap candidate's entity carries real observations
 (as both entities below do, matching how a real Loom entity is actually
-created), the sense anchor (name + definition —
-theloom/semantic/landscape.py's own "Sense anchoring" docstring section) is
-the deciding check, not the round-3 name-based dual z-score. This test mocks
+created), the sense anchor — built from observations ALONE, no entity name
+(theloom/semantic/landscape.py's own "one-sided cut" docstring section) —
+compared against the INTACT candidate span (never stripped) is the deciding
+check, not the round-3 name-based dual z-score. This test mocks
 ``theloom.semantic.landscape.measure_specificity`` AND
 ``measure_sense_specificity`` directly rather than hand-deriving a full
 probe-corpus calibration, the same simplification
@@ -40,8 +41,6 @@ SILENT_OBSERVATION = "a malfunction that produces no visible error, log entry, o
 PARAPHRASE_SENTENCE = "The lag in the feedback loop meant corrections always arrived too late."
 FALSE_FRIEND_SENTENCE = "The orchestra performed a silent movie score."
 TEXT = f"{PARAPHRASE_SENTENCE} {FALSE_FRIEND_SENTENCE}"
-FEEDBACK_STRIPPED = "The lag in the loop meant corrections always arrived too late."
-SILENT_STRIPPED = "The orchestra performed a movie score."
 
 
 def _entity(name: str, observation: str) -> EntityCreate:
@@ -112,19 +111,20 @@ def _build_vectors() -> dict[str, list[float]]:
 
     vectors["Feedback Delay"] = unit(_FEEDBACK_NAME_AXIS)
     vectors["[concept] Feedback Delay"] = unit(_FEEDBACK_NAME_AXIS)
-    vectors[f"Feedback Delay: {FEEDBACK_OBSERVATION}."] = unit(_FEEDBACK_SENSE_AXIS)
-    # Genuine paraphrase reusing "feedback": the sense-anchored residual
-    # clears the (mocked) sense cutoff.
+    # Keyed by the OBSERVATION-ONLY anchor text (round 5) -- no
+    # "Feedback Delay: " prefix at all.
+    vectors[f"{FEEDBACK_OBSERVATION}."] = unit(_FEEDBACK_SENSE_AXIS)
+    # Genuine paraphrase reusing "feedback": compared INTACT (round 5 -- no
+    # stripping on the sense-anchor path) against the anchor, clearing the
+    # (mocked) sense cutoff.
     vectors[PARAPHRASE_SENTENCE] = _vec(_DIM, _FEEDBACK_SENSE_AXIS, 0.9, 1)
-    vectors[FEEDBACK_STRIPPED] = _vec(_DIM, _FEEDBACK_SENSE_AXIS, 0.85, 1)
 
     vectors["Silent Failure Mode"] = unit(_SILENT_NAME_AXIS)
     vectors["[concept] Silent Failure Mode"] = unit(_SILENT_NAME_AXIS)
-    vectors[f"Silent Failure Mode: {SILENT_OBSERVATION}."] = unit(_SILENT_SENSE_AXIS)
-    # False friend sharing "silent": raw clears the name axes trivially,
-    # but the sense-anchored residual collapses well below the cutoff.
-    vectors[FALSE_FRIEND_SENTENCE] = _vec(_DIM, _SILENT_SENSE_AXIS, 0.9, 3)
-    vectors[SILENT_STRIPPED] = _vec(_DIM, _SILENT_SENSE_AXIS, 0.05, 3)
+    vectors[f"{SILENT_OBSERVATION}."] = unit(_SILENT_SENSE_AXIS)
+    # False friend sharing "silent": compared INTACT against the anchor,
+    # collapsing well below the cutoff even without any stripping.
+    vectors[FALSE_FRIEND_SENTENCE] = _vec(_DIM, _SILENT_SENSE_AXIS, 0.05, 3)
     return vectors
 
 
@@ -175,12 +175,20 @@ def test_verify_fidelity_command_grounds_paraphrase_and_rejects_word_overlap(
     assert feedback_grounding["mentionedAs"] == PARAPHRASE_SENTENCE
     assert isinstance(feedback_grounding["matchScore"], float)
     assert isinstance(feedback_grounding["zScore"], float)
+    assert feedback_grounding["zCutoff"] == 0.5
     # Decided by the sense anchor, not the round-3 dual check.
     assert feedback_grounding["asymZScore"] is None
+    assert feedback_grounding["asymZCutoff"] is None
 
     silent_grounding = by_id[silent.id]
     assert silent_grounding["status"] == "omitted"
-    assert silent_grounding["matchBasis"] is None
-    assert silent_grounding["zScore"] is None
+    # Round 5 disclosure: an omitted decision still names the mechanism
+    # ATTEMPTED (the sense anchor, since this entity carries observations)
+    # and carries its full evidence -- "an honest no must be as auditable
+    # as a yes" -- rather than nulling everything out.
+    assert silent_grounding["matchBasis"] == "semantic"
+    assert isinstance(silent_grounding["matchScore"], float)
+    assert isinstance(silent_grounding["zScore"], float)
+    assert silent_grounding["zCutoff"] == 0.5
 
     assert result["scores"]["entityGroundingRate"] == pytest.approx(0.5)
