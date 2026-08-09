@@ -316,6 +316,40 @@ def test_analogy_pass_skips_with_notice_when_too_few_domains(multi: MultiGraph) 
     assert "domain" in outcome["skipReason"]
 
 
+def test_isolated_entity_survives_a_default_all_passes_run(multi: MultiGraph) -> None:
+    """Regression (round 2 critic finding): staleness runs before hypothesis
+    in canonical pass order and links its own insight to nearly every stale
+    entity via a `related_to` edge -- that dream-authored edge must not make
+    an otherwise-isolated entity look structurally connected by the time the
+    hypothesis pass looks. Planting many stale-but-connected entities plus
+    one genuinely isolated one and running every pass (the exact shape the
+    critic's transcript used, not just the single-pass call) is what would
+    have let the bug hide: passes=["hypothesis"] alone never exercised the
+    staleness pass's side effect at all."""
+    graph = "g"
+    hub = create(multi, graph, "Hub")
+    for i in range(3):
+        satellite = create(multi, graph, f"Satellite{i}")
+        relate(multi, graph, hub["id"], satellite["id"])
+    isolated = create(multi, graph, "TrulyIsolated")
+
+    result = run_handler("consolidate", {"graph": graph}, multi)
+
+    hypothesis = result["report"]["passes"]["hypothesis"]
+    assert hypothesis["isolatedCount"] >= 1, hypothesis
+    isolated_findings = [
+        f
+        for f in result["report"]["topFindings"]
+        if f["pass"] == "hypothesis" and f.get("gapType") == "isolated"
+    ]
+    assert any(f["targetEntityId"] == isolated["id"] for f in isolated_findings), isolated_findings
+
+    # Same fixture, hypothesis run alone -- must find the same isolated
+    # entity, proving the all-passes run isn't merely lucky.
+    only_hypothesis = run_handler("consolidate", {"graph": graph, "passes": ["hypothesis"]}, multi)
+    assert only_hypothesis["report"]["passes"]["hypothesis"]["isolatedCount"] >= 1
+
+
 def test_resolve_passes_default_and_canonical_order() -> None:
     assert _resolve_passes(None) == [
         "contradiction",

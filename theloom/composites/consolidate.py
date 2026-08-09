@@ -420,11 +420,32 @@ def _pass_motifs(base_graph: str, multi: MultiGraph, budget: int) -> Doc:
 
 
 def _isolated_entities(store: FalkorGraphStore) -> list[Entity]:
-    relations = store.list_relations()
-    touched = {r.from_ for r in relations} | {r.to for r in relations}
+    """Entities with zero *real* relations -- "real" excluding the dream's
+    own bookkeeping. A finding entity (``_FINDING_ENTITY_TYPES``) links
+    itself to whatever it's about via a ``related_to`` edge
+    (``_create_finding``); if an earlier pass in this same consolidate run
+    already wrote such an edge to some entity (staleness runs before
+    hypothesis in canonical order and links its insight to nearly every
+    stale entity), that edge must not make the entity look structurally
+    connected -- an observation the dream writes ABOUT an entity is not a
+    real graph edge the entity itself earned. Excluding by entity type
+    (not just "any edge from *this run's* findings") also protects a
+    second consolidate before the first is merged/abandoned: a prior
+    dream's own findings never leak into this store's projection anyway
+    (separate segment), but a within-run finding from an earlier pass
+    (contradiction's tension, staleness's insight) is exactly this
+    projection, and must be excluded the same way."""
+    entities = store.list_entities()
+    finding_ids = {e.id for e in entities if e.entity_type.value in _FINDING_ENTITY_TYPES}
+    touched: set[str] = set()
+    for r in store.list_relations():
+        if r.from_ in finding_ids or r.to in finding_ids:
+            continue  # bookkeeping the dream itself wrote -- not a real connection
+        touched.add(r.from_)
+        touched.add(r.to)
     return [
         e
-        for e in store.list_entities()
+        for e in entities
         if e.id not in touched and e.entity_type.value not in _FINDING_ENTITY_TYPES
     ]
 

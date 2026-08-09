@@ -43,6 +43,7 @@ import pytest
 
 from theloom.cli.registry import COMMANDS
 from theloom.cli.schema import field_rows
+from theloom.composites.consolidate import ConsolidateInput, consolidate
 from theloom.operations import receipts as receipts_ops
 from theloom.operations.algebra import SemiringDistancesInput, semiring_distances
 from theloom.operations.analysis import DetectLoopsInput, detect_loops
@@ -362,6 +363,26 @@ def _verify_what_changed_limit(_multi: MultiGraph) -> None:
     assert receipts_ops._DEFAULT_LIMIT == 500
 
 
+def _verify_consolidate_budget_default(multi: MultiGraph) -> None:
+    """Scoped to a single, write-free pass (an empty graph's staleness sweep
+    finds nothing to link, so this costs one fork plus one persisted report
+    entity, not a full six-pass run) -- the claim is about ``budget``'s
+    resolved value, not about the passes' own behavior, which the other
+    consolidate tests already cover."""
+    omitted = consolidate(
+        ConsolidateInput.model_validate({"graph": multi.default_graph, "passes": ["staleness"]}),
+        multi,
+    )
+    explicit = consolidate(
+        ConsolidateInput.model_validate(
+            {"graph": multi.default_graph, "passes": ["staleness"], "budget": 20}
+        ),
+        multi,
+    )
+    assert omitted["report"]["budget"] == 20, "documented default (20) must be what the code uses"
+    assert explicit["report"]["budget"] == 20
+
+
 def _verify_list_worlds_include_reaped(multi: MultiGraph) -> None:
     forked = fork_world(ForkWorldInput.model_validate({"graph": "default"}), multi)
     world_id = forked["worldId"]
@@ -428,6 +449,7 @@ DEFAULT_VERIFIERS: dict[tuple[str, str], tuple[Any, Callable[[MultiGraph], None]
         "falls back to `graph`",
         _verify_create_relations_graph_fallback,
     ),
+    ("consolidate", "budget"): (20, _verify_consolidate_budget_default),
     ("detect-loops", "persist"): (False, _verify_detect_loops_persist),
     ("list-worlds", "includeReaped"): (False, _verify_list_worlds_include_reaped),
     ("propagate-credit", "dryRun"): (False, _verify_propagate_credit_dry_run),
