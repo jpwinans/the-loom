@@ -103,6 +103,7 @@ def test_catalog_matches_known_emission_sites() -> None:
     assert catalog["EMPTY_TRAVERSAL"] == {"semiring-distances"}
     assert catalog["NONE_PERSISTED"] == {"list-loops"}
     assert catalog["NOT_PERSISTED"] == {"detect-loops"}
+    assert catalog["RULE_DISABLED"] == {"inference-rule-create"}
     assert catalog["TRUNCATED"] == {"list-entities"}
     # Checked inventory, not memory: every command that reads/writes state a
     # world's overlay cannot fork -- embeddings (vectors, a bare Cypher

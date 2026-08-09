@@ -342,7 +342,21 @@ def inference_rule_create(params: InferenceRuleCreateInput, multi: MultiGraph) -
     }
     if rule.enabled is not None:
         result["enabled"] = rule.enabled
-    return result
+    notices = []
+    if rule.enabled is not True:
+        notices.append(
+            notice(
+                "RULE_DISABLED",
+                "This rule was stored without `enabled: true`, so run-inference "
+                "will never evaluate it.",
+                hint=(
+                    'Re-create the rule with `rule: {"enabled": true, ...}` '
+                    "(there is no enable/update command; inference-rule-create "
+                    "is the only way to write a rule besides inference-rule-delete)."
+                ),
+            )
+        )
+    return with_notices(result, notices)
 
 
 def inference_rule_list(params: InferenceRuleListInput, multi: MultiGraph) -> Doc:

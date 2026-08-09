@@ -154,6 +154,13 @@ NOTICE_CATALOG: dict[str, str] = {
         "not applied -- the response reflects the command's real behavior, "
         "not the ignored parameter's implication."
     ),
+    "RULE_DISABLED": (
+        "inference-rule-create stored this rule without `enabled: true`, so "
+        "run-inference will never evaluate it -- it is stored, not rejected, "
+        'but it can never fire until re-created with `rule: {"enabled": '
+        "true, ...}` (there is no update/enable command; inference-rule-"
+        "create is the only write path besides inference-rule-delete)."
+    ),
     "SESSION_SURFACE_TRUNCATED": (
         "since-last-session's response exceeded its fixed context-window size "
         "budget and was trimmed -- lower-priority findings, contradictions, "
