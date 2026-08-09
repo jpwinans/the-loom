@@ -62,6 +62,14 @@ from theloom.operations.relations import (
     create_relations,
     list_relations,
 )
+from theloom.operations.worlds import (
+    AbandonWorldInput,
+    ForkWorldInput,
+    ListWorldsInput,
+    abandon_world,
+    fork_world,
+    list_worlds,
+)
 from theloom.store.multigraph import MultiGraph
 
 # =============================================================================
@@ -351,12 +359,29 @@ def _verify_what_changed_limit(_multi: MultiGraph) -> None:
     assert receipts_ops._DEFAULT_LIMIT == 500
 
 
+def _verify_list_worlds_include_reaped(multi: MultiGraph) -> None:
+    forked = fork_world(ForkWorldInput.model_validate({"graph": "default"}), multi)
+    world_id = forked["worldId"]
+    abandon_world(AbandonWorldInput.model_validate({"worldId": world_id}), multi)
+
+    omitted = list_worlds(ListWorldsInput.model_validate({}), multi)
+    explicit_true = list_worlds(ListWorldsInput.model_validate({"includeReaped": True}), multi)
+
+    assert world_id not in {w["worldId"] for w in omitted["items"]}, (
+        "documented default (false) must hide reaped/abandoned/merged worlds"
+    )
+    assert world_id in {w["worldId"] for w in explicit_true["items"]}, (
+        "includeReaped: true must still find it -- reaping never forgets a world"
+    )
+
+
 DEFAULT_VERIFIERS: dict[tuple[str, str], tuple[Any, Callable[[MultiGraph], None]]] = {
     ("create-relations", "graph"): (
         "falls back to `graph`",
         _verify_create_relations_graph_fallback,
     ),
     ("detect-loops", "persist"): (False, _verify_detect_loops_persist),
+    ("list-worlds", "includeReaped"): (False, _verify_list_worlds_include_reaped),
     ("propagate-credit", "dryRun"): (False, _verify_propagate_credit_dry_run),
     ("run-inference", "dryRun"): (False, _verify_run_inference_dry_run),
     ("semiring-distances", "direction"): ("out", _verify_semiring_distances_direction),

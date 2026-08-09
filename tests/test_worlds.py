@@ -17,6 +17,7 @@ from theloom.cli.registry import run_handler
 from theloom.errors import LoomError
 from theloom.operations import epistemic as epistemic_ops
 from theloom.store import worldctx
+from theloom.store.events import EventLog
 from theloom.store.multigraph import MultiGraph
 from theloom.store.worlds import world_graph_name
 from theloom.timeutil import iso_now
@@ -112,6 +113,14 @@ def test_list_worlds_and_abandon(multi: MultiGraph) -> None:
     assert abandoned["applied"] is True
     assert abandoned["status"] == "abandoned"
     assert abandoned["refStatus"] == "reaped"
+
+    # list-worlds defaults to hiding reaped worlds (so the default view
+    # doesn't grow monotonically) but never actually forgets them --
+    # includeReaped: true still finds it, same as list-sessions' history.
+    listed_default = run_handler("list-worlds", {}, multi)
+    assert world["worldId"] not in {w["worldId"] for w in listed_default["items"]}
+    listed_with_reaped = run_handler("list-worlds", {"includeReaped": True}, multi)
+    assert world["worldId"] in {w["worldId"] for w in listed_with_reaped["items"]}
 
     again = run_handler("abandon-world", {"worldId": world["worldId"]}, multi)
     assert again["applied"] is False
@@ -259,8 +268,16 @@ def test_acceptance_c_diff_worlds_lists_exactly_the_forks_writes(multi: MultiGra
             kinds_by_entity.setdefault(row["entityId"], set()).add(row["kind"])
 
     assert kinds_by_entity.get(new_entity["id"]) == {"entityAdded"}
-    # to_update is a claim whose confidence changed: both rows fire.
-    assert kinds_by_entity.get(to_update["id"]) == {"confidenceChanged", "contestedClaim"}
+    # to_update is a claim whose confidence changed: confidenceChanged (from
+    # the event), contestedClaim (main vs. the fork disagree), and
+    # entityRevised for the bookkeeping fields update-entity always bumps
+    # (version, changeType, previousVersionId) -- every field the event
+    # actually changed shows up, not just the ones this test cares about.
+    assert kinds_by_entity.get(to_update["id"]) == {
+        "confidenceChanged",
+        "contestedClaim",
+        "entityRevised",
+    }
     assert untouched["id"] not in kinds_by_entity
 
     relation_rows = [row for row in diff["items"] if row["kind"] == "relationAdded"]
@@ -281,6 +298,107 @@ def test_acceptance_c_diff_worlds_lists_exactly_the_forks_writes(multi: MultiGra
     for row in diff["items"]:
         if row["kind"] in write_kinds:
             assert row["eventId"] is not None, row
+
+
+def test_diff_worlds_event_ids_are_a_superset_of_what_merge_world_applies(
+    multi: MultiGraph,
+) -> None:
+    """The critic's blocking-gap invariant, pinned as a property test: for a
+    world with a genuinely mixed batch of writes (create, rename,
+    confidence, status transition, relation, hard delete), every event id
+    merge-world's own candidate set is built from
+    (``_last_event_by_record_id`` over the fork's own segment) is visible
+    somewhere in diff-worlds' reported event ids. Reconstructed here
+    independently, through the same public event-log read merge-world
+    itself uses -- not by reaching into either command's private state --
+    so this is a genuine black-box check of the invariant, not a tautology.
+    """
+    graph = "g"
+    now = iso_now()
+    keep = create(multi, graph, "Keep")
+    rename_me = create(multi, graph, "RenameMe")
+    conf_me = create(
+        multi,
+        graph,
+        "ConfMe",
+        entityType="claim",
+        confidence={"score": 0.3, "basis": "inference", "lastEvaluated": now},
+    )
+    status_me = create(multi, graph, "StatusMe")
+    delete_me = create(multi, graph, "DeleteMe")
+    rel_target = create(multi, graph, "RelTarget")
+
+    world = fork(multi, graph, name="mixed-batch")
+    wid = world["worldId"]
+    created_in_fork = create(multi, graph, "CreatedInFork", world=wid)
+    run_handler(
+        "update-entity",
+        {"graph": graph, "id": rename_me["id"], "world": wid, "name": "Renamed"},
+        multi,
+    )
+    run_handler(
+        "update-entity",
+        {
+            "graph": graph,
+            "id": conf_me["id"],
+            "world": wid,
+            "confidence": {"score": 0.9, "basis": "inference", "lastEvaluated": iso_now()},
+        },
+        multi,
+    )
+    run_handler(
+        "update-entity",
+        {"graph": graph, "id": status_me["id"], "world": wid, "status": "retracted"},
+        multi,
+    )
+    relate(multi, graph, created_in_fork["id"], rel_target["id"], world=wid)
+    run_handler(
+        "delete-entity", {"graph": graph, "id": delete_me["id"], "world": wid, "hard": True}, multi
+    )
+
+    diff = run_handler("diff-worlds", {"a": "main", "b": wid}, multi)
+    diff_event_ids = {row["eventId"] for row in diff["items"] if row.get("eventId")}
+
+    # Reconstructed independently, through the fork's own local event log --
+    # the same public surface (multi.event_log) merge-world's own
+    # _last_event_by_record_id reads, not a peek at either command's
+    # private state.
+    fork_events = multi.event_log(world_graph_name(wid)).read_all()
+    merge_candidate_event_ids: dict[str, str] = {}
+    for event in fork_events:
+        record = event.payload.get("entity") or event.payload.get("relation")
+        if isinstance(record, dict) and isinstance(record.get("id"), str):
+            merge_candidate_event_ids[record["id"]] = event.id
+
+    assert merge_candidate_event_ids, "the test's own batch must actually touch something"
+    missing = set(merge_candidate_event_ids.values()) - diff_event_ids
+    assert not missing, (
+        f"diff-worlds must be a superset of merge-world's own candidate event ids; "
+        f"missing: {missing}"
+    )
+
+    # Confirm it holds for a REAL merge too, not just the reconstruction:
+    # every entity merge-world actually applies must have been visible in
+    # the diff that preceded it.
+    result = run_handler(
+        "merge-world", {"from": wid, "into": "main", "strategy": "endorse-all"}, multi
+    )
+    applied_ids = {row["entityId"] for row in result["appliedEntities"]}
+    assert applied_ids == {
+        created_in_fork["id"],
+        rename_me["id"],
+        conf_me["id"],
+        status_me["id"],
+        delete_me["id"],
+    }
+    for entity_id in applied_ids:
+        assert merge_candidate_event_ids[entity_id] in diff_event_ids
+
+    assert keep["id"] not in applied_ids
+    # The propagated hard delete actually landed in main.
+    with pytest.raises(LoomError) as exc:
+        run_handler("read-entity", {"graph": graph, "id": delete_me["id"]}, multi)
+    assert exc.value.code == "NOT_FOUND"
 
 
 # =============================================================================
@@ -453,9 +571,27 @@ def test_belief_blast_radius_runs_the_real_propagate_credit(
     # The fork is torn down; main's claim is untouched.
     main_claim = run_handler("read-entity", {"graph": graph, "id": claim["id"]}, multi)
     assert main_claim["confidence"]["score"] == 0.5
-    worlds = run_handler("list-worlds", {}, multi)
-    assert worlds["items"][0]["worldId"] == result["worldId"]
-    assert worlds["items"][0]["status"] == "abandoned"
+
+    # Ref hygiene: belief-blast-radius PURGES its ephemeral world (not
+    # abandon-world's reap-and-keep), so it never appears in list-worlds --
+    # not even with includeReaped: true, since purge erases the ref record
+    # outright rather than marking it dead.
+    worlds_default = run_handler("list-worlds", {}, multi)
+    assert result["worldId"] not in {w["worldId"] for w in worlds_default["items"]}
+    worlds_with_reaped = run_handler("list-worlds", {"includeReaped": True}, multi)
+    assert result["worldId"] not in {w["worldId"] for w in worlds_with_reaped["items"]}
+
+    # And it does not return eventIds pointing into a stream it just
+    # deleted: propagate-credit's own writes lived in the fork's now-
+    # deleted segment and must not appear, while fork-world's own
+    # ref_registered event (in the shared, never-deleted _refs stream)
+    # remains genuinely replayable and IS reported.
+    assert result["eventIds"], "fork-world's own ref_registered event must still be reported"
+    what_changed = run_handler(
+        "what-changed", {"graph": "_refs", "eventIds": result["eventIds"]}, multi
+    )
+    assert what_changed["items"], "the reported eventIds must all still replay"
+    assert all(row["eventType"] == "ref_registered" for row in what_changed["items"])
 
 
 # =============================================================================
@@ -464,36 +600,93 @@ def test_belief_blast_radius_runs_the_real_propagate_credit(
 # =============================================================================
 
 
+def _stream_id_key(entry_id: str) -> tuple[int, int]:
+    ms, seq = entry_id.split("-", 1)
+    return int(ms), int(seq)
+
+
 def test_tension_b_fork_across_a_repaired_span_projects_consistently(
     multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Reaches the REAL repair path, not a mock of it: appends go through
+    ``theloom.store.commit.commit_steps`` -> ``EventLog.queue`` ->
+    ``Pipeline.xadd`` (buffered onto the MULTI/EXEC transaction) -- patching
+    the Redis *client*'s ``xadd`` does nothing, since a pipeline never calls
+    back through the client's own bound method. Patching ``Pipeline.xadd``
+    itself to queue a syntactically valid but always-rejected id (``"0-0"``,
+    below the minimum valid stream id) reproduces a genuine *runtime*
+    rejection: the command is queued successfully and only fails at EXEC,
+    exactly the case ``commit_steps``'s repair path exists for (a queue-time
+    rejection aborts the whole transaction before repair is reachable at
+    all).
+
+    To make the repair genuinely land out of order (not just theoretically
+    capable of it), a second, unrelated write is interleaved between the
+    failure and the repair itself: ``EventLog.append`` (what ``repair()``
+    calls to re-append outside the transaction) is patched to create an
+    "Interloper" entity first, through the ordinary, unpatched write path.
+    That write's event lands at a real, later stream position *before* the
+    repaired event completes -- so B's event ends up after Interloper's in
+    the stream, despite B being requested first.
+    """
     graph = "g"
     store = multi.get_store(graph)
+    target_key = store.events.key
 
-    # Force the NEXT XADD on this graph's event stream to fail once, so
-    # commit_steps's repair path (theloom.store.commit.repair_log) re-appends
-    # the event outside the transaction -- landing later in the stream than
-    # it logically belongs, exactly the "repaired event lands out of order"
-    # scenario CLAUDE.md's tension names.
-    original_xadd = store._redis.xadd
+    from redis.client import Pipeline
+
+    original_pipeline_xadd = Pipeline.xadd
     state = {"fail_once": True}
 
-    def flaky_xadd(name: str, *args: Any, **kwargs: Any) -> Any:
-        if name == store.events.key and state["fail_once"]:
+    def patched_pipeline_xadd(
+        self: Pipeline, name: str, fields: dict[str, Any], id: str = "*", **kwargs: Any
+    ) -> Any:
+        if name == target_key and state["fail_once"]:
             state["fail_once"] = False
-            raise RuntimeError("simulated transient XADD failure")
-        return original_xadd(name, *args, **kwargs)
+            # A syntactically valid XADD, guaranteed to be rejected at EXEC
+            # time (ids must be > 0-0) -- the runtime rejection commit_steps'
+            # repair path exists for, not a queue-time one.
+            return original_pipeline_xadd(self, name, fields, id="0-0", **kwargs)
+        return original_pipeline_xadd(self, name, fields, id=id, **kwargs)
 
-    # The mutation itself must still land correctly -- create-entity's own
-    # Cypher succeeds, only its paired XADD fails at EXEC and is repaired.
-    monkeypatch.setattr(store._redis, "xadd", flaky_xadd)
+    monkeypatch.setattr(Pipeline, "xadd", patched_pipeline_xadd)
+
+    # theloom.store.multigraph.MultiGraph.get_store builds a fresh
+    # FalkorGraphStore (and so a fresh EventLog instance) on every call --
+    # by design, so patching the local `store` variable's own `.events.
+    # append` would never touch the instance `run_handler`'s own internal
+    # `get_store` call actually uses. Patching EventLog.append on the
+    # CLASS (like Pipeline.xadd above) reaches every instance, keyed here
+    # by comparing `self.key` to this graph's own stream key.
+    original_append = EventLog.append
+    stash: dict[str, Any] = {"interleaved": False}
+
+    def patched_append(self: EventLog, event_type: str, payload: dict[str, Any]) -> str:
+        if self.key == target_key and not stash["interleaved"]:
+            stash["interleaved"] = True
+            # The concurrent writer commit.py's docstring warns can slip an
+            # entry in front of a repair.
+            stash["interloper"] = run_handler(
+                "create-entity", {"graph": graph, **_entity_doc("Interloper")}, multi
+            )
+        return original_append(self, event_type, payload)
+
+    monkeypatch.setattr(EventLog, "append", patched_append)
+
     b = run_handler("create-entity", {"graph": graph, **_entity_doc("B")}, multi)
-    monkeypatch.setattr(store._redis, "xadd", original_xadd)
 
-    events = store.events.read_all()
-    # The repaired event exists and is genuinely the last in the stream
-    # (repair appends outside the transaction, after whatever landed since).
-    assert any(json_matches_b(e.payload, b["id"]) for e in events)
+    # Both patches actually fired -- this is not passing by coincidence.
+    assert state["fail_once"] is False, "the patched XADD never ran"
+    assert stash["interleaved"] is True, "repair never reached EventLog.append"
+    interloper = stash["interloper"]
+
+    b_event_id = b["eventIds"][0]
+    interloper_event_id = interloper["eventIds"][0]
+    assert _stream_id_key(b_event_id) > _stream_id_key(interloper_event_id), (
+        "the repair must genuinely land out of order: B was requested (and "
+        "logically created) before Interloper, but its repaired event should "
+        "land at a LATER stream position"
+    )
 
     time.sleep(_TICK)
     checkpoint_after_b = iso_now()
@@ -504,17 +697,13 @@ def test_tension_b_fork_across_a_repaired_span_projects_consistently(
     world = fork(multi, graph, asOf=checkpoint_after_b)
     projected = run_handler("list-entities", {"graph": graph, "world": world["worldId"]}, multi)
     names = {e["name"] for e in projected["items"]}
-    assert names == {"B"}, (
+    assert names == {"B", "Interloper"}, (
         "forkedAtEventId's meaning is anchored to the wall-clock instant its "
-        "timestamp encodes (read_graph_as_of), not to the event's position in "
-        "the stream -- so a repair that reorders the stream must not change "
-        "what a fork taken after it sees."
+        "timestamp encodes (read_graph_as_of/tx_from), not to the event's "
+        "position in the stream -- so a repair that reorders the stream must "
+        "not change what a fork taken after it sees, even though B's own "
+        "event now sits AFTER Interloper's."
     )
-
-
-def json_matches_b(payload: dict[str, Any], entity_id: str) -> bool:
-    entity = payload.get("entity")
-    return isinstance(entity, dict) and entity.get("id") == entity_id
 
 
 # =============================================================================

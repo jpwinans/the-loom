@@ -104,14 +104,23 @@ def test_catalog_matches_known_emission_sites() -> None:
     assert catalog["NONE_PERSISTED"] == {"list-loops"}
     assert catalog["NOT_PERSISTED"] == {"detect-loops"}
     assert catalog["TRUNCATED"] == {"list-entities"}
+    # Checked inventory, not memory: every command that reads/writes state a
+    # world's overlay cannot fork -- embeddings (vectors, a bare Cypher
+    # property SET) and graph-level metadata (:_GraphMeta, no event at all).
     assert catalog["WORLD_PROJECTION_PARTIAL"] == {
         "embed-entity",
         "embed-entities",
+        "embedding-reconcile",
         "embedding-status",
         "semantic-search",
         "hybrid-search",
         "semantic-neighbors",
         "suggest-relations",
+        "session-changelog",
+        "postmortem-evaluate",
+        "trigger-status",
+        "process-triggers",
+        "self-model-update",
     }
     # documents.py's graph-ignored notice is shared by every document command
     # that accepts (and ignores) `graph` -- pin the full set so a command
