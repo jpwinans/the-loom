@@ -5,13 +5,16 @@ scenario as tests/test_synthesis_fidelity_semantic_grounding.py: a paraphrase
 that reuses one word from the entity name must ground, and a coincidental
 word-overlap claim sharing that SAME word with a different entity must not.
 
-Round 3: grounding is a RELATIVE (per-entity z-score, dual-representation)
-decision — see theloom/synthesis/fidelity.py's own module docstring for the
-round 1/2 failure history. This test mocks
-``theloom.semantic.landscape.measure_specificity`` directly (both
-representations) rather than hand-deriving a full probe-corpus calibration,
-the same simplification tests/test_synthesis_fidelity_semantic_grounding.py
-uses and explains in its own module docstring.
+Round 4: when a word-overlap candidate's entity carries real observations
+(as both entities below do, matching how a real Loom entity is actually
+created), the sense anchor (name + definition —
+theloom/semantic/landscape.py's own "Sense anchoring" docstring section) is
+the deciding check, not the round-3 name-based dual z-score. This test mocks
+``theloom.semantic.landscape.measure_specificity`` AND
+``measure_sense_specificity`` directly rather than hand-deriving a full
+probe-corpus calibration, the same simplification
+tests/test_synthesis_fidelity_semantic_grounding.py uses and explains in its
+own module docstring.
 
 Uses explicit ``entityIds`` throughout so this stays a pure grounding test —
 TL-484's auto-scope/relevance-floor machinery (tests/test_synthesis_fidelity_
@@ -30,6 +33,10 @@ from theloom.operations.synthesis import verify_fidelity as verify_fidelity_op
 from theloom.semantic import landscape
 from theloom.store.multigraph import MultiGraph
 
+FEEDBACK_OBSERVATION = (
+    "corrections that arrive only after the harm from a slow feedback loop is done"
+)
+SILENT_OBSERVATION = "a malfunction that produces no visible error, log entry, or alert"
 PARAPHRASE_SENTENCE = "The lag in the feedback loop meant corrections always arrived too late."
 FALSE_FRIEND_SENTENCE = "The orchestra performed a silent movie score."
 TEXT = f"{PARAPHRASE_SENTENCE} {FALSE_FRIEND_SENTENCE}"
@@ -37,8 +44,10 @@ FEEDBACK_STRIPPED = "The lag in the loop meant corrections always arrived too la
 SILENT_STRIPPED = "The orchestra performed a movie score."
 
 
-def _entity(name: str) -> EntityCreate:
-    return EntityCreate.model_validate({"name": name, "entityType": "concept", "observations": []})
+def _entity(name: str, observation: str) -> EntityCreate:
+    return EntityCreate.model_validate(
+        {"name": name, "entityType": "concept", "observations": [observation]}
+    )
 
 
 class _MappedEmbedder:
@@ -75,35 +84,47 @@ class _FakeSpecificityProfile:
         self.specificity_z_cutoff = cutoff
 
 
-# One reserved axis per entity so unrelated (entity, span) pairs stay
-# exactly orthogonal instead of accidentally sharing a "spare" axis with a
-# different entity's engineered vector.
-_DIM = 6
-_FEEDBACK_AXIS = 0
-_SILENT_AXIS = 2
+# One reserved axis pair per entity (name axis, sense-anchor axis) so
+# unrelated (entity, span) pairs stay exactly orthogonal instead of
+# accidentally sharing a "spare" axis with a different entity's engineered
+# vector. The NAME axes exist only because _semantic_grounding always
+# computes the round-3 name-based vectors upfront for every entity, even
+# when (as here) both entities carry observations and the sense anchor
+# ends up deciding instead.
+_DIM = 10
+_FEEDBACK_NAME_AXIS = 0
+_FEEDBACK_SENSE_AXIS = 2
+_SILENT_NAME_AXIS = 4
+_SILENT_SENSE_AXIS = 6
 
 
 def _build_vectors() -> dict[str, list[float]]:
+    all_axes = (_FEEDBACK_NAME_AXIS, _FEEDBACK_SENSE_AXIS, _SILENT_NAME_AXIS, _SILENT_SENSE_AXIS)
     vectors: dict[str, list[float]] = {
-        "distractor one": _shared_cosine_vec(_DIM, (_FEEDBACK_AXIS, _SILENT_AXIS), 0.05, 4),
-        "distractor two": _shared_cosine_vec(_DIM, (_FEEDBACK_AXIS, _SILENT_AXIS), 0.15, 4),
+        "distractor one": _shared_cosine_vec(_DIM, all_axes, 0.05, 8),
+        "distractor two": _shared_cosine_vec(_DIM, all_axes, 0.15, 8),
     }
-    feedback_unit = [0.0] * _DIM
-    feedback_unit[_FEEDBACK_AXIS] = 1.0
-    silent_unit = [0.0] * _DIM
-    silent_unit[_SILENT_AXIS] = 1.0
 
-    vectors["Feedback Delay"] = feedback_unit
-    vectors["[concept] Feedback Delay"] = feedback_unit
-    # Genuine paraphrase reusing "feedback": raw and residual both clear.
-    vectors[PARAPHRASE_SENTENCE] = _vec(_DIM, _FEEDBACK_AXIS, 0.9, 1)
-    vectors[FEEDBACK_STRIPPED] = _vec(_DIM, _FEEDBACK_AXIS, 0.85, 1)
+    def unit(axis: int) -> list[float]:
+        v = [0.0] * _DIM
+        v[axis] = 1.0
+        return v
 
-    vectors["Silent Failure Mode"] = silent_unit
-    vectors["[concept] Silent Failure Mode"] = silent_unit
-    # False friend sharing "silent": raw clears, residual collapses.
-    vectors[FALSE_FRIEND_SENTENCE] = _vec(_DIM, _SILENT_AXIS, 0.9, 3)
-    vectors[SILENT_STRIPPED] = _vec(_DIM, _SILENT_AXIS, 0.05, 3)
+    vectors["Feedback Delay"] = unit(_FEEDBACK_NAME_AXIS)
+    vectors["[concept] Feedback Delay"] = unit(_FEEDBACK_NAME_AXIS)
+    vectors[f"Feedback Delay: {FEEDBACK_OBSERVATION}."] = unit(_FEEDBACK_SENSE_AXIS)
+    # Genuine paraphrase reusing "feedback": the sense-anchored residual
+    # clears the (mocked) sense cutoff.
+    vectors[PARAPHRASE_SENTENCE] = _vec(_DIM, _FEEDBACK_SENSE_AXIS, 0.9, 1)
+    vectors[FEEDBACK_STRIPPED] = _vec(_DIM, _FEEDBACK_SENSE_AXIS, 0.85, 1)
+
+    vectors["Silent Failure Mode"] = unit(_SILENT_NAME_AXIS)
+    vectors["[concept] Silent Failure Mode"] = unit(_SILENT_NAME_AXIS)
+    vectors[f"Silent Failure Mode: {SILENT_OBSERVATION}."] = unit(_SILENT_SENSE_AXIS)
+    # False friend sharing "silent": raw clears the name axes trivially,
+    # but the sense-anchored residual collapses well below the cutoff.
+    vectors[FALSE_FRIEND_SENTENCE] = _vec(_DIM, _SILENT_SENSE_AXIS, 0.9, 3)
+    vectors[SILENT_STRIPPED] = _vec(_DIM, _SILENT_SENSE_AXIS, 0.05, 3)
     return vectors
 
 
@@ -122,12 +143,20 @@ def _mocked_specificity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(landscape, "measure_specificity", fake)
 
 
+@pytest.fixture(autouse=True)
+def _mocked_sense_specificity(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(embedder: object, **kwargs: object) -> _FakeSpecificityProfile:
+        return _FakeSpecificityProfile(0.5)
+
+    monkeypatch.setattr(landscape, "measure_sense_specificity", fake)
+
+
 def test_verify_fidelity_command_grounds_paraphrase_and_rejects_word_overlap(
     multi: MultiGraph, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = multi.get_store()
-    feedback = store.create_entity(_entity("Feedback Delay"))
-    silent = store.create_entity(_entity("Silent Failure Mode"))
+    feedback = store.create_entity(_entity("Feedback Delay", FEEDBACK_OBSERVATION))
+    silent = store.create_entity(_entity("Silent Failure Mode", SILENT_OBSERVATION))
     monkeypatch.setattr(
         "theloom.operations.synthesis.get_embedder",
         lambda: _MappedEmbedder(_build_vectors()),
@@ -146,7 +175,8 @@ def test_verify_fidelity_command_grounds_paraphrase_and_rejects_word_overlap(
     assert feedback_grounding["mentionedAs"] == PARAPHRASE_SENTENCE
     assert isinstance(feedback_grounding["matchScore"], float)
     assert isinstance(feedback_grounding["zScore"], float)
-    assert isinstance(feedback_grounding["asymZScore"], float)
+    # Decided by the sense anchor, not the round-3 dual check.
+    assert feedback_grounding["asymZScore"] is None
 
     silent_grounding = by_id[silent.id]
     assert silent_grounding["status"] == "omitted"

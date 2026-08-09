@@ -98,6 +98,16 @@ def _mock_specificity(
     monkeypatch.setattr(landscape, "measure_specificity", fake)
 
 
+def _mock_sense_specificity(monkeypatch: pytest.MonkeyPatch, *, cutoff: float) -> None:
+    """Bypass ``SENSE_ANCHOR_PROBE_PAIRS`` calibration the same way for
+    round-4 sense-anchor tests."""
+
+    def fake(embedder: object, **kwargs: object) -> _FakeSpecificityProfile:
+        return _FakeSpecificityProfile(cutoff)
+
+    monkeypatch.setattr(landscape, "measure_sense_specificity", fake)
+
+
 @pytest.fixture(autouse=True)
 def _tiny_battery(monkeypatch: pytest.MonkeyPatch) -> None:
     """``_semantic_grounding`` always reads the unrelated-document battery
@@ -219,6 +229,140 @@ class TestStripSharedWords:
 
     def test_stripping_every_word_leaves_the_empty_string(self) -> None:
         assert _strip_shared_words("Silent Failure Mode", "silent failure mode") == ""
+
+
+class TestSenseAnchoredDecision:
+    """Round 4: when a word-overlap candidate's entity has real
+    observations, the sense anchor (name + definition) IS the decision for
+    that span — not the round-3 name-based dual check, and not merely an
+    extra check layered on top of it. Both directions are pinned by
+    engineering the SAME residual vector to clear one mechanism's mocked
+    cutoff and fail the other's, so the two mechanisms visibly disagree and
+    the sense anchor's verdict is the one that wins whenever observations
+    exist."""
+
+    DIM = 4
+    NAME_AXIS = 0
+    SENSE_AXIS = 2
+    ENTITY_NAME = "Test Concept"
+    OBSERVATIONS = ["a formal working definition of this concept"]
+    SPAN = "The scientist explained a completely unrelated concept about anthropomorphizing plants."
+    # _strip_shared_words(SPAN, "test concept") -- verified directly, see
+    # TestStripSharedWords's own tests for the mechanism this depends on.
+    RESIDUAL = "The scientist explained a completely unrelated about anthropomorphizing plants."
+
+    def _vectors(
+        self, residual_cosine_to_name: float, residual_cosine_to_sense: float
+    ) -> dict[str, list[float]]:
+        vectors = _battery_vectors(self.DIM)
+        vectors["distractor one"] = _shared_cosine_vec(
+            self.DIM, (self.NAME_AXIS, self.SENSE_AXIS), 0.0, 1
+        )
+        vectors["distractor two"] = _shared_cosine_vec(
+            self.DIM, (self.NAME_AXIS, self.SENSE_AXIS), 0.1, 1
+        )
+        name_unit = [0.0] * self.DIM
+        name_unit[self.NAME_AXIS] = 1.0
+        vectors[f"[concept] {self.ENTITY_NAME}"] = name_unit
+        vectors[self.ENTITY_NAME] = name_unit
+        vectors[f"{self.ENTITY_NAME}: {self.OBSERVATIONS[0]}."] = [
+            0.0 if i != self.SENSE_AXIS else 1.0 for i in range(self.DIM)
+        ]
+        # RESIDUAL needs SOME cosine to both axes at once -- reuse the same
+        # two-axis mixing trick as the battery distractors, just with two
+        # independently chosen target cosines instead of one shared value.
+        residual_vector = [0.0] * self.DIM
+        residual_vector[self.NAME_AXIS] = residual_cosine_to_name
+        residual_vector[self.SENSE_AXIS] = residual_cosine_to_sense
+        remaining = 1 - residual_cosine_to_name**2 - residual_cosine_to_sense**2
+        residual_vector[1] = math.sqrt(max(0.0, remaining))
+        vectors[self.RESIDUAL] = residual_vector
+        # The RAW span is also embedded upfront (batched across every
+        # candidate span, before any per-entity word-overlap check runs) --
+        # unused by the word-overlap branch's own decision, but must still
+        # resolve to SOME vector.
+        vectors[self.SPAN] = residual_vector
+        return vectors
+
+    def _entity(self, with_observations: bool) -> dict[str, object]:
+        return {
+            "id": "x",
+            "name": self.ENTITY_NAME,
+            "observations": self.OBSERVATIONS if with_observations else [],
+        }
+
+    def test_sense_anchor_rejects_what_name_only_would_have_grounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _mock_specificity(monkeypatch, symmetric=0.1, asymmetric=0.1)  # easy to clear
+        _mock_sense_specificity(monkeypatch, cutoff=1000.0)  # impossible to clear
+        # High cosine to the NAME axis (the degraded check would ground this
+        # easily) but the sense-anchor cutoff can never be cleared, so the
+        # entity, which HAS observations, is rejected regardless.
+        vectors = self._vectors(residual_cosine_to_name=0.9, residual_cosine_to_sense=0.5)
+        embedder = _MappedEmbedder(vectors)
+
+        with_observations = check_entity_grounding(
+            self.SPAN, [self._entity(with_observations=True)], None, embedder
+        )
+        assert with_observations[0]["status"] == "omitted"
+
+        # The SAME vectors, but this entity has no observations: the sense
+        # anchor never applies, so the (easy) degraded check decides instead
+        # and grounds it -- proving the sense anchor was the deciding
+        # factor above, not an accident of the vectors chosen.
+        without_observations = check_entity_grounding(
+            self.SPAN, [self._entity(with_observations=False)], None, embedder
+        )
+        assert without_observations[0]["status"] == "grounded"
+        assert without_observations[0]["matchBasis"] == "semantic-name-only"
+
+    def test_sense_anchor_grounds_what_name_only_would_have_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _mock_specificity(monkeypatch, symmetric=1000.0, asymmetric=1000.0)  # impossible to clear
+        _mock_sense_specificity(monkeypatch, cutoff=0.1)  # easy to clear
+        # Low cosine to the NAME axis (the degraded check could never ground
+        # this) but high cosine to the SENSE axis, clearing the easy sense
+        # cutoff.
+        vectors = self._vectors(residual_cosine_to_name=0.05, residual_cosine_to_sense=0.9)
+        embedder = _MappedEmbedder(vectors)
+
+        with_observations = check_entity_grounding(
+            self.SPAN, [self._entity(with_observations=True)], None, embedder
+        )
+        assert with_observations[0]["status"] == "grounded"
+        assert with_observations[0]["matchBasis"] == "semantic"
+        assert isinstance(with_observations[0]["zScore"], float)
+        assert with_observations[0]["asymZScore"] is None
+
+        without_observations = check_entity_grounding(
+            self.SPAN, [self._entity(with_observations=False)], None, embedder
+        )
+        assert without_observations[0]["status"] == "omitted"
+
+    def test_only_the_guard_placeholder_observation_still_degrades(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The exact synthetic observation ``create-entity`` writes when
+        none is supplied (theloom.verification.guards.entity_gate_warnings)
+        must not be mistaken for a real definition."""
+        _mock_specificity(monkeypatch, symmetric=0.1, asymmetric=0.1)
+        _mock_sense_specificity(monkeypatch, cutoff=1000.0)
+        vectors = self._vectors(residual_cosine_to_name=0.9, residual_cosine_to_sense=0.5)
+        embedder = _MappedEmbedder(vectors)
+        entity = {
+            "id": "x",
+            "name": self.ENTITY_NAME,
+            "observations": [
+                "[guard:OBSERVATIONS_REQUIRED] Entity must have at least one observation"
+            ],
+        }
+
+        result = check_entity_grounding(self.SPAN, [entity], None, embedder)
+
+        assert result[0]["status"] == "grounded"
+        assert result[0]["matchBasis"] == "semantic-name-only"
 
 
 class TestExactMatchIsUnaffected:
@@ -369,7 +513,11 @@ class TestBothDirectionsInOneCall:
 
         by_id = {g["entityId"]: g for g in result["entityGroundings"]}
         assert by_id[FEEDBACK_ENTITY["id"]]["status"] == "grounded"
-        assert by_id[FEEDBACK_ENTITY["id"]]["matchBasis"] == "semantic"
+        # Neither entity carries observations here, so the word-overlap trap
+        # (both spans share a word with their entity) degrades to the
+        # round-3 name-based check, honestly disclosed -- see
+        # TestSenseAnchoredDecision below for the fully-anchored path.
+        assert by_id[FEEDBACK_ENTITY["id"]]["matchBasis"] == "semantic-name-only"
         assert by_id[SILENT_ENTITY["id"]]["status"] == "omitted"
         assert [g["entityId"] for g in result["entityGroundings"]] == [
             FEEDBACK_ENTITY["id"],

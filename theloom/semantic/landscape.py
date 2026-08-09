@@ -108,6 +108,38 @@ disagrees with the symmetric measurement often enough on different specific
 cases that ``theloom.synthesis.fidelity`` cross-checks both rather than
 trusting either alone — see that module's own docstring for the live
 evidence.
+
+=== Sense anchoring (round 4): identity is what an entity MEANS, not its name ===
+
+Round 3's dual-representation z-score check (above) still failed FRESH false
+friends live-tested against the real embedder — "Hot Take" against an
+unrelated soup sentence, "Silver Bullet Solution" against a werewolf-hunting
+sentence, and others, all cleared BOTH cutoffs. The pattern across three
+rounds of live evidence: every design so far — absolute cutoff, residual
+stripping, per-entity z-score, two independent representations — anchored
+the entity side ONLY on its NAME. A false-friend sentence contains the
+name's own words by construction, so name-vs-span similarity stays elevated
+in EVERY representation and EVERY normalization tried; the name alone never
+carries the information needed to tell "about this entity" apart from
+"contains this entity's word".
+
+That information exists elsewhere: an entity's OWN observations (The Loom
+requires at least one at creation — ``guards.entity_gate_warnings``) are its
+definition. :func:`sense_anchor` builds "Name: obs1. obs2." — a dictionary-
+entry, not a bag of words — and ``measure_specificity(...,
+representation="sense")`` calibrates a z-cutoff for comparing THAT anchor
+(not the bare name) against a candidate. Live-measured over 8 calibration
+pairs (:data:`SENSE_ANCHOR_PROBE_PAIRS`) built from definitions + a
+coincidental-word-overlap sentence + a genuine paraphrase each: with the
+entity's own significant words stripped from the false-friend side first
+(the SAME residual guard as before — still the right first move, it just
+was not, on its own, a strong enough signal), every one of the 8 pairs
+scores its genuine paraphrase higher than its false friend, both on the raw
+score and the resulting per-entity z-score. This does NOT replace
+:func:`entity_representation`'s bare-name representations — an entity
+without meaningful observations has no sense anchor to build (see
+``theloom.synthesis.fidelity``'s guard-placeholder filter) and must fall
+back to them, disclosed as a degraded basis.
 """
 
 from __future__ import annotations
@@ -396,6 +428,96 @@ def unrelated_document_battery(
     return tuple(document for _, document in pairs)
 
 
+def sense_anchor(name: str, observations: list[str]) -> str:
+    """An entity's OWN definition as embeddable text: ``"Name: obs1. obs2."``
+    — a dictionary-entry shape, so a candidate is compared against what the
+    entity MEANS, not just what it is spelled (see the module docstring's
+    "Sense anchoring" section for why the name alone is not enough). Falls
+    back to the bare name when there are no observations to anchor with —
+    still usable (:func:`entity_representation`'s own representation), just
+    without the disambiguating context; callers decide whether "no
+    observations" should even reach here (theloom.synthesis.fidelity filters
+    the OBSERVATIONS_REQUIRED guard placeholder before calling this).
+    """
+    if not observations:
+        return name
+    joined = ". ".join(o.rstrip(". ") for o in observations if o.strip())
+    return f"{name}: {joined}." if joined else name
+
+
+# Calibration pairs for the "sense" specificity representation: each entry is
+# (name, observations, false_friend_document, related_document). The
+# false-friend document already has the entity's own significant words
+# stripped out (as theloom.synthesis.fidelity does at decision time — see
+# _strip_shared_words there; duplicated here as plain stripped literals,
+# inspectable without re-deriving them, rather than importing fidelity's
+# helper into this lower-level module). All 8 pairs were validated live
+# (see the module docstring) to score their genuine paraphrase above their
+# false friend, both on the raw score and the resulting per-entity z-score
+# — none of these pairs, or their un-stripped originals, appear in
+# theloom.synthesis.fidelity's own test suite, so calibration and
+# validation stay independent.
+SENSE_ANCHOR_PROBE_PAIRS: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
+    (
+        "Hot Take",
+        (
+            "a deliberately provocative or contrarian opinion expressed quickly "
+            "without much reflection",
+        ),
+        "She burned her tongue on the soup.",
+        "an off-the-cuff, deliberately provocative opinion posted online",
+    ),
+    (
+        "Anchor Tenant",
+        ("a major, well-known store that draws customer traffic to a shopping center",),
+        "The old sailor spent the whole afternoon lowering the ship's heavy into the bay.",
+        (
+            "the flagship store that anchors a mall and pulls in shoppers for the "
+            "smaller retailers around it"
+        ),
+    ),
+    (
+        "Sunk Cost Fallacy",
+        (
+            "continuing to invest in a decision because of resources already spent "
+            "rather than future value",
+        ),
+        "The rusted shipwreck had in the harbor decades before anyone thought to raise it.",
+        "throwing good money after bad because you can't get back what you already spent",
+    ),
+    (
+        "Low Hanging Fruit Strategy",
+        ("prioritizing the easiest, most accessible wins before tackling harder problems",),
+        "The children spent the afternoon picking from the orchard trees.",
+        "go after the easy wins first before the hard problems",
+    ),
+    (
+        "Silver Bullet Solution",
+        ("a single simple fix believed to solve a complex problem completely",),
+        "The werewolf hunter loaded a single before entering the moonlit forest.",
+        "we hoped the new framework would fix everything at once",
+    ),
+    (
+        "Boiling Point Threshold",
+        ("the point at which accumulated pressure or frustration causes a sudden reaction",),
+        "The chemist recorded the exact of the unknown liquid sample in her notebook.",
+        "the moment built-up tension finally erupts",
+    ),
+    (
+        "Elephant In The Room",
+        ("an obvious problem or difficult topic that everyone is avoiding discussing",),
+        "The zoo's newest delighted children visiting the outdoor exhibit.",
+        "nobody wanted to bring up the layoffs, even though it was all anyone could think about",
+    ),
+    (
+        "Rubber Stamp",
+        ("approving something automatically without real scrutiny or independent judgment",),
+        "The office supply store restocked ink pads and a for the librarian's desk.",
+        "the board approved every proposal without asking a single question",
+    ),
+)
+
+
 @dataclass(frozen=True)
 class SpecificityProfile:
     """How many of an entity's OWN standard deviations above ITS OWN
@@ -516,3 +638,87 @@ def measure_specificity(
     if not use_cache:
         return _measure_specificity(embedder, unrelated, related, representation)
     return _measure_specificity_cached(cast(Any, embedder), unrelated, related, representation)
+
+
+# =============================================================================
+# Sense specificity: measure_specificity's z-score machinery, applied to
+# theloom.semantic.landscape.sense_anchor's "Name: definition." anchors
+# instead of bare names. A dedicated function rather than a third
+# ``representation`` value on measure_specificity: :data:`SENSE_ANCHOR_PROBE_PAIRS`
+# carries observations and a pre-stripped false-friend document per entry
+# (4-tuples), a genuinely different shape from measure_specificity's
+# (name, document) 2-tuples, not just a different name-embedding function.
+# =============================================================================
+
+
+def _sense_baseline(
+    embedder: SupportsLandscapeEmbedding, anchor: str, battery_vectors: dict[str, list[float]]
+) -> tuple[float, float, list[float]]:
+    anchor_vector = embedder.embed_document(anchor)
+    scores = [l2_similarity(cosine_similarity(anchor_vector, v)) for v in battery_vectors.values()]
+    mean = sum(scores) / len(scores)
+    stdev = pstdev(scores) if len(scores) > 1 else 0.0
+    return mean, stdev, anchor_vector
+
+
+def _measure_sense_specificity(
+    embedder: SupportsLandscapeEmbedding,
+    pairs: tuple[tuple[str, tuple[str, ...], str, str], ...],
+    unrelated_pairs: tuple[tuple[str, str], ...],
+) -> SpecificityProfile:
+    battery_docs = unrelated_document_battery(unrelated_pairs)
+    battery_vectors = {
+        document: embedder.embed_document(document) for document in set(battery_docs)
+    }
+
+    unrelated_zs: list[float] = []
+    related_zs: list[float] = []
+    for name, observations, false_friend_document, related_document in pairs:
+        anchor = sense_anchor(name, list(observations))
+        mean, stdev, anchor_vector = _sense_baseline(embedder, anchor, battery_vectors)
+        false_friend_score = l2_similarity(
+            cosine_similarity(anchor_vector, embedder.embed_document(false_friend_document))
+        )
+        related_score = l2_similarity(
+            cosine_similarity(anchor_vector, embedder.embed_document(related_document))
+        )
+        unrelated_zs.append((false_friend_score - mean) / stdev if stdev > 0 else 0.0)
+        related_zs.append((related_score - mean) / stdev if stdev > 0 else 0.0)
+
+    unrelated_band = _band_stats(unrelated_zs)
+    related_band = _band_stats(related_zs)
+    cutoff, method = _calibrate_cutoff(unrelated_band, related_band)
+    return SpecificityProfile(unrelated_band, related_band, cutoff, method)
+
+
+@lru_cache(maxsize=8)
+def _measure_sense_specificity_cached(
+    embedder: Any,
+    pairs: tuple[tuple[str, tuple[str, ...], str, str], ...],
+    unrelated_pairs: tuple[tuple[str, str], ...],
+) -> SpecificityProfile:
+    return _measure_sense_specificity(embedder, pairs, unrelated_pairs)
+
+
+def measure_sense_specificity(
+    embedder: SupportsLandscapeEmbedding,
+    *,
+    pairs: tuple[tuple[str, tuple[str, ...], str, str], ...] | None = None,
+    unrelated_pairs: tuple[tuple[str, str], ...] | None = None,
+    use_cache: bool = True,
+) -> SpecificityProfile:
+    """Measure the z-score margin for sense-anchored ("Name: definition.")
+    comparisons — see the module docstring's "Sense anchoring" section.
+
+    Live by default, same caching contract as :func:`measure_landscape`;
+    edit :data:`SENSE_ANCHOR_PROBE_PAIRS` and the next measurement reports
+    different numbers, the same "not a fresh magic number" guarantee as
+    every other calibration in this module.
+    """
+    resolved_pairs = pairs if pairs is not None else SENSE_ANCHOR_PROBE_PAIRS
+    resolved_unrelated = unrelated_pairs if unrelated_pairs is not None else UNRELATED_PROBE_PAIRS
+    if not use_cache:
+        return _measure_sense_specificity(embedder, resolved_pairs, resolved_unrelated)
+    return _measure_sense_specificity_cached(
+        cast(Any, embedder), resolved_pairs, resolved_unrelated
+    )

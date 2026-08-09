@@ -20,12 +20,15 @@ from tests.fakes import FakeEmbedder
 from theloom.semantic.embed import cosine_similarity
 from theloom.semantic.landscape import (
     RELATED_PROBE_PAIRS,
+    SENSE_ANCHOR_PROBE_PAIRS,
     UNRELATED_PROBE_PAIRS,
     band_stats_doc,
     entity_representation,
     measure_landscape,
+    measure_sense_specificity,
     measure_specificity,
     pair_doc,
+    sense_anchor,
     unrelated_document_battery,
 )
 from theloom.semantic.search import l2_similarity
@@ -419,3 +422,108 @@ class TestSpecificityCaching:
 
         assert symmetric.specificity_z_cutoff != pytest.approx(asymmetric.specificity_z_cutoff)
         assert symmetric is symmetric_again
+
+
+# =============================================================================
+# Sense anchoring (round 4): identity is what an entity MEANS, not its name.
+# See theloom/synthesis/fidelity.py's own module docstring for why rounds
+# 1-3 (absolute cutoff, residual stripping, per-entity/dual-representation
+# z-score) all failed against fresh adversarial cases that shared a
+# significant word with the entity's name.
+# =============================================================================
+
+
+class TestSenseAnchor:
+    def test_builds_a_dictionary_entry_shape(self) -> None:
+        assert (
+            sense_anchor("Silver Bullet Solution", ["a single simple fix"])
+            == "Silver Bullet Solution: a single simple fix."
+        )
+
+    def test_joins_multiple_observations_and_normalizes_trailing_periods(self) -> None:
+        assert sense_anchor("X", ["first fact", "second fact."]) == "X: first fact. second fact."
+
+    def test_falls_back_to_the_bare_name_with_no_observations(self) -> None:
+        assert sense_anchor("X", []) == "X"
+
+
+_SENSE_TEST_PAIRS: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
+    (
+        "Test Entity",
+        ("a formal definition of the test entity",),
+        "an unrelated false friend sentence",
+        "a genuine paraphrase of the definition",
+    ),
+)
+_SENSE_TEST_BATTERY = (("bu1", "bd1"), ("bu2", "bd2"))
+
+
+def _sense_test_vectors() -> dict[str, list[float]]:
+    return {
+        "bd1": _vector_for_cosine(0.1),
+        "bd2": _vector_for_cosine(0.3),
+        "Test Entity: a formal definition of the test entity.": [1.0, 0.0, 0.0],
+        "an unrelated false friend sentence": _vector_for_cosine(0.4),
+        "a genuine paraphrase of the definition": _vector_for_cosine(0.9),
+    }
+
+
+class TestMeasureSenseSpecificity:
+    def test_matches_hand_computed_z_scores(self) -> None:
+        embedder = _MappedEmbedder(_sense_test_vectors())
+
+        profile = measure_sense_specificity(
+            embedder, pairs=_SENSE_TEST_PAIRS, unrelated_pairs=_SENSE_TEST_BATTERY, use_cache=False
+        )
+
+        battery_scores = [_score_for_cosine(0.1), _score_for_cosine(0.3)]
+        mean = sum(battery_scores) / len(battery_scores)
+        stdev = math.sqrt(sum((s - mean) ** 2 for s in battery_scores) / len(battery_scores))
+        expected_ff_z = (_score_for_cosine(0.4) - mean) / stdev
+        expected_related_z = (_score_for_cosine(0.9) - mean) / stdev
+
+        assert profile.unrelated_z_baseline.mean == pytest.approx(expected_ff_z)
+        assert profile.related_z_range.mean == pytest.approx(expected_related_z)
+        assert profile.unrelated_z_baseline.sample_size == 1
+        assert profile.related_z_range.sample_size == 1
+        assert expected_related_z > expected_ff_z  # the genuine paraphrase must score higher
+
+    def test_default_pairs_match_the_module_constant(self) -> None:
+        embedder = FakeEmbedder([1.0, 0.0])
+        profile = measure_sense_specificity(embedder, use_cache=False)
+
+        assert profile.unrelated_z_baseline.sample_size == len(SENSE_ANCHOR_PROBE_PAIRS)
+        assert profile.related_z_range.sample_size == len(SENSE_ANCHOR_PROBE_PAIRS)
+
+    def test_editing_the_pairs_changes_the_cutoff(self) -> None:
+        embedder = _MappedEmbedder(_sense_test_vectors())
+
+        original = measure_sense_specificity(
+            embedder, pairs=_SENSE_TEST_PAIRS, unrelated_pairs=_SENSE_TEST_BATTERY, use_cache=False
+        )
+
+        stricter_vectors = _sense_test_vectors()
+        stricter_vectors["a genuine paraphrase of the definition"] = _vector_for_cosine(0.99)
+        stricter_embedder = _MappedEmbedder(stricter_vectors)
+        edited = measure_sense_specificity(
+            stricter_embedder,
+            pairs=_SENSE_TEST_PAIRS,
+            unrelated_pairs=_SENSE_TEST_BATTERY,
+            use_cache=False,
+        )
+
+        assert original.specificity_z_cutoff != pytest.approx(edited.specificity_z_cutoff)
+
+    def test_caching_reuses_the_measurement_by_default(self) -> None:
+        embedder = _MappedEmbedder(_sense_test_vectors())
+
+        first = measure_sense_specificity(
+            embedder, pairs=_SENSE_TEST_PAIRS, unrelated_pairs=_SENSE_TEST_BATTERY
+        )
+        calls_after_first = embedder.document_calls
+        second = measure_sense_specificity(
+            embedder, pairs=_SENSE_TEST_PAIRS, unrelated_pairs=_SENSE_TEST_BATTERY
+        )
+
+        assert first is second
+        assert embedder.document_calls == calls_after_first
