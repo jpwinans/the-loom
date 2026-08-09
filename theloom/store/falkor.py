@@ -676,22 +676,27 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             )
             params["supersedesId"] = supersedes_doc["id"]
             params["supersedesDoc"] = json.dumps(dict(supersedes_doc))
-        self._commit(
-            ("".join(parts), params),
-            [
-                (
-                    "entities_merged",
-                    {
-                        "primary": dict(primary_doc),
-                        "secondary": dict(secondary_doc),
-                        "previousPrimary": dict(previous_primary),
-                        "previousSecondary": dict(previous_secondary),
-                        "redirectedRelations": [dict(doc) for doc in redirects],
-                        "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
-                    },
-                )
-            ],
-        )
+        events: list[tuple[str, dict[str, Any]]] = [
+            (
+                "entities_merged",
+                {
+                    "primary": dict(primary_doc),
+                    "secondary": dict(secondary_doc),
+                    "previousPrimary": dict(previous_primary),
+                    "previousSecondary": dict(previous_secondary),
+                    "redirectedRelations": [dict(doc) for doc in redirects],
+                    "supersedesRelation": dict(supersedes_doc) if supersedes_doc else None,
+                },
+            )
+        ]
+        if supersedes_doc is not None:
+            # A real, separately event-logged creation -- not just a field
+            # on entities_merged's own payload -- so what-changed's/diff-
+            # worlds' ordinary relation_created differ sees it (a relation
+            # id with no dedicated event is invisible to both, not merely
+            # eventId: null).
+            events.append(("relation_created", {"relation": dict(supersedes_doc)}))
+        self._commit(("".join(parts), params), events)
 
     def list_entity_docs(self, filter: EntityFilter | None = None) -> list[dict[str, Any]]:
         """Verbatim wire docs, same filtering/order as list_entities."""
@@ -956,15 +961,23 @@ class FalkorGraphStore(GraphSpace, GraphStore):
 
     def relation_ids_known_live(self) -> set[str]:
         """Every relation id this graph currently has an opinion about —
-        live or closed (a ``:_RelationVersion`` snapshot) — regardless of
-        when. Used by ``WorldGraphStore``'s overlay merge to tell "this
-        layer deleted an inherited relation" (shadow deeper layers) apart
-        from "this layer never heard of it" (fall through to them), since
-        ``list_relations`` alone cannot distinguish the two: a closed
-        relation is simply absent from it either way."""
+        live, closed (a ``:_RelationVersion`` snapshot), or hard-deleted
+        with a tombstone (``:_RelationTombstone`` — see
+        ``theloom.store.worlds.WorldGraphStore.delete_relation``) —
+        regardless of when. Used by ``WorldGraphStore``'s overlay merge to
+        tell "this layer deleted an inherited relation" (shadow deeper
+        layers) apart from "this layer never heard of it" (fall through to
+        them), since ``list_relations`` alone cannot distinguish the two: a
+        closed or hard-deleted relation is simply absent from it either
+        way."""
         live_rows = self._rows_paged("MATCH ()-[r]->() RETURN r.id")
         closed_rows = self._rows_paged("MATCH (v:_RelationVersion) RETURN DISTINCT v.relation_id")
-        return {row[0] for row in live_rows} | {row[0] for row in closed_rows}
+        tombstoned_rows = self._rows_paged("MATCH (t:_RelationTombstone) RETURN t.id")
+        return (
+            {row[0] for row in live_rows}
+            | {row[0] for row in closed_rows}
+            | {row[0] for row in tombstoned_rows}
+        )
 
     def relation_ids_known_as_of(self, timestamp: str) -> set[str]:
         """``relation_ids_known_live``, bounded to what this graph knew *as
@@ -988,7 +1001,35 @@ class FalkorGraphStore(GraphSpace, GraphStore):
             "MATCH (v:_RelationVersion) WHERE v.tx_to <= $t RETURN DISTINCT v.relation_id",
             {"t": timestamp},
         )
-        return open_ids | {row[0] for row in closed_rows}
+        # Tombstones aren't time-bounded (a hard delete destroys history —
+        # see FalkorGraphStore's module docstring — so there is no earlier
+        # incarnation to resurrect for an as-of read either): once written,
+        # a tombstoned id is dead for every timestamp this method is asked
+        # about, matching a hard delete's own "absent from every snapshot"
+        # doctrine for a plain (non-world) graph.
+        tombstoned_rows = self._rows_paged("MATCH (t:_RelationTombstone) RETURN t.id")
+        return open_ids | {row[0] for row in closed_rows} | {row[0] for row in tombstoned_rows}
+
+    def entity_tombstoned(self, entity_id: str) -> bool:
+        """Whether ``entity_id`` was hard-deleted with a tombstone left
+        behind (``theloom.store.worlds.WorldGraphStore.delete_entity``'s
+        ``hard=True`` path). Only ever true in a belief world's own local
+        segment — a plain graph never writes one — checked by the overlay's
+        every entity read so a hard-deleted id is never resurrected by
+        falling through to an ancestor that still has it: the live node and
+        any ``:_EntityVersion`` history are both gone by design (a hard
+        delete destroys history), so nothing short of an explicit marker
+        can tell "erased here" apart from "never touched here"."""
+        return bool(
+            self._rows("MATCH (t:_EntityTombstone {id: $id}) RETURN t LIMIT 1", {"id": entity_id})
+        )
+
+    def entity_ids_tombstoned(self) -> set[str]:
+        """Every entity id hard-deleted (with a tombstone) in this graph —
+        the bulk form of ``entity_tombstoned``, for listing/snapshot reads
+        that need the whole set rather than one id at a time."""
+        rows = self._rows_paged("MATCH (t:_EntityTombstone) RETURN t.id")
+        return {row[0] for row in rows}
 
     def replay_creation_events(
         self,

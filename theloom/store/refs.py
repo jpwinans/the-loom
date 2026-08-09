@@ -245,6 +245,20 @@ class RefRegistry:
         updated = replace(record, metadata={**record.metadata, **patch})
         return self._commit(kind, ref_id, updated.to_doc(), "ref_metadata_updated")
 
+    def purge(self, kind: str, ref_id: str) -> None:
+        """Permanently erase a ref's record — unlike ``reap`` (which marks
+        it dead but keeps it listable as history forever), this removes it
+        outright. For a ref whose *entire* lifecycle a caller owns
+        end-to-end within one call (belief-blast-radius's throwaway fork:
+        it forks, uses, and discards a world in one composite, and no
+        other caller ever has a reason to look it up afterward) reap-and-
+        keep would grow the registry forever with entries nobody will ever
+        read again. No event: a purged ref, from every other caller's
+        perspective, never existed — there is nothing to replay. Silently
+        a no-op if the ref is already gone (idempotent, matching ``reap``'s
+        tolerance of being called twice)."""
+        self._redis.hdel(self._key(kind), ref_id)
+
     def _require(self, kind: str, ref_id: str) -> RefRecord:
         record = self.get(kind, ref_id)
         if record is None:

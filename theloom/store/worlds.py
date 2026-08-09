@@ -115,7 +115,13 @@ class WorldLayer:
     cutoff: str | None
 
 
-def _require_world(multi: MultiGraph, world_id: str) -> RefRecord:
+def require_world(multi: MultiGraph, world_id: str) -> RefRecord:
+    """The world ref named ``world_id``, or a typed ``NOT_FOUND`` -- the one
+    resolution/validation path every world-aware caller uses (this module's
+    own fork/list/abandon, ``theloom.operations.worlds``'s diff/merge, and
+    ``theloom.operations.receipts.what_changed``'s world-scoped replay), so
+    "no such world" always fails the same way regardless of which command
+    hit it."""
     record = multi.refs.get(WORLD_KIND, world_id)
     if record is None:
         raise NotFoundError(f"World '{world_id}' not found. Use list-worlds to see active worlds.")
@@ -130,7 +136,7 @@ def resolve_layers(multi: MultiGraph, world_id: str) -> tuple[list[WorldLayer], 
     cutoff) — never itself world-aware, so reading through it never
     recurses."""
     layers: list[WorldLayer] = []
-    record = _require_world(multi, world_id)
+    record = require_world(multi, world_id)
     base_graph = str(record.metadata["baseGraph"])
     cutoff: str | None = str(record.metadata["forkedAt"])
     parent = record.metadata.get("parentWorld")
@@ -139,7 +145,7 @@ def resolve_layers(multi: MultiGraph, world_id: str) -> tuple[list[WorldLayer], 
         if parent in seen:
             raise OperationError(f"World ref cycle detected at '{parent}'")
         seen.add(parent)
-        parent_record = _require_world(multi, parent)
+        parent_record = require_world(multi, parent)
         layers.append(WorldLayer(store=multi.plain_store(world_graph_name(parent)), cutoff=cutoff))
         cutoff = str(parent_record.metadata["forkedAt"])
         parent = parent_record.metadata.get("parentWorld")
@@ -169,13 +175,38 @@ class WorldGraphStore(FalkorGraphStore):
     Duck-types as a plain ``FalkorGraphStore`` for every caller that isn't
     world-aware: every method on ``theloom.store.base.GraphStore`` is either
     overridden here with overlay/copy-on-write semantics, or — for the
-    handful of concerns a world's overlay deliberately does not reconstruct
-    (embeddings, graph-level metadata; see tension (a) in the Part 5 report)
-    — inherited unchanged, which means it operates on this world's own local
-    segment only. That is a real, documented boundary, not a silent gap: the
-    commands that need to say so (``embed-entities`` and friends) check
-    ``params.world`` themselves and attach a ``WORLD_PROJECTION_PARTIAL``
-    notice (``theloom.operations.semantic``).
+    handful of concerns this overlay deliberately does not reconstruct —
+    inherited unchanged, which means it operates on this world's own local
+    segment only, never composed with its ancestors. Two families of state
+    fall in that second group, and both are for the same underlying reason:
+    they are written outside the event log (``set_entity_vector`` is a bare
+    Cypher property SET; ``set_metadata`` targets a singleton ``:_GraphMeta``
+    node with no event at all), so copy-on-write — which works by replaying
+    events — has nothing to replay for them into a fork: embeddings
+    (``vector_knn``/``set_entity_vector``/``get_entity_vectors``/...) and
+    graph-level metadata (``get_metadata``/``set_metadata``).
+
+    Every command whose *primary purpose* is one of those two — the embed-*/
+    embedding-*/*-search/suggest-relations commands
+    (``theloom.operations.semantic``) and the metadata-backed checkpoints/
+    queues (``session-changelog``/``postmortem-evaluate``
+    (``theloom.operations.epistemic``), ``trigger-status``/
+    ``process-triggers`` (``theloom.operations.reification``),
+    ``self-model-update`` (``theloom.operations.extraction``)) — checks
+    ``params.world`` itself and attaches a ``WORLD_PROJECTION_PARTIAL``
+    notice naming exactly what it did not reconstruct; this list is a
+    checked inventory (``grep -rn 'get_entity_vectors\\|set_entity_vector\\|
+    vector_knn\\|get_metadata\\|set_metadata' theloom/operations
+    theloom/composites theloom/extraction theloom/synthesis``), not a
+    memory of what was wired. One known, narrower gap the same grep turns
+    up and this build does NOT cover: the LLM-synthesis pipeline
+    (``theloom.operations.synthesis``'s ``anchor_search_for``, behind
+    ``synthesize``/``synthesize-and-ingest``/``plan-synthesis``/
+    ``traverse-synthesis``/``verify-fidelity``) also probes
+    ``has_entity_vectors``/vector search as one of several anchor-finding
+    signals, not its primary purpose, and degrades to its keyword/graph
+    fallback rather than erroring inside a fork — silent in the sense that
+    no notice fires yet, tracked as follow-up rather than fixed here.
     """
 
     def __init__(
@@ -198,6 +229,8 @@ class WorldGraphStore(FalkorGraphStore):
         local = super().read_entity(entity_id)
         if local is not None:
             return local
+        if super().entity_tombstoned(entity_id):
+            return None  # hard-deleted here; never resurrect from an ancestor
         for layer in self._layers:
             found = (
                 layer.store.read_entity(entity_id)
@@ -206,17 +239,23 @@ class WorldGraphStore(FalkorGraphStore):
             )
             if found is not None:
                 return found
+            if layer.store.entity_tombstoned(entity_id):
+                return None  # hard-deleted in this ancestor; stop here too
         return None
 
     def read_entity_as_of(self, entity_id: str, timestamp: str) -> Entity | None:
         local = super().read_entity_as_of(entity_id, timestamp)
         if local is not None:
             return local
+        if super().entity_tombstoned(entity_id):
+            return None
         for layer in self._layers:
             effective = _clamp(timestamp, layer.cutoff)
             found = layer.store.read_entity_as_of(entity_id, effective)
             if found is not None:
                 return found
+            if layer.store.entity_tombstoned(entity_id):
+                return None
         return None
 
     def read_entity_doc(self, entity_id: str) -> dict[str, Any] | None:
@@ -245,6 +284,7 @@ class WorldGraphStore(FalkorGraphStore):
         for entity in super().list_entities(_ALL_STATUS_FILTER):
             covered.add(entity.id)
             merged.append(entity)
+        covered |= super().entity_ids_tombstoned()
         for layer in self._layers:
             candidates = (
                 layer.store.list_entities(_ALL_STATUS_FILTER)
@@ -256,6 +296,7 @@ class WorldGraphStore(FalkorGraphStore):
                     continue
                 covered.add(entity.id)
                 merged.append(entity)
+            covered |= layer.store.entity_ids_tombstoned()
         merged.sort(key=lambda entity: entity.created_at)
         return merged
 
@@ -292,7 +333,34 @@ class WorldGraphStore(FalkorGraphStore):
 
     def delete_entity(self, entity_id: str, hard: bool = False) -> Entity:
         self._ensure_local_entity(entity_id)
-        return super().delete_entity(entity_id, hard)
+        if not hard:
+            return super().delete_entity(entity_id, hard=False)
+        return self._hard_delete_entity_with_tombstone(entity_id)
+
+    def _hard_delete_entity_with_tombstone(self, entity_id: str) -> Entity:
+        """A world's hard delete: erase the local copy AND leave a durable
+        marker (``:_EntityTombstone``) every read path checks before
+        falling through to an ancestor. Without it, the overlay cannot
+        tell "erased here" apart from "never touched here" once the live
+        node -- and, because hard delete destroys history by design, any
+        ``:_EntityVersion`` trail -- is gone, and would silently resurrect
+        the entity from whichever ancestor still has it (main included).
+        One commit, same ``entity_deleted`` event shape a plain hard
+        delete emits, so ``diff-worlds``/``what-changed`` see no
+        difference.
+        """
+        doc = self._read_doc(entity_id)
+        if doc is None:
+            raise NotFoundError("Entity not found")
+        self._commit(
+            (
+                "MATCH (n:_Entity {id: $id}) DETACH DELETE n "
+                "CREATE (:_EntityTombstone {id: $id, tx_from: $now})",
+                {"id": entity_id, "now": iso_now()},
+            ),
+            [("entity_deleted", {"entity": doc})],
+        )
+        return Entity.model_validate(doc)
 
     # -- relations: point reads -------------------------------------------------
 
@@ -452,7 +520,32 @@ class WorldGraphStore(FalkorGraphStore):
         hard: bool = False,
     ) -> None:
         self._ensure_local_relation(from_id, to_id, relation_type, relation_id)
-        super().delete_relation(from_id, to_id, relation_type, relation_id, hard)
+        if not hard:
+            super().delete_relation(from_id, to_id, relation_type, relation_id, hard=False)
+            return
+        self._hard_delete_relation_with_tombstone(from_id, to_id, relation_type, relation_id)
+
+    def _hard_delete_relation_with_tombstone(
+        self,
+        from_id: str,
+        to_id: str,
+        relation_type: str | None,
+        relation_id: str | None,
+    ) -> None:
+        """The relation twin of ``_hard_delete_entity_with_tombstone`` — see
+        its docstring for the full rationale. ``relation_ids_known_live``/
+        ``relation_ids_known_as_of`` already fold ``:_RelationTombstone``
+        ids into "known" (``theloom.store.falkor.FalkorGraphStore``), so no
+        further overlay change is needed once the marker exists."""
+        edge_id, doc = self._target_edge(from_id, to_id, relation_type, relation_id)
+        self._commit(
+            (
+                "MATCH ()-[r]->() WHERE id(r) = $rid DELETE r "
+                "CREATE (:_RelationTombstone {id: $eid, tx_from: $now})",
+                {"rid": edge_id, "eid": doc["id"], "now": iso_now()},
+            ),
+            [("relation_deleted", {"relation": doc})],
+        )
 
     # -- bi-temporal graph-level reads --------------------------------------------
 
@@ -463,6 +556,7 @@ class WorldGraphStore(FalkorGraphStore):
         for entity in local_snapshot.entities:
             covered.add(entity.id)
             entities.append(entity)
+        covered |= super().entity_ids_tombstoned()
         for layer in self._layers:
             effective = _clamp(timestamp, layer.cutoff)
             for entity in layer.store.read_graph_as_of(effective).entities:
@@ -470,6 +564,7 @@ class WorldGraphStore(FalkorGraphStore):
                     continue
                 covered.add(entity.id)
                 entities.append(entity)
+            covered |= layer.store.entity_ids_tombstoned()
         entities.sort(key=lambda entity: entity.created_at)
         present = {entity.id for entity in entities}
 
@@ -558,7 +653,7 @@ def fork_world(
         base_graph = graph or multi.default_graph
         events_log = multi.plain_store(base_graph).events
     else:
-        parent_record = _require_world(multi, parent_world)
+        parent_record = require_world(multi, parent_world)
         base_graph = str(parent_record.metadata["baseGraph"])
         parent_forked_at = str(parent_record.metadata["forkedAt"])
         if as_of is not None and as_of < parent_forked_at:
@@ -608,8 +703,18 @@ def world_doc(record: RefRecord) -> dict[str, Any]:
     }
 
 
-def list_worlds(multi: MultiGraph) -> list[dict[str, Any]]:
-    return [world_doc(record) for record in multi.refs.list(WORLD_KIND)]
+def list_worlds(multi: MultiGraph, *, include_reaped: bool = True) -> list[dict[str, Any]]:
+    """Every world ref, oldest first. ``include_reaped=False`` (the CLI
+    command's own default — see ``theloom.operations.worlds.list_worlds``)
+    hides ``abandoned``/``merged`` worlds, so a build that forks and
+    abandons/merges worlds routinely does not have its default view grow
+    monotonically; they are never gone (a reaped ref stays listable as
+    history, same as a reaped session), just opt-in via
+    ``includeReaped: true``."""
+    records = multi.refs.list(WORLD_KIND)
+    if not include_reaped:
+        records = [record for record in records if record.status != "reaped"]
+    return [world_doc(record) for record in records]
 
 
 def abandon_world(multi: MultiGraph, world_id: str) -> dict[str, Any]:
@@ -617,7 +722,7 @@ def abandon_world(multi: MultiGraph, world_id: str) -> dict[str, Any]:
     stream) — the TTL-reaper machinery session workspaces already have
     (``RefRegistry.reap`` + deleting the namespace's graphs), reused
     verbatim for a world's one segment instead of a session's many."""
-    record = _require_world(multi, world_id)
+    record = require_world(multi, world_id)
     already_reaped = record.status == "reaped"
     if not already_reaped:
         multi.plain_store(world_graph_name(world_id)).delete_graph_data()
@@ -628,3 +733,18 @@ def abandon_world(multi: MultiGraph, world_id: str) -> dict[str, Any]:
     doc = world_doc(record)
     doc["alreadyReaped"] = already_reaped
     return doc
+
+
+def purge_world(multi: MultiGraph, world_id: str) -> None:
+    """Delete a world's segment AND erase its ref record outright — the
+    ephemeral counterpart to ``abandon_world``'s reap-and-keep-as-history,
+    for a caller (``belief-blast-radius``) that owns a world's whole
+    lifecycle end-to-end within one call and never wants it to surface in
+    ``list-worlds`` at all, not even as a reaped entry. Idempotent: purging
+    an already-purged (or never-existed) world is a silent no-op."""
+    record = multi.refs.get(WORLD_KIND, world_id)
+    if record is None:
+        return
+    if record.status != "reaped":
+        multi.plain_store(world_graph_name(world_id)).delete_graph_data()
+    multi.refs.purge(WORLD_KIND, world_id)

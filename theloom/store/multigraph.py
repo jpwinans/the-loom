@@ -133,12 +133,35 @@ class MultiGraph:
         self._redis.sadd(self._registry_key, name)
 
     def delete_graph(self, name: str) -> None:
+        """Delete a registered graph and its data.
+
+        Two properties, both about not half-applying: validation happens
+        entirely before any mutation, and the mutations themselves (data,
+        then registry) are ordered so a failure never leaves a
+        deregistered-but-undeleted orphan behind.
+
+        ``get_store(name)`` is called for its world/graph coherence check
+        alone (the same one every other command gets — an ambient belief
+        world, ``theloom.store.worldctx``, that names a different base
+        graph than ``name`` is rejected here too) and its result is then
+        discarded: the actual delete always targets the *plain* graph
+        (``plain_store``), never a world's own segment. Worlds have no
+        entry in this registry by design, so there is no meaningful "delete
+        this graph inside a world" — a request naming a *coherent* world
+        (one that actually forked from ``name``) still deletes the base
+        graph, not the fork; get_store would hand back a ``WorldGraphStore``
+        for that combination, and calling ``delete_graph_data`` on *that*
+        would silently erase the fork's segment while this method's own
+        registry-mutation still removed the base graph's name — two
+        different targets, exactly the confusion this avoids.
+        """
         if name == self.default_graph:
             raise OperationError(f"Cannot delete the default graph '{name}'")
-        removed = self._redis.srem(self._registry_key, name)
-        if not removed:
+        if not self.has_graph(name):
             raise NotFoundError(f"Graph '{name}' not found")
-        self.get_store(name).delete_graph_data()
+        self.get_store(name)  # coherence check only; see docstring
+        self.plain_store(name).delete_graph_data()
+        self._redis.srem(self._registry_key, name)
 
     # -- store construction: the one resolution path for both `graph` and
     # `world` (desire 12 / Part 5) ------------------------------------------
@@ -328,11 +351,14 @@ class MultiGraph:
         )
         return worlds_module.world_doc(record)
 
-    def list_worlds(self) -> list[dict[str, Any]]:
-        return worlds_module.list_worlds(self)
+    def list_worlds(self, *, include_reaped: bool = True) -> list[dict[str, Any]]:
+        return worlds_module.list_worlds(self, include_reaped=include_reaped)
 
     def abandon_world(self, world_id: str) -> dict[str, Any]:
         return worlds_module.abandon_world(self, world_id)
+
+    def purge_world(self, world_id: str) -> None:
+        worlds_module.purge_world(self, world_id)
 
     # -- cross-graph relations ------------------------------------------------------
 
