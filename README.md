@@ -27,7 +27,7 @@ the floor; a memory that can defend what it believes is the product.
 
 ## What it does
 
-The CLI exposes **178 commands across 27 categories**, plus a special `init`
+The CLI exposes **180 commands across 28 categories**, plus a special `init`
 command and a set of high-level composites. In short:
 
 - **Entities & relations** — full CRUD, bulk/batch import, typed relations, and
@@ -38,6 +38,10 @@ command and a set of high-level composites. In short:
   neighbor and cluster queries.
 - **Epistemic layer** — provenance, confidence, credit assignment, reification,
   and epistemic queries ("what is stale?", "what is blocking?").
+- **Calibration** — resolve a claim/hypothesis against reality and fold every
+  resolution into per-author/basis/domain Brier scores and asserted-vs-empirical
+  gaps, feeding back into new assertions (`CONFIDENCE_OUT_OF_LINE`) and
+  propagate-credit's per-hop `dampingFactor: "calibrated"`.
 - **Reasoning** — a semiring-composition engine with adaptive query routing,
   symbolic mathematics, verification, and inference.
 - **Generative** — graph synthesis (plan → traverse → realize), entity and

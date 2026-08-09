@@ -80,7 +80,9 @@ class RelationType(StrEnum):
     """Structural (no polarity): related_to, instance_of, part_of, sources,
     calls, references (the last two are code structure: invocation and
     non-invoking mention).
-    Epistemic (no polarity): supports, contradicts, questions, supersedes.
+    Epistemic (no polarity): supports, contradicts, questions, supersedes,
+    resolves (the calibration outcome link — an outcome entity resolves a
+    claim/hypothesis; see ``theloom.operations.calibration``).
     Causal (WITH polarity): causes, enables, requires, inhibits, amplifies, dampens.
     Plus crystallized_from (reification lineage)."""
 
@@ -94,6 +96,7 @@ class RelationType(StrEnum):
     CONTRADICTS = "contradicts"
     QUESTIONS = "questions"
     SUPERSEDES = "supersedes"
+    RESOLVES = "resolves"
     CAUSES = "causes"
     ENABLES = "enables"
     REQUIRES = "requires"
@@ -112,6 +115,21 @@ class UsageOutcome(StrEnum):
     USEFUL = "useful"
     DEAD_END = "dead_end"
     CORRECTED = "corrected"
+
+
+class ClaimResolution(StrEnum):
+    """How a resolved claim/hypothesis actually turned out (desire 14, the
+    closed calibration loop) -- distinct from ``UsageOutcome``, which grades
+    whether a piece of *work* was useful, not whether a *belief* was true.
+    ``confirmed``/``refuted`` are the judged, binary-scorable outcomes a
+    Brier score is computed over; ``expired`` means the claim became moot
+    before anyone could tell -- excluded from Brier/hit-rate (see
+    ``theloom.operations.calibration``'s module docstring) rather than
+    scored as either."""
+
+    CONFIRMED = "confirmed"
+    REFUTED = "refuted"
+    EXPIRED = "expired"
 
 
 class MemoryType(StrEnum):

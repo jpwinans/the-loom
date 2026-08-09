@@ -54,6 +54,7 @@ from theloom.composites import verified_extract as verified_extract_composite
 from theloom.operations import algebra as algebra_ops
 from theloom.operations import analysis as analysis_ops
 from theloom.operations import bulk as bulk_ops
+from theloom.operations import calibration as calibration_ops
 from theloom.operations import consumption as consumption_ops
 from theloom.operations import documents as document_ops
 from theloom.operations import entity as entity_ops
@@ -1367,6 +1368,38 @@ def _work_memory_commands() -> list[CommandDescriptor]:
     )
 
 
+def _calibration_commands() -> list[CommandDescriptor]:
+    """The closed calibration loop (desire 14): resolving a claim/hypothesis
+    against reality, and folding resolutions into per-bucket Brier scores
+    and asserted-vs-empirical gaps. ``propagate-credit``'s
+    ``dampingFactor: "calibrated"`` and ``create-entity``'s
+    ``CONFIDENCE_OUT_OF_LINE`` feedback both build on the same fold
+    (``theloom.operations.calibration``) without a command of their own."""
+    return _build(
+        [
+            _Spec(
+                "resolve-claim",
+                "Calibration",
+                "Resolve a claim/hypothesis: create the outcome entity, link it with a "
+                "'resolves' edge, and transition its status -- one atomic write.",
+                calibration_ops.ResolveClaimInput,
+                calibration_ops.resolve_claim,
+                False,
+            ),
+            _Spec(
+                "calibration-profile",
+                "Calibration",
+                "Fold every resolved claim into per-bucket count, mean asserted confidence, "
+                "empirical hit rate, Brier score, and the asserted-vs-empirical gap, using "
+                "each claim's assertion-time confidence.",
+                calibration_ops.CalibrationProfileInput,
+                calibration_ops.calibration_profile,
+                True,
+            ),
+        ]
+    )
+
+
 def _composite_commands() -> list[CommandDescriptor]:
     """Composites: multi-section bundles over the core operations."""
     return _build(
@@ -1831,6 +1864,7 @@ COMMANDS: list[CommandDescriptor] = [
     *_consumption_commands(),
     *_event_log_commands(),
     *_work_memory_commands(),
+    *_calibration_commands(),
     *_composite_commands(),
     *_session_commands(),
     *_world_commands(),

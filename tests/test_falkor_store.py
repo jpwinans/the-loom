@@ -485,9 +485,9 @@ def test_get_stats_counts_and_distributions(store: FalkorGraphStore) -> None:
     assert stats["entityTypeDistribution"]["loop"] == 0  # zero-filled, all 20 keys
     assert len(stats["entityTypeDistribution"]) == 20
     assert stats["relationTypeDistribution"]["supports"] == 1
-    assert stats["relationTypeDistribution"]["calls"] == 0  # zero-filled, all 17 keys
+    assert stats["relationTypeDistribution"]["calls"] == 0  # zero-filled, all 18 keys
     assert stats["relationTypeDistribution"]["references"] == 0
-    assert len(stats["relationTypeDistribution"]) == 17
+    assert len(stats["relationTypeDistribution"]) == 18
 
 
 def test_metadata_round_trips(store: FalkorGraphStore) -> None:
