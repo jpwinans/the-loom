@@ -39,8 +39,9 @@ from pydantic import Field
 
 from theloom.operations.common import CommandInput
 from theloom.operations.notices import Doc, list_envelope
-from theloom.store.events import Event
+from theloom.store.events import Event, EventLog
 from theloom.store.multigraph import MultiGraph
+from theloom.store.worlds import world_graph_name
 
 # Bookkeeping fields that change on every write regardless of content — never
 # meaningful "what changed" rows on their own.
@@ -98,6 +99,16 @@ def _field_diffs(
         if old_value != new_value:
             rows.append((field, old_value, new_value))
     return rows
+
+
+def field_diffs(old: Doc | None, new: Doc | None) -> list[tuple[str, Any, Any]]:
+    """Public form of ``_field_diffs`` (the default skip-set — id/created_at/
+    updated_at), for other replay consumers that want what-changed's exact
+    notion of "what changed" between two doc incarnations without
+    re-deriving it. ``diff-worlds`` (``theloom.operations.worlds``) uses
+    this for its per-field entity/relation rows, so both commands agree
+    about what counts as a change by construction, not by convention."""
+    return _field_diffs(old, new)
 
 
 # One raw row before name resolution: which record changed, its kind, and the
@@ -283,8 +294,21 @@ def _output_row(event: Event, row: _RawRow, names: dict[str, str]) -> Doc:
     return out
 
 
+def _event_log_for(multi: MultiGraph, graph: str | None, world: str | None) -> EventLog:
+    """The one span ``what-changed`` replays: a plain graph's own stream by
+    default (unchanged), or -- when ``world`` names a non-``main`` belief
+    world -- that world's own segment instead of its parent's. A world's
+    writes never land in the parent's stream (``theloom.store.worlds``), so
+    reading the parent's log while a world is active would silently show
+    the wrong span rather than the fork's own history.
+    """
+    if world in (None, "", "main"):
+        return multi.event_log(graph)
+    return multi.event_log(world_graph_name(world))
+
+
 def what_changed(params: WhatChangedInput, multi: MultiGraph) -> Doc:
-    log = multi.event_log(params.graph)
+    log = _event_log_for(multi, params.graph, params.world)
     if params.event_ids:
         events: Sequence[Event] = log.read_ids(params.event_ids)
     else:

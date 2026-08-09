@@ -1598,7 +1598,11 @@ def _world_commands() -> list[CommandDescriptor]:
                 "fork-world",
                 "Worlds",
                 "Fork a new belief world at a graph's (or another world's) current tip, or a "
-                "historical moment via asOf. Writes no entity data -- O(1).",
+                "historical moment via asOf. Writes no entity data -- O(1). The response's "
+                "forkedAtEventId is informational/for-audit only (which event was live at fork "
+                "time); the projection itself is anchored by forkedAt's wall-clock instant "
+                "(compared against tx_from, never against stream position), so it stays "
+                "well-defined even if that event's own append was later repaired out of order.",
                 worlds_ops.ForkWorldInput,
                 worlds_ops.fork_world,
                 True,

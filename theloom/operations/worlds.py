@@ -7,30 +7,46 @@
 work here because it needs notices/envelope wiring that ``theloom/store/``
 must not depend on.
 
-``diff-worlds`` reuses the same event-payload shapes ``theloom.operations.
-receipts`` (``what-changed``) already replays — every entity/relation event
-carries the full doc under an ``"entity"``/``"relation"`` key — rather than
-re-deriving them, so both commands agree about what a "change" is by
-construction, not by convention.
+``diff-worlds`` replays the event log of whichever side(s) name a world —
+never a full-doc snapshot comparison — using
+``theloom.operations.receipts.field_diffs``, the exact function
+``what-changed`` diffs with, so both commands agree about what a "change"
+is by construction, not by convention. This is load-bearing, not stylistic:
+the store's overlay makes a fork's projection a *superset* of its parent's
+(an inherited, untouched entity is still visible through it), so comparing
+full docs between two projections can only ever detect entities the fork's
+own doc disagrees with its parent about — a rename back to the same name,
+a status flip into a terminal state with no confidence change, or any
+write a snapshot diff happens not to select for, drops out silently. The
+event log has no such blind spot: every write the fork's own segment ever
+recorded produces at least one row, so ``diff-worlds``' event ids are
+always a superset of what ``merge-world`` can act on (see
+``tests/test_worlds.py``'s ``test_diff_worlds_event_ids_are_a_superset_of_
+what_merge_world_applies``).
 """
 
 from __future__ import annotations
 
 from pydantic import Field
 
-from theloom.errors import NotFoundError, ValidationError
-from theloom.model import Entity, EntityFilter, EntityStatus, Relation
+from theloom.errors import ValidationError
+from theloom.model import EntityFilter, EntityStatus, Relation
+from theloom.operations import receipts as receipts_ops
 from theloom.operations.common import CommandInput
 from theloom.operations.notices import Doc, list_envelope, notice, with_notices
 from theloom.store.events import Event
 from theloom.store.falkor import FalkorGraphStore
 from theloom.store.multigraph import MultiGraph
-from theloom.store.refs import RefRecord
-from theloom.store.worlds import WORLD_KIND, world_graph_name
+from theloom.store.worlds import WORLD_KIND, require_world, world_graph_name
 
 _ALL_STATUS_FILTER = EntityFilter.model_validate(
     {"statusFilter": [status.value for status in EntityStatus]}
 )
+
+# Status values a transition INTO counts as invalidating the entity, the
+# same way a hard/soft delete does — "retracted" is explicitly irreversible
+# (theloom.store.falkor's transition table refuses to reactivate one).
+_TERMINAL_ENTITY_STATUSES = frozenset({"retracted"})
 
 MAIN = "main"
 
@@ -86,11 +102,19 @@ def fork_world(params: ForkWorldInput, multi: MultiGraph) -> Doc:
 
 
 class ListWorldsInput(CommandInput):
-    pass
+    include_reaped: bool | None = Field(
+        default=None,
+        alias="includeReaped",
+        description="Include abandoned/merged worlds. Defaults to false: a reaped world is "
+        "never gone (list-worlds' history is still there, same as list-sessions'), but the "
+        "default view does not grow monotonically as forks are abandoned/merged over a "
+        "build's lifetime. Pass true for the full history.",
+    )
 
 
-def list_worlds(_: ListWorldsInput, multi: MultiGraph) -> Doc:
-    return list_envelope(multi.list_worlds())
+def list_worlds(params: ListWorldsInput, multi: MultiGraph) -> Doc:
+    include_reaped = params.include_reaped if params.include_reaped is not None else False
+    return list_envelope(multi.list_worlds(include_reaped=include_reaped))
 
 
 class AbandonWorldInput(CommandInput):
@@ -123,20 +147,13 @@ def abandon_world(params: AbandonWorldInput, multi: MultiGraph) -> Doc:
 # =============================================================================
 
 
-def _require_world(multi: MultiGraph, world_id: str) -> RefRecord:
-    record = multi.refs.get(WORLD_KIND, world_id)
-    if record is None:
-        raise NotFoundError(f"World '{world_id}' not found. Use list-worlds to see active worlds.")
-    return record
-
-
 def _base_graph_of(multi: MultiGraph, world_id: str | None) -> str | None:
     """``world_id``'s own base graph, or ``None`` when ``world_id`` denotes
     ``main`` (which carries no base graph of its own — a caller must supply
     one, or infer it from the other side of a comparison)."""
     if world_id in (None, "", MAIN):
         return None
-    return str(_require_world(multi, world_id).metadata["baseGraph"])
+    return str(require_world(multi, world_id).metadata["baseGraph"])
 
 
 def _store_for(multi: MultiGraph, base_graph: str, world_id: str | None) -> FalkorGraphStore:
@@ -192,68 +209,177 @@ def _shared_base_graph(multi: MultiGraph, a_id: str, b_id: str) -> str:
     return base_graph
 
 
+def _entity_event_rows(event: Event, world_id: str, names: dict[str, str]) -> list[Doc]:
+    """Every entity event in a world's own segment, as diff-worlds rows —
+    exactly one taxonomy of "what changed", derived from the event itself
+    rather than a before/after snapshot comparison (see the module
+    docstring for why that distinction is load-bearing)."""
+    if event.type == "entity_created":
+        doc = event.payload["entity"]
+        return [
+            {
+                "kind": "entityAdded",
+                "entityId": doc["id"],
+                "entityName": doc.get("name"),
+                "entityType": doc.get("entityType"),
+                "eventId": event.id,
+                "world": world_id,
+            }
+        ]
+    if event.type == "entity_deleted":
+        doc = event.payload["entity"]
+        return [
+            {
+                "kind": "entityInvalidated",
+                "entityId": doc["id"],
+                "entityName": doc.get("name"),
+                "entityType": doc.get("entityType"),
+                "reason": "deleted",
+                "eventId": event.id,
+                "world": world_id,
+            }
+        ]
+    if event.type not in ("entity_updated", "entity_status_changed"):
+        return []
+    doc = event.payload["entity"]
+    previous = event.payload.get("previous")
+    entity_id, entity_name = doc["id"], doc.get("name")
+    rows: list[Doc] = []
+    for field, old_value, new_value in receipts_ops.field_diffs(previous, doc):
+        base: Doc = {
+            "entityId": entity_id,
+            "entityName": entity_name,
+            "eventId": event.id,
+            "world": world_id,
+        }
+        if field == "confidence":
+            rows.append(
+                {
+                    **base,
+                    "kind": "confidenceChanged",
+                    "oldConfidence": (old_value or {}).get("score"),
+                    "newConfidence": (new_value or {}).get("score"),
+                }
+            )
+        elif field == "status" and new_value in _TERMINAL_ENTITY_STATUSES:
+            rows.append(
+                {
+                    **base,
+                    "kind": "entityInvalidated",
+                    "reason": "status",
+                    "oldStatus": old_value,
+                    "newStatus": new_value,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    **base,
+                    "kind": "entityRevised",
+                    "field": field,
+                    "old": old_value,
+                    "new": new_value,
+                }
+            )
+    return rows
+
+
+def _relation_event_rows(event: Event, world_id: str, names: dict[str, str]) -> list[Doc]:
+    """The relation twin of ``_entity_event_rows``."""
+    if event.type == "relation_created":
+        doc = event.payload["relation"]
+        return [
+            {
+                "kind": "relationAdded",
+                "relationId": doc["id"],
+                "from": doc["from"],
+                "fromName": names.get(doc["from"]),
+                "to": doc["to"],
+                "toName": names.get(doc["to"]),
+                "relationType": doc.get("relationType"),
+                "eventId": event.id,
+                "world": world_id,
+            }
+        ]
+    if event.type in ("relation_invalidated", "relation_deleted"):
+        doc = event.payload["relation"]
+        return [
+            {
+                "kind": "relationRemoved",
+                "relationId": doc["id"],
+                "from": doc["from"],
+                "fromName": names.get(doc["from"]),
+                "to": doc["to"],
+                "toName": names.get(doc["to"]),
+                "relationType": doc.get("relationType"),
+                "eventId": event.id,
+                "world": world_id,
+            }
+        ]
+    if event.type != "relation_updated":
+        return []
+    doc = event.payload["relation"]
+    previous = event.payload.get("previous")
+    rows: list[Doc] = []
+    for field, old_value, new_value in receipts_ops.field_diffs(previous, doc):
+        if field in ("from", "to"):  # endpoints are immutable; already on every row above
+            continue
+        rows.append(
+            {
+                "kind": "relationRevised",
+                "relationId": doc["id"],
+                "from": doc["from"],
+                "fromName": names.get(doc["from"]),
+                "to": doc["to"],
+                "toName": names.get(doc["to"]),
+                "field": field,
+                "old": old_value,
+                "new": new_value,
+                "eventId": event.id,
+                "world": world_id,
+            }
+        )
+    return rows
+
+
 def diff_worlds(params: DiffWorldsInput, multi: MultiGraph) -> Doc:
     if params.a == params.b:
         raise ValidationError("diff-worlds needs two different worlds ('a' and 'b' were the same).")
     base_graph = _shared_base_graph(multi, params.a, params.b)
     store_a = _store_for(multi, base_graph, params.a)
     store_b = _store_for(multi, base_graph, params.b)
-    events_b = _last_event_by_record_id(_events_for(multi, base_graph, params.b))
     include_entities = params.scope in (None, "entities")
     include_relations = params.scope in (None, "relations")
 
+    # Names for relation endpoints: every entity currently visible from
+    # either side, so a relation row can name its from/to even if one
+    # side's own log never touched that particular entity.
+    entities_a = {e.id: e for e in store_a.list_entities(_ALL_STATUS_FILTER)}
+    entities_b = {e.id: e for e in store_b.list_entities(_ALL_STATUS_FILTER)}
+    names = {e.id: e.name for e in entities_a.values()}
+    names.update({e.id: e.name for e in entities_b.values()})
+
     rows: list[Doc] = []
-    entities_a: dict[str, Entity] = {}
-    entities_b: dict[str, Entity] = {}
-    if include_entities or include_relations:
-        # Relations need both sides' entity names even when scope='relations'.
-        entities_a = {e.id: e for e in store_a.list_entities(_ALL_STATUS_FILTER)}
-        entities_b = {e.id: e for e in store_b.list_entities(_ALL_STATUS_FILTER)}
+    for world_id in (params.a, params.b):
+        if world_id in (None, "", MAIN):
+            continue  # main has no segment of its own to replay
+        for event in _events_for(multi, base_graph, world_id):
+            if include_entities:
+                rows.extend(_entity_event_rows(event, world_id, names))
+            if include_relations:
+                rows.extend(_relation_event_rows(event, world_id, names))
 
     if include_entities:
-        for entity_id in sorted(set(entities_b) - set(entities_a)):
-            entity = entities_b[entity_id]
-            rows.append(
-                {
-                    "kind": "entityAdded",
-                    "entityId": entity_id,
-                    "entityName": entity.name,
-                    "entityType": entity.entity_type.value,
-                    "eventId": events_b.get(entity_id),
-                }
-            )
-        for entity_id in sorted(set(entities_a) - set(entities_b)):
-            entity = entities_a[entity_id]
-            rows.append(
-                {
-                    "kind": "entityInvalidated",
-                    "entityId": entity_id,
-                    "entityName": entity.name,
-                    "entityType": entity.entity_type.value,
-                    "eventId": events_b.get(entity_id),
-                }
-            )
         for entity_id in sorted(set(entities_a) & set(entities_b)):
             entity_a, entity_b = entities_a[entity_id], entities_b[entity_id]
+            if entity_a.entity_type.value != "claim":
+                continue
             doc_a = entity_a.model_dump(by_alias=True, exclude_unset=True)
             doc_b = entity_b.model_dump(by_alias=True, exclude_unset=True)
-            if doc_a == doc_b:
-                continue
             conf_a = (doc_a.get("confidence") or {}).get("score")
             conf_b = (doc_b.get("confidence") or {}).get("score")
-            if conf_a != conf_b:
-                rows.append(
-                    {
-                        "kind": "confidenceChanged",
-                        "entityId": entity_id,
-                        "entityName": entity_b.name,
-                        "oldConfidence": conf_a,
-                        "newConfidence": conf_b,
-                        "eventId": events_b.get(entity_id),
-                    }
-                )
             status_a, status_b = doc_a.get("status"), doc_b.get("status")
-            if entity_a.entity_type.value == "claim" and (conf_a != conf_b or status_a != status_b):
+            if conf_a != conf_b or status_a != status_b:
                 rows.append(
                     {
                         "kind": "contestedClaim",
@@ -265,40 +391,6 @@ def diff_worlds(params: DiffWorldsInput, multi: MultiGraph) -> Doc:
                         "bStatus": status_b,
                     }
                 )
-
-    if include_relations:
-        relations_a = {r.id: r for r in store_a.list_relations()}
-        relations_b = {r.id: r for r in store_b.list_relations()}
-        names_a = {e.id: e.name for e in entities_a.values()}
-        names_b = {e.id: e.name for e in entities_b.values()}
-        for relation_id in sorted(set(relations_b) - set(relations_a)):
-            relation = relations_b[relation_id]
-            rows.append(
-                {
-                    "kind": "relationAdded",
-                    "relationId": relation_id,
-                    "from": relation.from_,
-                    "fromName": names_b.get(relation.from_),
-                    "to": relation.to,
-                    "toName": names_b.get(relation.to),
-                    "relationType": relation.relation_type.value,
-                    "eventId": events_b.get(relation_id),
-                }
-            )
-        for relation_id in sorted(set(relations_a) - set(relations_b)):
-            relation = relations_a[relation_id]
-            rows.append(
-                {
-                    "kind": "relationRemoved",
-                    "relationId": relation_id,
-                    "from": relation.from_,
-                    "fromName": names_a.get(relation.from_),
-                    "to": relation.to,
-                    "toName": names_a.get(relation.to),
-                    "relationType": relation.relation_type.value,
-                    "eventId": events_b.get(relation_id),
-                }
-            )
 
     return list_envelope(rows)
 
@@ -333,7 +425,7 @@ def _find_relation_by_id(store: FalkorGraphStore, relation_id: str) -> Relation 
 def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
     if params.strategy not in ("endorse-all", "select"):
         raise ValidationError("strategy must be 'endorse-all' or 'select'")
-    from_record = _require_world(multi, params.from_)
+    from_record = require_world(multi, params.from_)
     if from_record.status == "reaped":
         raise ValidationError(
             f"World '{params.from_}' has already been abandoned/merged and cannot be merged again."
@@ -343,7 +435,7 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
         raise ValidationError("'from' and 'into' must be different worlds.")
     base_graph = str(from_record.metadata["baseGraph"])
     if into_id != MAIN:
-        into_record = _require_world(multi, into_id)
+        into_record = require_world(multi, into_id)
         if str(into_record.metadata["baseGraph"]) != base_graph:
             raise ValidationError(
                 f"'{params.from_}' and '{into_id}' fork from different base graphs and cannot "
@@ -379,8 +471,6 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
     applied_entities: list[Doc] = []
     for entity_id in sorted(candidate_ids):
         from_entity = from_store.read_entity(entity_id)
-        if from_entity is None:
-            continue  # hard-deleted inside the fork — nothing left to graft
         base_doc = into_store.read_entity_as_of(entity_id, forked_at)
         current_into = into_store.read_entity(entity_id)
         is_contested = (
@@ -390,11 +480,39 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
             and current_into.model_dump(by_alias=True, exclude_unset=True)
             != base_doc.model_dump(by_alias=True, exclude_unset=True)
         )
+        name_source = from_entity or current_into or base_doc
+        entity_name = name_source.name if name_source is not None else entity_id
+
+        if from_entity is None:
+            # Hard-deleted inside the fork (theloom.store.worlds.
+            # WorldGraphStore's tombstoning makes this reachable and
+            # trustworthy — see Part 5's fixes). A silent no-op here would
+            # be exactly the kind of gap the Agent Contract forbids: the
+            # deletion either propagates or is contested, never dropped.
+            if current_into is None:
+                continue  # already gone from `into` too — nothing to do
+            if is_contested:
+                contested.append(
+                    {
+                        "entityId": entity_id,
+                        "entityName": entity_name,
+                        "intoValue": current_into.model_dump(by_alias=True, exclude_unset=True),
+                        "fromValue": None,
+                        "fromDeleted": True,
+                    }
+                )
+                continue
+            into_store.delete_entity(entity_id, hard=True)
+            applied_entities.append(
+                {"entityId": entity_id, "entityName": entity_name, "deleted": True}
+            )
+            continue
+
         if is_contested:
             contested.append(
                 {
                     "entityId": entity_id,
-                    "entityName": from_entity.name,
+                    "entityName": entity_name,
                     "intoValue": current_into.model_dump(by_alias=True, exclude_unset=True)
                     if current_into
                     else None,
@@ -407,7 +525,7 @@ def merge_world(params: MergeWorldInput, multi: MultiGraph) -> Doc:
             into_store.graft_entity(from_doc)
         else:
             into_store.update_entity(entity_id, from_doc)
-        applied_entities.append({"entityId": entity_id, "entityName": from_entity.name})
+        applied_entities.append({"entityId": entity_id, "entityName": entity_name})
 
     applied_ids = {row["entityId"] for row in applied_entities}
     applied_relations: list[Doc] = []
