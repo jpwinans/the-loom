@@ -25,6 +25,7 @@ from pydantic import Field
 from theloom.graph.hydrate import hydrate_graph
 from theloom.model import EntityCreate, EntityFilter, RelationCreate
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import notice, with_notices
 from theloom.reification.fingerprint import (
     compute_fingerprint as hash_at_depth,
 )
@@ -251,6 +252,24 @@ def _load_queue(store: FalkorGraphStore) -> Doc | None:
     return queue if isinstance(queue, dict) else None
 
 
+def _world_partial_notices(params: CommandInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): the trigger queue
+    lives in graph-level metadata (``theloom.store.falkor.FalkorGraphStore.
+    get_metadata``/``set_metadata``, a singleton ``:_GraphMeta`` node)
+    written with no event at all, so a world's overlay cannot fork it — a
+    world's queue always starts empty, independent of whatever its parent
+    has queued."""
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's trigger queue — this "
+            "reflects only what was queued inside this world, not what its parent has.",
+        )
+    ]
+
+
 def trigger_status(params: TriggerStatusInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     queue = _load_queue(store) or {
@@ -264,20 +283,26 @@ def trigger_status(params: TriggerStatusInput, multi: MultiGraph) -> Doc:
         recommendation = candidate.get("recommendation")
         if recommendation:
             by_recommendation[recommendation] = by_recommendation.get(recommendation, 0) + 1
-    return {
-        "pendingCount": len(queue.get("pending") or []),
-        "processedCount": len(queue.get("processed") or []),
-        "maxPending": queue.get("maxPending", 50),
-        "lastProcessed": queue.get("lastProcessed", ""),
-        "byRecommendation": by_recommendation,
-    }
+    return with_notices(
+        {
+            "pendingCount": len(queue.get("pending") or []),
+            "processedCount": len(queue.get("processed") or []),
+            "maxPending": queue.get("maxPending", 50),
+            "lastProcessed": queue.get("lastProcessed", ""),
+            "byRecommendation": by_recommendation,
+        },
+        _world_partial_notices(params),
+    )
 
 
 def process_triggers(params: ProcessTriggersInput, multi: MultiGraph) -> Doc:
     store = multi.get_store(params.graph)
     queue = _load_queue(store)
     if not queue or not queue.get("pending"):
-        return {"candidates": [], "message": "No pending trigger candidates"}
+        return with_notices(
+            {"candidates": [], "message": "No pending trigger candidates"},
+            _world_partial_notices(params),
+        )
     limit = params.limit if params.limit is not None else 10
     pending = sorted(queue["pending"], key=lambda c: -float(c.get("farAnalogyScore", 0)))
     candidates = pending[:limit]
@@ -291,8 +316,11 @@ def process_triggers(params: ProcessTriggersInput, multi: MultiGraph) -> Doc:
         "lastProcessed": iso_now(),
     }
     store.set_metadata(TRIGGER_QUEUE_METADATA_KEY, updated)
-    return {
-        "candidates": candidates,
-        "dequeuedCount": len(candidates),
-        "remainingPending": len(remaining),
-    }
+    return with_notices(
+        {
+            "candidates": candidates,
+            "dequeuedCount": len(candidates),
+            "remainingPending": len(remaining),
+        },
+        _world_partial_notices(params),
+    )

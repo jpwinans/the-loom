@@ -495,6 +495,27 @@ def answered_questions(params: AnsweredQuestionsInput, multi: MultiGraph) -> Doc
 # =============================================================================
 
 
+def _world_partial_notices(params: CommandInput) -> list[Doc]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): graph-level
+    metadata (``theloom.store.falkor.FalkorGraphStore.get_metadata``/
+    ``set_metadata``, a singleton ``:_GraphMeta`` node) is written with no
+    event at all, so a world's overlay — which reconstructs state by
+    replaying events — cannot fork it: a world's metadata always starts
+    empty, independent of whatever its parent has stored. The postmortem
+    checkpoint (``lastPostmortemTimestamp``) and history this module reads/
+    writes through it are exactly that kind of state.
+    """
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's graph-level metadata — "
+            "this reflects only what was written inside this world, not what its parent has.",
+        )
+    ]
+
+
 def session_changelog(params: SessionChangelogInput, multi: MultiGraph) -> Doc:
     # A session-scoped changelog needs no 'since' — the session is the window.
     if not params.since and not params.session:
@@ -553,30 +574,33 @@ def session_changelog(params: SessionChangelogInput, multi: MultiGraph) -> Doc:
     result_head: Doc = {"since": since, "generatedAt": now}
     if params.session is not None:
         result_head["session"] = params.session
-    return {
-        **result_head,
-        "entities": {
-            "created": created_entities,
-            "modified": modified_entities,
-            "statusChanged": status_changed,
-        },
-        "relations": {"created": created_relations, "modified": modified_relations},
-        "totals": {
+    return with_notices(
+        {
+            **result_head,
             "entities": {
-                "created": len(created_entities),
-                "modified": len(modified_entities),
-                "statusChanged": len(status_changed),
+                "created": created_entities,
+                "modified": modified_entities,
+                "statusChanged": status_changed,
             },
-            "relations": {
-                "created": len(created_relations),
-                "modified": len(modified_relations),
+            "relations": {"created": created_relations, "modified": modified_relations},
+            "totals": {
+                "entities": {
+                    "created": len(created_entities),
+                    "modified": len(modified_entities),
+                    "statusChanged": len(status_changed),
+                },
+                "relations": {
+                    "created": len(created_relations),
+                    "modified": len(modified_relations),
+                },
+                "total": len(created_entities)
+                + len(modified_entities)
+                + len(created_relations)
+                + len(modified_relations),
             },
-            "total": len(created_entities)
-            + len(modified_entities)
-            + len(created_relations)
-            + len(modified_relations),
         },
-    }
+        _world_partial_notices(params),
+    )
 
 
 def _compute_trend(history: list[Doc]) -> Doc:
@@ -695,22 +719,28 @@ def postmortem_evaluate(params: PostmortemEvaluateInput, multi: MultiGraph) -> D
         ]
         if not params.dry_run:
             store.set_metadata(POSTMORTEM_HISTORY_KEY, updated)
-        return {
+        return with_notices(
+            {
+                "counts": counts,
+                "utilityScore": utility_score,
+                "flagged": flagged,
+                "trend": _compute_trend(updated),
+                "history": updated,
+                "items": items,
+            },
+            _world_partial_notices(params),
+        )
+    return with_notices(
+        {
             "counts": counts,
             "utilityScore": utility_score,
             "flagged": flagged,
-            "trend": _compute_trend(updated),
-            "history": updated,
+            "trend": _compute_trend(history),
+            "history": history,
             "items": items,
-        }
-    return {
-        "counts": counts,
-        "utilityScore": utility_score,
-        "flagged": flagged,
-        "trend": _compute_trend(history),
-        "history": history,
-        "items": items,
-    }
+        },
+        _world_partial_notices(params),
+    )
 
 
 def _trace_session(store: FalkorGraphStore, entity_id: str, max_depth: int) -> Doc | None:

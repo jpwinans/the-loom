@@ -553,6 +553,26 @@ def list_dead_letters(params: GraphArgInput, multi: MultiGraph) -> dict[str, Any
 def embedding_reconcile(params: EmbeddingReconcileInput, multi: MultiGraph) -> dict[str, Any]:
     store = multi.get_store(params.graph)
     dry_run = params.dry_run if params.dry_run is not None else True
+    in_fork = params.world not in (None, "main")
+    if in_fork and not dry_run:
+        # plan_reconcile compares the overlay's entity docs (which correctly
+        # include everything inherited) against get_entity_vectors() (which
+        # is NOT world-aware -- it only ever sees this world's own local
+        # vectors, per theloom.store.worlds.WorldGraphStore's documented
+        # boundary). Run for real here and every inherited-but-unembedded-
+        # in-this-fork entity looks like a genuine missing-vector case, so
+        # reconcile would clear embeddingStatus on entities that are, in
+        # truth, perfectly well embedded in their parent. A notice can't
+        # undo a wrong write already made on that basis -- refuse instead.
+        from theloom.errors import ValidationError
+
+        raise ValidationError(
+            f"embedding-reconcile cannot write against world '{params.world}': its vector "
+            "index only reflects entities embedded inside this world, so a non-dry run would "
+            "misclassify every inherited-but-locally-unembedded entity as missing a vector "
+            "and clear its embeddingStatus incorrectly. Retry with dryRun: true, or run "
+            "against 'main'."
+        )
     entities = _entity_docs(store)
     by_id = {e["id"]: e for e in entities}
     vector_ids = set(store.get_entity_vectors())
@@ -562,15 +582,18 @@ def embedding_reconcile(params: EmbeddingReconcileInput, multi: MultiGraph) -> d
             apply_reconcile_action(store, action, by_id[action.entity_id])
     status_fixed_missing = sum(1 for a in actions if a.kind == "clear_status")
     status_fixed_has = sum(1 for a in actions if a.kind == "mark_completed")
-    return {
-        "entitiesScanned": len(entities),
-        "statusFixedMissingVector": status_fixed_missing,
-        "statusFixedHasVector": status_fixed_has,
-        "duplicatesRemoved": 0,  # one vector property per node by construction
-        "reembedFailed": 0,
-        "orphanedRowsCleaned": 0,
-        "dryRun": dry_run,
-    }
+    return with_notices(
+        {
+            "entitiesScanned": len(entities),
+            "statusFixedMissingVector": status_fixed_missing,
+            "statusFixedHasVector": status_fixed_has,
+            "duplicatesRemoved": 0,  # one vector property per node by construction
+            "reembedFailed": 0,
+            "orphanedRowsCleaned": 0,
+            "dryRun": dry_run,
+        },
+        _world_partial_notices(params),
+    )
 
 
 # =============================================================================
