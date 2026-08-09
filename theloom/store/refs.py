@@ -73,6 +73,7 @@ class RefRecord:
     reaped_at: str | None
     ttl_seconds: int | None
     metadata: dict[str, Any]
+    seq: int = 0
 
     @property
     def expired(self) -> bool:
@@ -95,6 +96,7 @@ class RefRecord:
             "reapedAt": self.reaped_at,
             "ttlSeconds": self.ttl_seconds,
             "metadata": self.metadata,
+            "seq": self.seq,
         }
 
     @classmethod
@@ -109,6 +111,7 @@ class RefRecord:
             reaped_at=doc.get("reapedAt"),
             ttl_seconds=doc.get("ttlSeconds"),
             metadata=dict(doc.get("metadata") or {}),
+            seq=int(doc.get("seq") or 0),
         )
 
 
@@ -168,6 +171,11 @@ class RefRegistry:
         if self.get(kind, ref_id) is not None:
             raise ValidationError(f"Ref '{ref_id}' already registered under kind '{kind}'")
         now = iso_now()
+        # Monotonic per-kind registration sequence: ``createdAt`` alone cannot
+        # order two refs registered within the same timestamp tick (observed
+        # live in CI, where a Redis HGETALL's arbitrary iteration order
+        # decided the tie), so ``list`` breaks ties on this counter instead.
+        seq = int(self._redis.incr(f"{self._key(kind)}:seq"))
         doc = {
             "kind": kind,
             "id": ref_id,
@@ -178,6 +186,7 @@ class RefRegistry:
             "reapedAt": None,
             "ttlSeconds": ttl_seconds,
             "metadata": metadata or {},
+            "seq": seq,
         }
         return self._commit(kind, ref_id, doc, "ref_registered")
 
@@ -195,7 +204,7 @@ class RefRegistry:
         to)."""
         raw = self._redis.hgetall(self._key(kind))
         records = [RefRecord.from_doc(json.loads(value)) for value in raw.values()]
-        return sorted(records, key=lambda record: record.created_at)
+        return sorted(records, key=lambda record: (record.created_at, record.seq))
 
     def touch(self, kind: str, ref_id: str, ttl_seconds: int | None = None) -> RefRecord:
         """Refresh a ref's TTL from now. ``ttl_seconds`` overrides the ref's

@@ -186,3 +186,16 @@ def test_events_carry_causing_command_via_causedby(refs: RefRegistry) -> None:
     assert matching
     assert matching[0].caused_by == "begin-session"
     assert matching[0].type == "ref_registered"
+
+
+def test_list_order_is_registration_order_even_when_created_at_ties(
+    refs: RefRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CI regression (test_list_is_oldest_first_and_includes_every_status
+    flaked on fast runners): two refs registered within the same timestamp
+    tick used to tie on ``createdAt`` and fall back to Redis HGETALL's
+    arbitrary iteration order. The per-kind registration sequence breaks
+    the tie deterministically."""
+    monkeypatch.setattr("theloom.store.refs.iso_now", lambda: "2026-08-09T00:00:00.000Z")
+    ids = [refs.register("session", name=f"tied-{i}").id for i in range(6)]
+    assert [r.id for r in refs.list("session")] == ids
