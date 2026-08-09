@@ -107,6 +107,13 @@ def test_catalog_matches_known_emission_sites() -> None:
     # Checked inventory, not memory: every command that reads/writes state a
     # world's overlay cannot fork -- embeddings (vectors, a bare Cypher
     # property SET) and graph-level metadata (:_GraphMeta, no event at all).
+    # Re-grepped for Part 5's write-path audit (round 3): find-clusters/
+    # semantic-gaps/resolve-gaps (all rank or filter by entity vector via
+    # theloom.operations.semantic's shared _search_similar) and the three
+    # composites whose own sections touch vectors directly --
+    # far-analogy-retrieval (get_entity_vectors), explore-frontier
+    # (CoverageGap), hypothesis-engine (its 'gaps' section calls
+    # semantic_gaps) -- were missing from this set.
     assert catalog["WORLD_PROJECTION_PARTIAL"] == {
         "embed-entity",
         "embed-entities",
@@ -116,11 +123,17 @@ def test_catalog_matches_known_emission_sites() -> None:
         "hybrid-search",
         "semantic-neighbors",
         "suggest-relations",
+        "find-clusters",
+        "semantic-gaps",
+        "resolve-gaps",
         "session-changelog",
         "postmortem-evaluate",
         "trigger-status",
         "process-triggers",
         "self-model-update",
+        "far-analogy-retrieval",
+        "explore-frontier",
+        "hypothesis-engine",
     }
     # documents.py's graph-ignored notice is shared by every document command
     # that accepts (and ignores) `graph` -- pin the full set so a command

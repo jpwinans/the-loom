@@ -57,6 +57,7 @@ from theloom.graph.analytics import connected_components
 from theloom.graph.hydrate import LoomGraph, hydrate_graph
 from theloom.model import ALL_ENTITY_STATUSES, EntityFilter
 from theloom.operations.common import CommandInput
+from theloom.operations.notices import notice, with_notices
 from theloom.store.multigraph import MultiGraph
 
 DEFAULT_MAX_CANDIDATES = 5
@@ -87,6 +88,27 @@ class FarAnalogyRetrievalInput(CommandInput):
     purpose: str | None = Field(default=None, max_length=10000)
     exploration_boosted: bool | None = Field(default=None, alias="explorationBoosted")
     bridging_boost: float | None = Field(default=None, ge=0, le=1, alias="bridgingBoost")
+
+
+def _world_partial_notices(params: FarAnalogyRetrievalInput) -> list[dict[str, Any]]:
+    """``WORLD_PROJECTION_PARTIAL`` (tension (a), Part 5): the semantic
+    fingerprint section reads entity vectors via ``store.get_entity_vectors``
+    -- a direct Cypher property read outside the event log a world's overlay
+    replays (same gap ``theloom.operations.semantic``'s embedding commands
+    declare). Inside a fork this reflects only entities embedded *within*
+    that fork, never ones its parent already had embedded, so Match's
+    semantic path silently falls back to fewer signatures than main would
+    produce without this notice saying so."""
+    if params.world in (None, "main"):
+        return []
+    return [
+        notice(
+            "WORLD_PROJECTION_PARTIAL",
+            f"World '{params.world}' does not inherit its parent's embeddings — the semantic "
+            "fingerprint path (get_entity_vectors) reflects only entities embedded inside this "
+            "world, not the ones inherited from its parent.",
+        )
+    ]
 
 
 def _component_id(sorted_ids: list[str]) -> str:
@@ -489,16 +511,19 @@ def far_analogy_retrieval(params: FarAnalogyRetrievalInput, multi: MultiGraph) -
         for i, candidate in enumerate(shared["candidates"])
     ]
 
-    return {
-        "composite": composite,
-        "proposals": shared["collected_proposals"],
-        "summary": summary,
-        "explorationFeedback": {
-            "explorationBoosted": False,
-            "bridgingBoostApplied": 0,
-            "candidateFeedback": candidate_feedback,
+    return with_notices(
+        {
+            "composite": composite,
+            "proposals": shared["collected_proposals"],
+            "summary": summary,
+            "explorationFeedback": {
+                "explorationBoosted": False,
+                "bridgingBoostApplied": 0,
+                "candidateFeedback": candidate_feedback,
+            },
         },
-    }
+        _world_partial_notices(params),
+    )
 
 
 def _build_summary(

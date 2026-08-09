@@ -813,7 +813,10 @@ def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any
         filter = EntityFilter.model_validate({"entityType": params.entity_type.value})
     all_entities = _entity_docs(store, filter)
     if not all_entities:
-        return {"clusters": [], "sampled": False, "totalEntities": 0, "sampledEntities": 0}
+        return with_notices(
+            {"clusters": [], "sampled": False, "totalEntities": 0, "sampledEntities": 0},
+            _world_partial_notices(params),
+        )
     sampled = len(all_entities) > max_entities
     if sampled:
         step = len(all_entities) / max_entities
@@ -868,12 +871,15 @@ def find_clusters(params: FindClustersInput, multi: MultiGraph) -> dict[str, Any
         )
         cluster_id += 1
     clusters.sort(key=lambda c: -int(str(c["size"])))
-    return {
-        "clusters": clusters,
-        "sampled": sampled,
-        "totalEntities": len(all_entities),
-        "sampledEntities": len(entities),
-    }
+    return with_notices(
+        {
+            "clusters": clusters,
+            "sampled": sampled,
+            "totalEntities": len(all_entities),
+            "sampledEntities": len(entities),
+        },
+        _world_partial_notices(params),
+    )
 
 
 def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> dict[str, Any]:
@@ -883,7 +889,7 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> dict[str, Any
     max_entities = params.max_entities or 200
     entities = _spread_sample(_entity_docs(store), max_entities, params.seed)
     if not entities:
-        return list_envelope([])
+        return list_envelope([], _world_partial_notices(params))
     index = {
         e["id"]: {"id": e["id"], "name": e["name"], "entityType": e["entityType"]} for e in entities
     }
@@ -917,7 +923,7 @@ def semantic_gaps(params: SemanticGapsInput, multi: MultiGraph) -> dict[str, Any
                 }
             )
     gaps.sort(key=lambda g: -float(g["similarity"]))
-    return list_envelope(gaps[:limit])
+    return list_envelope(gaps[:limit], _world_partial_notices(params))
 
 
 def suggest_relations(params: SuggestRelationsInput, multi: MultiGraph) -> dict[str, Any]:
@@ -1061,4 +1067,12 @@ def resolve_gaps(params: ResolveGapsInput, multi: MultiGraph) -> dict[str, Any]:
             )
             item["relationCreated"] = True
         resolved.append(item)
-    return {"analyzed": len(gaps), "resolved": resolved, "skipped": skipped, "dryRun": dry_run}
+    return with_notices(
+        {
+            "analyzed": len(gaps["items"]),
+            "resolved": resolved,
+            "skipped": skipped,
+            "dryRun": dry_run,
+        },
+        _world_partial_notices(params),
+    )
