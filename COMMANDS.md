@@ -1483,7 +1483,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
   - `b` — string; required — A worldId, or 'main'.
   - `scope` — string | null; optional — Restrict the diff to 'entities' or 'relations'; omitted (default) reports both.
 
-- **`fork-world`** — Fork a new belief world at a graph's (or another world's) current tip, or a historical moment via asOf. Writes no entity data -- O(1).
+- **`fork-world`** — Fork a new belief world at a graph's (or another world's) current tip, or a historical moment via asOf. Writes no entity data -- O(1). The response's forkedAtEventId is informational/for-audit only (which event was live at fork time); the projection itself is anchored by forkedAt's wall-clock instant (compared against tx_from, never against stream position), so it stays well-defined even if that event's own append was later repaired out of order.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
   - `name` — string | null; optional — Optional human label for the world; purely descriptive, shown back by list-worlds.
   - `graph` — string | null; optional — The base graph to fork from. Only meaningful when forming a fresh fork off 'main' (fromWorld omitted); ignored (inferred from the parent) when forkWorld names an existing world.
@@ -1493,6 +1493,7 @@ Each command lists its input fields below its summary: dotted paths (`confidence
 
 - **`list-worlds`** — List belief worlds with their parent, fork point, and status.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.
+  - `includeReaped` — boolean | null; optional — Include abandoned/merged worlds. Defaults to false: a reaped world is never gone (list-worlds' history is still there, same as list-sessions'), but the default view does not grow monotonically as forks are abandoned/merged over a build's lifetime. Pass true for the full history.
 
 - **`merge-world`** — Merge a world's changes into another (default 'main'). 'endorse-all' applies every uncontested change and notices the rest as CONTESTED_ON_MERGE; 'select' grafts exactly the named entityIds/eventIds.
   - `world` — string | null; optional — The belief world to read/write in (a worldId from fork-world, or omitted for 'main'). Reads project the fork point plus the world's own writes; writes land only in the world's own segment -- main is never mutable from inside a fork.

@@ -5,8 +5,8 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 ## What this is
 
 **The Loom** is a knowledge-graph substrate with a single JSON-in/JSON-out CLI,
-built on **[FalkorDB](https://www.falkordb.com/)**. It exposes **170 commands**
-across 26 categories plus a special `init` command and a set of high-level
+built on **[FalkorDB](https://www.falkordb.com/)**. It exposes **176 commands**
+across 27 categories plus a special `init` command and a set of high-level
 composites. The command catalog is **[COMMANDS.md](COMMANDS.md)** (generated from
 the registry — never hand-edit it) and the user-facing overview is
 **[README.md](README.md)**.
