@@ -68,16 +68,17 @@ with every other command against the store.
 
 ```bash
 uv run python scripts/backup_store.py
-# -> /Users/jameswinans/.loom/backups/dump-20260809-133615.rdb
+# -> ~/.loom/backups/dump-20260101-120000.rdb
 ```
 
 ### Scheduling recipe (launchd, macOS)
 
 The script does not install anything itself — no cron entry, no launchd
 job. Scheduling is opt-in and manual. The following `launchd` plist runs a
-daily backup; adjust the `uv` path (`which uv`) and repository path for your
-machine before using it, and note the working directory matters (`uv run`
-resolves the project from cwd).
+daily backup; replace `USERNAME` throughout, adjust the `uv` path
+(`which uv`) and repository path for your machine before using it, and note
+the working directory matters (`uv run` resolves the project from cwd).
+`launchd` does not expand `~`, so the paths must be absolute.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -90,14 +91,14 @@ resolves the project from cwd).
 
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/jameswinans/.local/bin/uv</string>
+        <string>/Users/USERNAME/.local/bin/uv</string>
         <string>run</string>
         <string>python</string>
         <string>scripts/backup_store.py</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/jameswinans/Dropbox/Development/the-loom</string>
+    <string>/Users/USERNAME/path/to/the-loom</string>
 
     <key>StartCalendarInterval</key>
     <dict>
@@ -108,9 +109,9 @@ resolves the project from cwd).
     </dict>
 
     <key>StandardOutPath</key>
-    <string>/Users/jameswinans/.loom/backups/backup.log</string>
+    <string>/Users/USERNAME/.loom/backups/backup.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/jameswinans/.loom/backups/backup.err.log</string>
+    <string>/Users/USERNAME/.loom/backups/backup.err.log</string>
 </dict>
 </plist>
 ```

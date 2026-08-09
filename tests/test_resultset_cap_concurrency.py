@@ -13,7 +13,7 @@ This test reproduces the concurrency shape directly: it spawns two real
 for 1.5s to widen the race window), started as close together as
 ``subprocess.Popen`` allows. Self-contained and scoped to one dedicated
 target file — never the full suite — so it is safe to run standalone or
-from inside a parent pytest process, per this gauntlet's concurrency law.
+from inside a parent pytest process.
 
 The strand proof is value-agnostic: it only asserts the server's
 RESULTSET_SIZE is unchanged before vs. after the concurrent runs, whatever

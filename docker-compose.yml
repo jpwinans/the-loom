@@ -11,11 +11,11 @@ services:
       # /data/data into the container filesystem), so mounting at /data
       # never captured the snapshot — a container removal lost everything.
       - falkordb-data:/var/lib/falkordb/data
-      # 2026-08-09 incident: an agent's FLUSHALL destroyed every graph,
-      # including production `storehouse`, and the snapshot cycle above
-      # overwrote the only RDB copy within a minute. Mount the restricted
-      # `default`-user ACL read-only so the server itself refuses
-      # FLUSHALL/FLUSHDB/CONFIG/etc — mechanism, not agent good behavior.
+      # One stray instance-global command (FLUSHALL) from any connected
+      # client would destroy every graph at once, and the snapshot cycle
+      # above would overwrite the only RDB copy within a minute. Mount the
+      # restricted `default`-user ACL read-only so the server itself refuses
+      # FLUSHALL/FLUSHDB/CONFIG/etc — mechanism, not client good behavior.
       # See docs/adr/0002-falkordb-acl-store-protection.md.
       - ./users.acl:/var/lib/falkordb/users.acl:ro
     command: ["--save", "60", "1"]   # periodic snapshot persistence

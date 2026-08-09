@@ -4,6 +4,7 @@ read_entity_as_of, relations prune to survivors, temporal truncates."""
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -88,11 +89,18 @@ def test_as_of_truncates_temporal_events(multi: MultiGraph) -> None:
         EntityCreate.model_validate({"name": "a", "entityType": "concept", "observations": []})
     )
     time.sleep(0.01)
-    pivot = iso_now()
-    time.sleep(0.01)
     store.create_entity(
         EntityCreate.model_validate({"name": "b", "entityType": "concept", "observations": []})
     )
+    # The pivot must fall between the two creates on the *server's* clock:
+    # event timestamps come from the Redis stream entry id, so a client-side
+    # iso_now() pivot races any transient host/VM clock divergence wider
+    # than the guard sleeps. Derive it from the second event's own
+    # timestamp instead — strictly before b, and (thanks to the sleep
+    # between creates) strictly after a, whatever either clock reads.
+    full_doc = assemble_bundle(ExportBundleInput(), multi)
+    second_at = datetime.fromisoformat(full_doc["temporal"]["events"][-1]["at"])
+    pivot = (second_at - timedelta(milliseconds=1)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     as_of_doc = assemble_bundle(ExportBundleInput.model_validate({"asOf": pivot}), multi)
     types = [e["type"] for e in as_of_doc["temporal"]["events"]]
     assert types == ["entity_created"]  # only the first create is at/before pivot

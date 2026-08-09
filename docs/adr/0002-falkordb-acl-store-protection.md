@@ -6,15 +6,15 @@ Accepted
 
 ## Context
 
-On 2026-08-09 an agent's `FLUSHALL` against the shared FalkorDB instance
-destroyed every graph on the server, including the production graph
-`storehouse`. The `--save 60 1` snapshot cycle then overwrote the only RDB
-copy within a minute, so there was no backup to restore from (TL-502).
+One instance-global command is enough to lose the whole store: `FLUSHALL`
+destroys every graph on the server at once, and the periodic snapshot cycle
+then overwrites the only RDB copy within about a minute, leaving nothing to
+restore from.
 
-Nothing in the store's client-side surface prevented this: `theloom/`'s own
+Nothing in the store's client-side surface prevents this: `theloom/`'s own
 code never sends `FLUSHALL`, but any process that can open a Redis
-connection to the instance — an agent's ad-hoc `redis-cli`, a misconfigured
-script, a library issuing a stray admin command — could. Fixing this by
+connection to the instance — an ad-hoc `redis-cli`, a misconfigured
+script, a library issuing a stray admin command — can. Fixing this by
 convention (documentation, code review, "don't do that") is not a fix;
 CLAUDE.md invariant 1 makes FalkorDB the single transactional store for
 graph, vectors, chunks, and full-text, so there is exactly one place to put
@@ -37,13 +37,13 @@ proved one necessary (see Consequences).
 
 ### Command disposition table (closed set)
 
-Every command family named in the TL-502 task scope, keep/deny, one-line
+Every command family in the protection's scope, keep/deny, one-line
 rationale. "KEEP" means left allowed under the base `+@all`; "DENY" means an
 explicit `-command` (or `-command|subcommand`) entry in `users.acl`.
 
 | Command family | Disposition | Rationale |
 |---|---|---|
-| `FLUSHALL` | DENY | Wipes every key/graph on the server — the incident itself. |
+| `FLUSHALL` | DENY | Wipes every key/graph on the server — the exact loss this ADR exists to prevent. |
 | `FLUSHDB` | DENY | Wipes the current logical DB; same blast radius as `FLUSHALL` in this single-DB deployment. |
 | `CONFIG` (`GET`/`SET`/`REWRITE`/`RESETSTAT`) | DENY | Server-wide reconfiguration (persistence, memory policy, auth). Distinct ACL command name from `GRAPH.CONFIG` — verified in rehearsal that denying it leaves `GRAPH.CONFIG` untouched. |
 | `GRAPH.CONFIG` | **KEEP** | `tests/conftest.py`'s `small_resultset_cap` fixture (`db.config_get`/`config_set`, which falkordb-py implements as `GRAPH.CONFIG GET`/`SET`) requires it — it's the race-proof guard around `RESULTSET_SIZE`. This is the CLI's actual tuning surface, not the Redis-level one. Residual risk noted below. |
@@ -57,7 +57,7 @@ explicit `-command` (or `-command|subcommand`) entry in `users.acl`.
 | `SCRIPT` (`LOAD`/`EXISTS`/`FLUSH`/`KILL`) | **KEEP** | `EVALSHA` only works once the script is cached server-side; redis-py's `Script` wrapper falls back to `SCRIPT LOAD` on a cache miss (`NoScriptError`) — exactly what happens on every fresh or restarted server. Denying `SCRIPT` would make the `EVALSHA` dependency above unusable in practice. |
 | `FUNCTION` / `FCALL` / `FCALL_RO` | DENY | The Redis Functions subsystem; wholly unused by the app. |
 | `MODULE` | DENY | Loading/unloading modules, including the graph engine module itself. |
-| `REPLICAOF` / `SLAVEOF` | DENY | A rogue `REPLICAOF` could turn this instance into a replica of an attacker-controlled server and overwrite its dataset on the next sync — a slower-motion version of the same incident. |
+| `REPLICAOF` / `SLAVEOF` | DENY | A rogue `REPLICAOF` could turn this instance into a replica of an attacker-controlled server and overwrite its dataset on the next sync — the same total loss in slower motion. |
 | `FAILOVER` | DENY | Replication/cluster failover control; no legitimate use in this standalone deployment. |
 | `SWAPDB` | DENY | Swaps two logical databases wholesale — same blast radius as `FLUSHDB` through a different door. |
 | `MIGRATE` | DENY | Deletes its source key on a successful transfer to another server; not used by the app, and would be a targeted exfiltrate-and-delete primitive if reachable. |
@@ -152,8 +152,8 @@ here as the findings that shaped the table and files above.
 - **A password or richer auth boundary for `default`.** Out of scope: the
   task is refusing catastrophic commands, not adding auth friction, and a
   password would require every client (the CLI, the test suite, the
-  browser) to carry a credential — a much larger blast radius than TL-502
-  calls for.
+  browser) to carry a credential — a much larger blast radius than this
+  change calls for.
 - **A dedicated admin user carrying the denied permissions, for
   maintenance.** Rejected — rehearsal never hit an operation that was
   impossible without one: the full command-disposition table above, the
@@ -189,7 +189,7 @@ here as the findings that shaped the table and files above.
 - **`docker-compose.yml`'s `command: ["--save", "60", "1"]` was already
   dead configuration before this change**, and remains so — the rehearsal
   finding above shows the image's entrypoint never reads it. This ADR
-  does not fix that (out of scope for TL-502: it's a pre-existing
+  does not fix that (out of scope here: it's a pre-existing
   persistence-cadence gap, not a store-protection one), but it does avoid
   repeating the mistake for the new `--aclfile` flag by routing it through
   `REDIS_ARGS`, the channel the entrypoint actually honors. Whether to

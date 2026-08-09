@@ -1,9 +1,10 @@
 """Take one rotating on-disk backup of the FalkorDB store's RDB snapshot.
 
-Context: the 2026-08-09 FLUSHALL incident destroyed every graph, and the
-server's periodic snapshot cycle overwrote the only dump.rdb copy within a
-minute -- there was no second copy anywhere. This
-script is the durable half of the fix: it forces a fresh, complete snapshot
+Context: one instance-global command (FLUSHALL) can destroy every graph on
+the store at once, and the server's periodic snapshot cycle then overwrites
+the only dump.rdb copy within about a minute -- the container's own
+snapshot is not a backup. This script is the durable half of the store's
+protection: it forces a fresh, complete snapshot
 (BGSAVE, not the periodic cycle) and copies it out to a directory the
 container's own snapshotting can never touch, keeping a bounded number of
 prior copies.

@@ -1,6 +1,7 @@
 """File-level restore of a FalkorDB RDB snapshot into a named container.
 
-Context: `scripts/backup_store.py` is the durable half of the TL-502 fix (a
+Context: `scripts/backup_store.py` is the durable half of the store's
+protection (a
 second copy of `dump.rdb`, safe from both the container's own snapshot cycle
 and a stray `FLUSHALL`); this script is the other half -- turning one of
 those backups back into a live store. It is deliberately dumb: it never
