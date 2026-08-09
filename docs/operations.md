@@ -9,13 +9,16 @@ up on a schedule, and restoring from a backup.
 
 The store (`theloom-falkordb`, see `docker-compose.yml`) persists to a
 single RDB snapshot at `/var/lib/falkordb/data/dump.rdb`, written on the
-container's own periodic cycle (`--save 60 1`). That cycle protects against
-a process crash, but not against a destructive command against the live
-store (a stray `FLUSHALL`/`FLUSHDB`, an accidental `docker volume rm`, a bad
-migration): the very next periodic save overwrites `dump.rdb` with the
-now-empty state, and there is no second copy anywhere. `scripts/backup_store.py`
-is that second copy, taken on demand or on a schedule, kept out of the repo
-and out of the container's own volume.
+server's periodic snapshot cycle (the compiled-in default save policy
+`3600 1`, `300 100`, `60 10000` — a busy store snapshots at least every 60s,
+since the compose `command:` array is inert — see
+[adr/0002-falkordb-acl-store-protection.md](adr/0002-falkordb-acl-store-protection.md)).
+That cycle protects against a process crash, but not against a destructive
+command against the live store (a stray `FLUSHALL`/`FLUSHDB`, an accidental
+`docker volume rm`, a bad migration): the very next periodic save overwrites
+`dump.rdb` with the now-empty state, and there is no second copy anywhere.
+`scripts/backup_store.py` is that second copy, taken on demand or on a schedule,
+kept out of the repo and out of the container's own volume.
 
 ### What `scripts/backup_store.py` does
 

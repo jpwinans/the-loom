@@ -1,8 +1,8 @@
 """Take one rotating on-disk backup of the FalkorDB store's RDB snapshot.
 
 Context: the 2026-08-09 FLUSHALL incident destroyed every graph, and the
-`--save 60 1` snapshot cycle in docker-compose.yml overwrote the only
-dump.rdb copy within a minute -- there was no second copy anywhere. This
+server's periodic snapshot cycle overwrote the only dump.rdb copy within a
+minute -- there was no second copy anywhere. This
 script is the durable half of the fix: it forces a fresh, complete snapshot
 (BGSAVE, not the periodic cycle) and copies it out to a directory the
 container's own snapshotting can never touch, keeping a bounded number of
