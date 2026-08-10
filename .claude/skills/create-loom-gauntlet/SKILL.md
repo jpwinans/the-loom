@@ -1,0 +1,212 @@
+---
+name: create-loom-gauntlet
+description: Use when the user invokes /create-loom-gauntlet [task], or wants a gauntlet loop, builder-vs-critic orchestration prompt, or autonomous iterate-until-perfect loop — in a repo already mapped by /map-codebase (docs/architecture/map-manifest.json exists), or in a blank/scaffold-only repo where a new product is being built greenfield. Requires The Loom CLI and its FalkorDB store. For an unmapped repo with existing code, run /map-codebase first.
+argument-hint: "[task]"
+---
+
+# Create Loom Gauntlet
+
+## Overview
+
+A gauntlet loop (Matt Shumer's pattern) is an orchestration prompt in which builder sub-agents produce artifacts and fresh-context critic sub-agents blind-compare them against a concrete reference, looping on the largest gap until the bar is met or a boundary fires. This skill generates that prompt for repos on the Loom substrate, in one of two modes:
+
+- **Brownfield** — the repo carries a `/map-codebase` graph. The map replaces grep recon with graph queries, makes part-independence *verified* instead of asserted, arms critics with deterministic budgeted evidence tools, and persists loop state in a Loom ledger so the spin rule and cross-part invalidation are mechanical queries, not the lead agent's recollection.
+- **Greenfield** — the repo is blank (or scaffolding only) and the deliverable is a new product. There is nothing to map yet, so independence is established *by construction*: a part 0 freezes the interfaces and writes the acceptance suite before any parallel builder starts, and the run bootstraps its own map with `/map-codebase` once part 0 lands — converging to the brownfield machinery for every later phase. The map describes what is; a new product is what will be — so greenfield builds the "what is" first, then holds it to the same standard.
+
+The skill is also **capability-aware**: it probes which substrate features the installed Loom has (workspaces, write-receipts, worlds, calibration) and generates the upgraded mechanism where available, the legacy fallback where not.
+
+Three core principles:
+
+1. **A gauntlet prompt is a loop with a finish line, not a task list.** If the objective isn't falsifiable or the critics aren't independent, you've written a long prompt, not a gauntlet.
+2. **A graph fact beats a grepped fact, but a run command beats both.** The map's structural layer (calls, imports, containment) is deterministic ground truth *about the mapped commit*. Its semantic layer (`claim`/`pattern`/`tension` entities) is LLM-written — leads to verify at their `file:line` anchor, never facts that settle a verdict. Real command output outranks everything. In greenfield this binds from bootstrap onward; before the first map exists, only command output and real diffs count.
+3. **A mechanism beats a policy.** A boundary that matters is enforced by something that cannot be talked past — a pre-flight backup, a scoped credential, a watchdog check, a frozen interface contract — with the prompt text as the second line of defense, never the only one. (Learned the hard way: a prompt-only "never touch other graphs" boundary did not stop a sub-agent's `flushall()` cleanup impulse from destroying an entire production store.)
+
+## Dependency gate — run BEFORE anything else
+
+Never generate on a guess. In order:
+
+1. **Store is reachable:** `loom graph-stats` reaches the store — a typed `NOT_FOUND` for a missing default graph still proves reachability; only a connection failure means the store is down. If `loom` isn't on PATH (a blank repo has no venv carrying it), use `uv run --directory <loom-checkout> loom ...`; if FalkorDB is down, `docker compose up -d falkordb` in the Loom checkout. Unreachable and can't be started → **stop**: both modes need the store — the ledger lives in it. Tell the user what to start, then re-invoke.
+2. **Determine the mode** from two observables, and record both in GRAPH FACTS:
+   - **Map substance:** `docs/architecture/map-manifest.json` exists in the target repo AND `loom graph-stats '{"graph": "<manifest.graphName>"}'` reports `entityCount > 0`. A manifest over an empty graph is NOT a map — treat it as absent.
+   - **Extractable source:** `git ls-files -- '*.py' '*.ts' '*.tsx' '*.js' '*.go' '*.rs'` (the languages `/map-codebase` extracts) returns files beyond generated scaffolding.
+   Substance yes → **brownfield**. Substance no + source no → **greenfield**. Substance no + source yes → the repo needs mapping first: offer to run `/map-codebase PATH` now and continue in brownfield once it lands; if the user declines, **stop** — never generate against unmapped existing code; the prompt's contracts would be guesses.
+   A **hybrid** task (a new subsystem inside a mapped repo) runs brownfield and additionally carries the greenfield part-0 obligation for the new subsystem: its internal interfaces are frozen by construction, while its contact points with mapped code are verified by blast-radius like any other part.
+3. **Brownfield only — manifest is current:** read `graphName` and `commit` from the manifest; compare `commit` to `git rev-parse HEAD`. If they differ, scope the staleness to the task: `git diff --name-only <manifest-commit>..HEAD`. If none of the changed files fall inside the modules the task touches, the map is current *for this task* — proceed, and record the drift in GRAPH FACTS. Otherwise run `/map-codebase PATH` (incremental — minutes, not the full run) before recon; if the user declines, **stop** — a stale map over the touched modules produces confidently wrong contracts.
+4. **Brownfield only — read `docs/architecture/QUERYING.md`** in the target repo — it carries the graph's entity-naming conventions (`file:<path>`, `<symbol> (<module stem>)`, `<directory> purpose`) that every query below needs. (Greenfield: this file doesn't exist yet; the bootstrap writes it, and the generated prompt directs the lead to read it then.)
+5. **Probe substrate capabilities** — the generated prompt's machinery depends on which Loom this is. Run `loom begin-session --schema`, `loom what-changed --schema`, `loom resolve-claim --schema`, `loom fork-world --schema`. Each success unlocks the upgraded mechanism (session workspaces, receipt audits, calibrated ledger, world-isolated rehearsals); each failure selects the legacy fallback (prefix discipline, critic re-rehearsal, plain outcome records, scratch graphs). Record the probe results — GRAPH FACTS has a slot for them, and the template's capability-gated blocks are included or replaced accordingly.
+
+## Process
+
+1. **Task** = the argument passed to this skill. If absent, ask the user — everything below derives from it.
+2. **Recon.** Conventions and verification commands come from CLAUDE.md / README where they exist (cite the files).
+   - *Brownfield:* graph recon replaces grep recon. For every area the task touches, run and keep the output of:
+     - `loom explore '{"name": "<symbol or file:path>", "graph": "<g>"}'` — definition, callers, callees, semantic layer, in one budgeted call
+     - `loom blast-radius '{"name": "<symbol>", "graph": "<g>"}'` — reverse-dependency reach, grouped by module: the contracts that must not break
+     - `loom list-entities '{"entityType": "tension", "compact": true, "graph": "<g>"}'` — the repo's recorded risks; keep the ones anchored in touched modules
+     - the invariant `claim` entities `explore` returns for touched modules — candidate contracts for critics to re-verify
+   - *Greenfield:* there is no graph and possibly no files — recon is the **product brief**. Extract from the user or the document they point to: the product's observable behaviors, the measurable properties behind every quality adjective ("fast" gains a number before generation), the stack (settle it with the user now if unstated — never inside the prompt), and any named external exemplar. Every claim in the generated prompt still needs a source: the brief, a named exemplar, or a decision recorded in DELIVERABLE — never an adjective.
+3. **Pick the reference.**
+   - *Brownfield:* by query, not familiarity. Query `pattern` entities for modules implementing the pattern the task needs; rank candidates by caller count (`find-callers`), corroborated against `explore`'s `importedBy` list or a direct read — a zero-callers result is inconclusive (call-edge extraction can miss import shapes), never proof a symbol is unused; record any such extraction gap in GRAPH FACTS with the fallback signal to use. Prefer exemplars with **zero attached tensions**; when the only domain-correct exemplar carries tensions, assess each tension's relevance to the task and put that assessment in REFERENCE instead of disqualifying the exemplar. The generated prompt must state *why* the exemplar won ("implements X, N callers, no recorded tensions"). If the deliverable is prose/research rather than code and a Loom research graph exists for the topic, that graph is the reference: critics check claim coverage, `contested-claims`, and `needs-evidence` against it.
+   - *Greenfield:* the reference is **layered**: the product brief (with its measurable properties) is part 0's reference; the acceptance suite and frozen interfaces that part 0 produces are the reference for every later part. A named external exemplar (a repo, a spec with numbers) is recorded as part 0's design input. If nothing measurable can be extracted from the brief, go back to the user — never generate against adjectives.
+4. **Decompose and establish independence.**
+   - *Brownfield:* 3–7 parts; for each, record its touched modules and blast-radius module set. Disjoint sets → the parts may run in parallel (isolated worktrees). Overlapping sets → re-partition, or serialize those parts and record the shared edges as **named seams** for the integration pass. Independence is a query result in the prompt, never an assertion, and a fully serialized chain is a valid verified outcome for a small, vertically integrated task — never fabricate parallel boundaries to look more gauntlet-like.
+   - *Greenfield:* **part 0 plus 2–6 product parts, part 0 serialized first, always.** Part 0 delivers three things, and its pass criterion names all three: (a) the **interface contract** — types, module boundaries, API shapes — between exactly the parts that will run in parallel (a fully serialized plan shrinks this to nothing; never fabricate parallel boundaries); (b) the **acceptance suite** encoding the brief's measurable properties; (c) a **working toolchain** — by part 0's exit, `<test cmd>`, `<lint cmd>`, and `<build cmd>` exist and run clean on the skeleton, because every later pass criterion names them. Later parts are independent **by construction**: each owns modules disjoint under the frozen interfaces, and the interfaces are the named seams. Construction is then *verified*: the first post-bootstrap integration pass runs `blast-radius` on the real map to confirm the constructed disjointness — a violation is a routine integration round whose fix lands in the interface contract.
+5. **Classify each part's acceptance shape and prescribe its round-1 artifact.** Cost concentrates where the *criterion* is hard, not where the code is big — a tiny-blast-radius part with a generalization-shaped criterion can burn five rounds while high-centrality parts pass in one. Four shapes; each adds a mandatory element to the builder's FIRST dispatch:
+   - **Generalization-shaped** ("works on inputs nobody enumerated" — matchers, thresholds, classifiers, heuristics): the builder ships a self-adversarial harness from round 1 — it must invent fresh held-out cases each round, contamination-checked against every corpus and committed test in the repo, and is told explicitly that its known-case results are not evidence. Loop rule for these parts: *the same criterion failing on fresh cases in two consecutive rounds means the mechanism class is wrong — mandatory design change, not another patch.*
+   - **Enumeration-shaped** ("all X must Y" — overrides of a surface, adapters over an interface, migrations of a set): round 1 must deliver the closed-set classification table (every member of X × its treatment × why safe), and the critic independently *regenerates* the table rather than probing members. Members of X are never discovered one-per-round. (Greenfield's part 0 is enumeration-shaped: the interface table and the brief-property → acceptance-test coverage table are its closed sets.)
+   - **Measurement-shaped** ("this value is measured, not assumed"): round 1 carries the perturbation obligation — the number must move when its input moves, demonstrated once by the builder and re-verified by the critic.
+   - **Composition-shaped** (consumes or is consumed by another part's feature): covered structurally by named seams; additionally enrolls the pair in the integration pass's behavioral probes (step below).
+6. **Assign models by measured complexity** — a stated, repeatable rule, not vibes: parts touching leaf modules with small blast radii and no tensions → haiku builders; typical parts → sonnet; parts touching high-centrality modules, recorded tensions, or generalization-shaped criteria → sonnet builders with opus critics. Greenfield's part 0 always gets an opus critic — interface design is judgment, and a wrong freeze taxes every later part. If every part lands in the same tier under the rule, state the shared justification — don't manufacture differentiation. **Prescribe models only** — the dispatch mechanism honors model choice but not effort levels; if a part deserves extra deliberation, say so in the dispatch prose ("reason longest about X"), not as an unactionable `/high` suffix. **Opus is the hard ceiling: no sub-agent ever runs on Fable/Mythos, regardless of the session's default model — pass the model explicitly on every dispatch.**
+7. **Resolve permissions up front** — the generated prompt runs with no human available. Gated actions (deploy, push, migrations, spending) are settled with the user BEFORE generation or written as hard-forbidden. If the task can't succeed without one, stop and ask now — never inside the prompt.
+8. **Fill the template.** Every `<placeholder>` becomes repo-specific content; every graph fact comes from a query you actually ran this session; every mode fork resolves to exactly one variant (the generated prompt states its mode once, in GRAPH FACTS, and contains no dangling alternative). Fill command slots with what actually exists (e.g., `build` absorbing typecheck when no lint script exists), stated as such — never invent a command; in greenfield the command slots cite part 0's toolchain obligation instead. When the task's literal wording conflicts with a verified invariant claim, resolve in favor of the invariant, state the decision in DELIVERABLE so no builder re-litigates it, and surface it to the user at delivery. If a section would paste cleanly into another repo, your recon was insufficient — go back to step 2.
+9. **Lint the output, then deliver.** Before delivering: (a) re-read the generated prompt end to end for corrupted, interleaved, or truncated lines — a garbled boundary or pass-criterion mis-executes silently; (b) verify every PARTS pass-criterion that quotes the spec resolves verbatim against the spec text; (c) confirm every capability-gated block matches the gate-step-5 probe results; (d) confirm the mode is stated in GRAPH FACTS and no other-mode block survives (greenfield prompts carry the bootstrap step; brownfield prompts carry no part-0 machinery unless the task is hybrid). Then deliver the finished prompt in one fenced markdown block as your final output, preceded by one line noting it must run in an agentic environment that can spawn sub-agents and reach the Loom CLI, and offer to kick it off now.
+
+## Template
+
+```markdown
+# GAUNTLET: <task title>
+
+Run this as an orchestrated loop with sub-agents. You are the lead agent: you dispatch builders and critics; you never judge your own work.
+
+## DELIVERABLE
+<the exact artifacts: files / features / documents, with repo paths>
+
+## OBJECTIVE — falsifiable
+<a state-change that is true or false at stop time, e.g. "`<test cmd>` exits 0 including N new tests covering X; `<lint cmd>` clean". Never "improve" or "high quality". Greenfield: the named commands are the ones part 0 must establish — the objective cites them as part 0 obligations, not as pre-existing facts.>
+
+## REFERENCE — what great looks like, and why it was chosen
+<brownfield: exemplar path or spec, with selection evidence: "implements <pattern entity>, <N> callers, zero recorded tensions". Critics compare output against THIS, side by side, blind where the medium allows.>
+<greenfield: layered — the product brief (quoted measurable properties) governs part 0; part 0's acceptance suite + frozen interfaces govern every later part; named external exemplars are part 0 design inputs.>
+
+## REPO FACTS
+- Stack & conventions: <from CLAUDE.md / README — cite the files | greenfield: the stack decision settled with the user at generation, stated as such>
+- Verify with: `<test cmd>` · `<lint cmd>` · `<build/run cmd>` <greenfield: established by part 0; nothing runs in parallel until they exist and pass on the skeleton>
+- Contracts that must not break: <brownfield: from blast-radius output + invariant claim entities, with file:line anchors | greenfield: the frozen interface contract, once part 0 lands | hybrid: both>
+
+## GRAPH FACTS
+- Mode: <brownfield | greenfield | brownfield+hybrid-part-0> — decided at generation from map substance (`entityCount` = <n>) and extractable source (<n> files).
+- <brownfield> Codebase graph: `<graphName>` · describes commit `<manifest commit>` · query recipes: `docs/architecture/QUERYING.md`
+- <greenfield> No codebase map exists at run start. Reserved map graph name: `codebase-<slug>`. **Bootstrap step:** when part 0 passes its comprehensive critic, run `/map-codebase <path>` (or the map-codebase workflow directly); then read the generated `docs/architecture/QUERYING.md`, and from that point every brownfield rule in this prompt binds — graph recon for later parts, blast-radius verification of the constructed independence, the critics' graph toolkit. Re-map (incremental) at each phase boundary, before the integration pass. **If `/map-codebase` is unavailable in the run environment or fails, continue without the map — grep recon and full-suite verification; independence remains by-construction; record the gap in the final report. Bootstrap is an upgrade, never a blocker.**
+- Substrate capabilities (probed at generation): <sessions yes/no · receipts/what-changed yes/no · resolve-claim/calibration yes/no · worlds yes/no — the mechanisms below assume exactly these>
+- <if HEAD differed at generation: "HEAD was `<sha>`; drift verified disjoint from this task's modules (`git diff --name-only` showed no overlap)" — omit if commits matched>
+- <any extraction gaps found during recon — e.g. `find-callers` undercounting a file's exports — with the fallback signal critics should use instead; omit if none>
+- Transport: `loom <command> '<json>'` <or the uv run --directory prefix — in a blank repo it is almost always the --directory form; state the one verified at generation>
+- Precondition at run start: <brownfield: `loom graph-stats '{"graph": "<graphName>"}'` succeeds | greenfield: `loom graph-stats` reaches the store — a typed NOT_FOUND still proves reachability>. **Degrade rule: if the store is unreachable at any point, fall back to grep recon and full-suite verification and keep going — the run NEVER blocks on the Loom.** The ledger must remain reconstructable from the conversation record alone.
+- **Baseline discipline:** structural queries describe the most recently mapped commit — <brownfield: `<manifest commit>`, the pre-run repo, frozen for this run | greenfield: the bootstrap commit, advanced only by the scheduled re-maps>. Valid for what must not break; never for judging code written after it. New code is judged only by running commands and reading real diffs.
+- **Semantic-layer discipline:** `claim` / `tension` / `pattern` entities are LLM-written leads. Verify at their file:line anchor before acting on one. No PASS or FAIL rests on a map entity alone.
+
+## STORE SAFETY — mechanisms before the first dispatch
+- **Pre-flight backup:** before any dispatch, copy the store snapshot aside (`docker cp <container>:<data-path>/dump.rdb <run-dir>/preflight-dump.rdb`) and record the baseline: `DBSIZE`, `GRAPH.LIST`. Restoring this file is the documented recovery path for the run.
+- **Watchdog:** at every phase boundary the lead re-reads DBSIZE/GRAPH.LIST and compares against baseline plus the graphs this run legitimately created. A shrunken store halts all dispatching until diagnosed.
+- **Every dispatch to every sub-agent carries this text verbatim:** "NEVER call FLUSHALL, FLUSHDB, SCRIPT FLUSH, CONFIG, or ANY instance-global redis command, from any client or library. Cleanup is ONLY deleting graphs/keys YOU created, verified by a scoped scan of YOUR prefix. If you are unsure whether a cleanup command is scoped, do not run it — leave the debris and report it."
+- <if sessions available> **Workspaces replace prefix discipline:** each builder/critic opens `begin-session` and creates all scratch state inside its namespace; cleanup is one `end-session`; hygiene is verified with `list-sessions`, never redis-cli. <else> Scratch graphs use per-agent prefixes (`<slug>-b<part>-`, `<slug>-crit<part>-`); each agent deletes only its own prefix and verifies with a scoped scan.
+
+## PARTS — independence <brownfield: verified | greenfield: by construction, then verified at bootstrap>
+One builder sub-agent per part. Per part:
+<greenfield only, always first and serialized:>
+0. Foundation — interface contract between the parts that parallelize; acceptance suite encoding <the brief's measurable properties, quoted>; working toolchain (`<test cmd>` / `<lint cmd>` / `<build cmd>` run clean on the skeleton). **Acceptance shape: enumeration** — the critic independently regenerates the interface table and the property→test coverage table against the brief. Nothing parallelizes until part 0 passes.
+1. <part> — <brownfield: touches <modules>; blast-radius set <modules>; DISJOINT | SEAM with part K via <edges> — from queries actually run | greenfield: owns <modules> under the frozen contract; seams = the interfaces it consumes/exposes>; **acceptance shape: <generalization | enumeration | measurement | composition | plain>, round-1 artifact: <self-adversarial harness | closed-set table | perturbation demo | seam probe enrollment | none>**; scoped tests `<subset cmd>`; <brownfield: invariant claims to re-verify: <ids/anchors>>; pass when <observable criterion>
+2. ...
+Parts with disjoint <brownfield: blast-radius | greenfield: ownership> sets may run in parallel, each builder in an isolated worktree. Parts sharing a seam run serialized, in the order listed.
+
+## MODELS — assigned by measured complexity
+Hard ceiling: **Opus**. No sub-agent runs on Fable/Mythos, even if this session's default model is Fable — pass the model explicitly on every dispatch. Effort levels are not dispatchable — where a part deserves extra deliberation, the dispatch prose says so.
+- <part → builder model, critic model, with the metric that justified it (blast-radius size, centrality, tension count, acceptance shape)>
+- Critics on tension-bearing, high-centrality, or generalization-shaped parts: opus — a wrong verdict costs more rounds than the model saves.
+- <greenfield> Part 0's critic: opus, always — a wrong interface freeze taxes every later part.
+
+## LEDGER — loop state lives outside the conversation
+At run start create a dedicated graph `gauntlet-<task-slug>`. <brownfield: The codebase map graph `<graphName>` is READ-ONLY for this entire run. | greenfield: No agent writes the map graph `codebase-<slug>` directly — it changes only via the `/map-codebase` runs this prompt schedules (bootstrap, phase boundaries).>
+- One `claim` entity per part <if calibration available>, created **with the lead's dispatch-time confidence and `session: "gauntlet-lead"`** — assertion-time confidence is immutable history, so the ledger doubles as a calibration corpus<else>, initial confidence 0.1</if>.
+- Every critic verdict is recorded by the lead: PASS → `evidence` entity + `supports` relation to the part claim<if calibration available> + `resolve-claim {resolution: confirmed}`</if>; FAIL → a `claim` entity for the specific gap<if calibration available>; a gap later shown misdiagnosed → `resolve-claim {resolution: refuted}` on it</if>.
+- Every builder round closes with `loom record-outcome` citing the gap claim it addressed: `useful` if the next critic clears that gap, `dead_end` if the same gap survives, `corrected` if the gap was misdiagnosed.
+- **Spin check is a query that is actually executed:** before any repeat dispatch, the lead RUNS the outcome-listing query for the gap claim and pastes the result into the dispatch. Two `dead_end`s → strategy change is mandatory. Enforcing this from memory is luck, not design.
+- **Invalidation is a query:** if the integration critic contradicts evidence a PASS rested on, every part claim supported by that evidence re-enters the loop (and the part claim's confidence is knocked down with a `changeReason` until repaired).
+- **Lead statelessness:** at each phase boundary the lead writes a checkpoint entity (parts passed, open gaps, next dispatch) so a successor lead — context loss, compaction, session death — re-enters from the ledger, not the transcript.
+- The final report includes `loom session-changelog '{"graph": "gauntlet-<slug>"}'`<if calibration available> and `loom calibration-profile '{"graph": "gauntlet-<slug>", "minBucketN": 1}'` — whether the lead's dispatch-time confidences meant anything is itself a measured number the next gauntlet can cite</if>.
+
+## THE LOOP (per part)
+1. Builder builds (in a worktree if parallel), honoring the part's round-1 artifact obligation from PARTS. Builders never grade their own work; for generalization-shaped parts, the builder's known-case results are explicitly not evidence.
+2. Critics come in two grades:
+   - **Comprehensive critic** (round 1, and the exit round of any part that iterated): a fresh sub-agent, no builder context, no builder summaries — inspects the REAL artifact: runs the part's scoped tests `<subset cmd>`, reads the full diff itself, renders/screenshots if visual, rehearses the acceptance criteria live. Blind A/B against REFERENCE where possible. For enumeration-shaped parts it independently regenerates the closed-set table. Its graph toolkit <greenfield: from bootstrap onward; before that, commands, diffs, and the acceptance suite are the whole toolkit>: `loom explore` on touched symbols for identical budgeted baseline context, and `find-callers` / `blast-radius` to fact-check builder assertions — subject to both GRAPH FACTS disciplines.
+   - **Repair-verification critic** (intermediate rounds): receives a "verified facts" preamble from the ledger (what prior rounds established — do not re-litigate), verifies the specific repair against the prior critic's exact transcripts, and regression-spot-checks. Full re-rehearsal happens only at entry and exit, not every round.
+3. **Critic protocols by claim type** — the required evidence procedure per builder-claim shape:
+
+   | Builder claim | Required protocol |
+   |---|---|
+   | "measured, not a constant" | perturbation: edit the input, watch the output move, revert |
+   | "isolation/immutability invariant holds" | byte-compare or sha256 before/after |
+   | "generalizes" | contamination-listed fresh cases the builder never saw, both directions |
+   | "repaired" | red/green (revert the fix → the new test must fail) + transplant new tests onto pre-repair source |
+   | "generated, not hand-edited" | regenerate + `git diff --exit-code` |
+   | any mutation happened | <if receipts available> replay the response's `eventIds` via `what-changed` — one read, no dispatch <else> re-read the store state through independent commands</if> |
+   | always | a conduct-disclosure section: the critic reports its own accidents and near-misses |
+4. **Metric integrity:** the critic reads the diff of the verification assets themselves (tests, fixtures, configs). A metric passed by weakening the metric is a FAIL. Commit messages must not overclaim tests or coverage that do not exist.
+5. Critic returns PASS, or the single largest meaningful gap. The lead records the verdict in the LEDGER.
+6. The gap goes back to the builder; the builder's round closes with its `record-outcome`. Loop. For generalization-shaped parts: two consecutive fresh-case failures of the same criterion → the mechanism class is wrong; the next dispatch mandates a design change, not a patch.
+7. A part exits when: PASS, or <N=5> critic rounds are spent — then mark it BEST-EFFORT, record the last verdict and remaining gap in the ledger and final report, and move on. The run never pauses for a human.
+
+## EVIDENCE RULES
+A claim counts only with the artifact behind it: test output, screenshots, diffs, logs. "Done" from a builder is not evidence. Critics collect their own evidence. Where the store supports receipts, a mutation-shaped builder claim is checked by replaying its `eventIds` BEFORE any critic is dispatched for it — critics are for judgment, not existence checks. Ledger and map entities are evidence *pointers* — the file:line anchor and the command output they point to are the evidence.
+
+## BOUNDARIES — autonomous, so absolute
+This run is fully autonomous: no step waits on human input, approval, or a question. Every decision is resolved by the rules in this prompt; where genuinely ambiguous, the critic's reading of the REFERENCE wins.
+- Max <N> critic rounds per part; max <M> rounds total.
+- Hard-forbidden — never done, never asked about: <brownfield: writes to the codebase map graph `<graphName>` | greenfield: direct writes to `codebase-<slug>` outside the scheduled `/map-codebase` runs>; every instance-global store command (see STORE SAFETY — carried verbatim in every dispatch); <repo-specific: deploy, push, destructive migrations, new paid dependencies, deleting data>. If a part cannot pass without one of these, it exits as BEST-EFFORT with that noted.
+- Spin rule: two `dead_end` outcomes on the same gap claim means change strategy, not retry — checked in the ledger before every repeat dispatch.
+- <time/cost caps, if the user gave any>
+
+## INTEGRATION PASS
+When a phase's parts pass (and again when all parts pass): a fresh agent verifies the whole — full suite `<cmd>`, plus each **named seam** from PARTS checked explicitly (the recorded cross-part edges are its checklist, not an intuition), plus **pairwise behavioral probes**: each feature this phase added × each prior load-bearing feature, one CLI transcript each, enumerated mechanically from the seam list and the DELIVERABLE's feature list. A composition bug found at a phase boundary is a routine round; found only at the finale it is a verdict on the whole system.
+- <greenfield> **Re-map first:** each integration pass begins with an incremental `/map-codebase` run (subject to the bootstrap degrade rule), and the first post-bootstrap pass additionally runs `blast-radius` per part to verify the constructed independence — a violation is a routine integration round whose fix lands in the interface contract.
+- **Arbiter dedup:** if the phase's merge is a fast-forward of a tree a comprehensive critic just fully gated, the integration agent reruns only the seam and composition probes — the gate verdicts carry over.
+- Integration failures re-enter the loop like any part, and trigger the LEDGER invalidation query for any evidence they contradict.
+
+## DONE
+Done = the OBJECTIVE's evidence exists and appears in the final report, or every unmet criterion is listed as BEST-EFFORT with its last critic verdict and evidence. Before the report: the STORE SAFETY watchdog runs one final time against the pre-flight baseline, and every scratch workspace/graph the run created is reaped and verified gone. The report includes the ledger changelog<if calibration available> and calibration profile</if>, and closes with the map's disposition: <brownfield: note the map is now stale; recommend `/map-codebase <path>` (incremental) so the next consumer gets the post-run architecture — the resulting `session-changelog` on `<graphName>` is the run's architectural diff | greenfield: run the final incremental `/map-codebase` (subject to the degrade rule) — the product exits the gauntlet already mapped, and the next gauntlet on this repo is brownfield from day one>. The run terminates itself with the report — it never ends waiting on a human. The report ends with the evidence, not a summary.
+```
+
+## Non-negotiables in the generated prompt
+
+- The gauntlet fundamentals: a falsifiable objective with named commands; fresh-context critics inspecting real artifacts; blind A/B against the reference; round caps, a hard-forbidden list, the spin rule; an explicit model per role with the Opus ceiling; fully autonomous (no approval gate, no mid-run question — cap exhaustion → BEST-EFFORT); a fresh-agent integration pass.
+- The dependency gate ran, and the mode decision with both observables (map `entityCount`, extractable-source count) appears in GRAPH FACTS.
+- Brownfield: map substance verified (`entityCount > 0` — a manifest over an empty graph generates nothing), the manifest commit matched HEAD when recon ran (or the drift was verified disjoint), and the reference's selection evidence (pattern, callers, tensions) appears in the prompt.
+- Greenfield: part 0 (interface contract scoped to the parts that parallelize + acceptance suite + working toolchain) is serialized first with an enumeration-shaped criterion and an opus critic; the bootstrap step and its degrade rule are present; the layered reference chain (brief → part 0 artifacts → later parts) is explicit.
+- The capability probe's results appear in GRAPH FACTS with every capability-gated block matching them, and no other-mode block survives the output lint.
+- Part independence is established in PARTS — brownfield by blast-radius sets from queries actually run, greenfield by construction with bootstrap-time verification; overlaps appear as named seams, and only disjoint parts parallelize.
+- **Every part carries an acceptance-shape classification and its round-1 artifact obligation** — generalization-shaped parts get the self-adversarial harness and the two-fresh-failures design-change rule; enumeration-shaped parts get the closed-set table.
+- **STORE SAFETY is present with all three mechanisms** (pre-flight backup, watchdog, verbatim per-dispatch prohibition) — boundaries are never policy-only.
+- **The critic-protocol table is included verbatim**, and THE LOOP distinguishes comprehensive from repair-verification critics.
+- The integration pass includes pairwise behavioral probes and the arbiter-dedup rule; greenfield integration passes begin with the incremental re-map.
+- GRAPH FACTS carries the degrade rules and both disciplines (baseline, semantic-layer) verbatim — every graph-dependent step has a stated fallback; the run never blocks on the Loom or the map; the ledger is reconstructable from the conversation record.
+- The ledger lives in its own `gauntlet-<slug>` graph; the codebase map graph is never written directly by any agent (brownfield: read-only for the run; greenfield: written only by the scheduled `/map-codebase` runs) and appears under hard-forbidden.
+- The generated prompt passed the output lint (no corrupted lines; spec quotes resolve; single mode).
+
+## Common mistakes
+
+| Mistake | Fix |
+|---|---|
+| Skipping the gate because "the map is probably fresh" | Compare `manifest.commit` to `git rev-parse HEAD` — stale maps produce confidently wrong contracts |
+| A manifest file over an empty graph passes the gate | Substance check: `graph-stats` `entityCount > 0`, else the mode decision treats the map as absent |
+| Generating against unmapped existing code "to save time" | Substance no + source yes → map first or stop; guessed contracts are worse than no gauntlet |
+| Greenfield parts parallelized before any interface is frozen | Part 0 first, serialized, always; interfaces freeze between exactly the parts that parallelize |
+| Greenfield reference left as the brief's adjectives | Part 0 turns every property into an acceptance test; "fast" gains a number before generation |
+| Objective names test/lint commands that don't exist in a blank repo | Part 0's exit criterion establishes the toolchain; the objective cites the commands as part 0 obligations |
+| Querying the graph before bootstrap, or blocking the run on `/map-codebase` | Before bootstrap there is no graph to ask; bootstrap is an upgrade, never a blocker |
+| Hybrid task treated as pure greenfield, discarding the existing map | Hybrid = brownfield machinery + part-0 discipline for the new subsystem only |
+| Treating a map `claim`/`tension` as settling a verdict | Semantic layer = leads; a critic verifies at the file:line anchor and by running commands |
+| Querying the graph about code a builder just wrote | Structural queries describe the most recently mapped commit only; new code is judged by diffs and command output |
+| Ledger entities written into the codebase map graph | Dedicated `gauntlet-<slug>` graph; the map stays a clean self-model |
+| Run stalls because FalkorDB went down mid-run | The degrade rule in GRAPH FACTS: fall back to grep + full suite, keep going |
+| Parallel builders on parts with overlapping blast radii | Re-partition or serialize; overlaps become named seams for the integration critic |
+| Independence asserted, not shown | Brownfield: blast-radius sets from queries actually run; greenfield: a frozen contract plus bootstrap-time blast-radius verification — an assertion appears in neither |
+| Spin rule enforced by the lead's memory | It's a ledger query the lead actually runs and pastes into the repeat dispatch |
+| Trusting a zero-callers `find-callers` result | Corroborate with `explore`'s `importedBy` or a direct read; record extraction gaps in GRAPH FACTS |
+| Boundaries enforced only as prompt policy | STORE SAFETY mechanisms: pre-flight backup, phase watchdog, destructive-command prohibition in every dispatch — a breach is bounded, not just forbidden |
+| Sizing rigor by blast radius alone | Classify acceptance shape too — a tiny generalization-shaped part outspends a huge plain one; the round-1 artifact is where the savings live |
+| Full acceptance re-rehearsal by every critic every round | Two critic grades: comprehensive at entry/exit, repair-verification between — with a verified-facts ledger preamble |
+| Example-chasing on generalization criteria | Builder self-adversarial harness from round 1; two consecutive fresh-case failures → mandatory mechanism change |
+| Coverage families discovered one member per round | Enumeration-shaped parts ship the closed-set table in round 1; the critic regenerates it |
+| Composition tested only at the finale | Pairwise behavioral probes at every phase boundary — the seam list already enumerates the pairs |
+| Producing an excellent single-agent task prompt | The deliverable is a LOOP: builders, critics, iterations, stop rule |
+| Prompt would work in any repo | Real commands, real paths, real query output throughout — including GRAPH FACTS; greenfield prompts quote the brief's actual numbers |
