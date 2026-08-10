@@ -98,7 +98,13 @@ const contract = await resilient(`${P('Clarify the research intention and seed i
 
 // ===== Phase 3: quality-gated research loop =====
 phase('Loop')
-let iter = 0, verdict = { continueResearch: true, nextIterationQueries: contract.initialQuestions }
+// Red team and scoring are reused by the last-chance pass below, so both are built once.
+const rtPrompt = (i) => P(`ITERATION: ${i}\nAdversarially seek counter-evidence to high-confidence claims; create contradicts relations.`)
+const rtOpts = (i, tag = '') => ({ label: `redteam:${LABEL}-${i}${tag}`, agentType: 'research-red-team', phase: 'Loop', schema: REDTEAM })
+const judge = (i, c, exp, rt, tag = '') => resilient(P(`ITERATION: ${i}\nMAX_ITERATIONS: ${cls.maxIterations}\nEvaluate Lakatos + flexibility; decide continue/terminate.\nThis iteration: consolidation entityCount=${c.entityCount}; expedition=${exp ? (exp.emergentTheory.found ? 'theory found' : 'none') : 'n/a'}; redTeam=${rt ? `${rt.counterEvidenceIds.length} counter-evidence, ${rt.weakenedClaimIds.length} weakened` : 'n/a'}.`),
+  { label: `quality:${LABEL}-${i}${tag}`, agentType: 'research-quality', phase: 'Loop', schema: QUALITY })
+
+let iter = 0, rtDone = false, verdict = { continueResearch: true, nextIterationQueries: contract.initialQuestions }
 const trail = []
 while (verdict.continueResearch && iter < cls.maxIterations) {
   const queries = (verdict.nextIterationQueries || []).join('; ')
@@ -116,21 +122,33 @@ while (verdict.continueResearch && iter < cls.maxIterations) {
   const consol = await resilient(`${P(`ITERATION: ${iter}\nClean the graph: dedup, prune orphans, propagate credit.`)}`,
     { label: `consol:${LABEL}-${iter}`, agentType: 'research-consolidation', phase: 'Loop', schema: CONSOL })
 
-  // Independent conditional work runs concurrently (both only feed quality).
-  const wantExp = iter >= 1 && consol.entityCount >= 20
-  const wantRT = cls.enableRedTeam && iter >= 2
+  // Independent conditional work runs concurrently (both only feed quality). The expedition gates on
+  // material only: `iter >= 1` was unreachable whenever the loop terminated at iteration 0.
+  const wantExp = consol.entityCount >= 20
+  const wantRT = cls.enableRedTeam && !rtDone && iter >= 2
   const side = []
   if (wantExp) side.push(() => agent(`${P(`ITERATION: ${iter}\nMine emergent theories from graph topology.`)}`,
     { label: `exped:${LABEL}-${iter}`, agentType: 'research-expedition', phase: 'Loop', schema: EXPED }))
-  if (wantRT) side.push(() => agent(`${P(`ITERATION: ${iter}\nAdversarially seek counter-evidence to high-confidence claims; create contradicts relations.`)}`,
-    { label: `redteam:${LABEL}-${iter}`, agentType: 'research-red-team', phase: 'Loop', schema: REDTEAM }))
+  if (wantRT) side.push(() => agent(rtPrompt(iter), rtOpts(iter)))
   const sideResults = side.length ? await parallel(side) : []
   let k = 0
   const expedition = wantExp ? sideResults[k++] : null
-  const redTeam = wantRT ? sideResults[k++] : null
+  let redTeam = wantRT ? sideResults[k++] : null
+  if (redTeam) rtDone = true
 
-  verdict = await resilient(`${P(`ITERATION: ${iter}\nMAX_ITERATIONS: ${cls.maxIterations}\nEvaluate Lakatos + flexibility; decide continue/terminate.\nThis iteration: consolidation entityCount=${consol.entityCount}; expedition=${expedition ? (expedition.emergentTheory.found ? 'theory found' : 'none') : 'n/a'}; redTeam=${redTeam ? `${redTeam.counterEvidenceIds.length} counter-evidence, ${redTeam.weakenedClaimIds.length} weakened` : 'n/a'}.`)}`,
-    { label: `quality:${LABEL}-${iter}`, agentType: 'research-quality', phase: 'Loop', schema: QUALITY })
+  verdict = await judge(iter, consol, expedition, redTeam)
+
+  // Last-chance red team. A strong first iteration terminates the loop on quality_threshold long
+  // before `iter >= 2` can fire, so adversarial verification was silently skipped exactly when the
+  // research looked good — the inverse of what a Type C/D classification asks for. Run the pending
+  // pass while the loop is still open (its findings file and graph writes then reach documentation)
+  // and re-score with it in hand, rather than padding iterations to reach the gate.
+  if (cls.enableRedTeam && !rtDone && (!verdict.continueResearch || iter + 1 >= cls.maxIterations)) {
+    log(`iter ${iter}: loop ending with red team pending — running it now before the verdict is final`)
+    redTeam = await resilient(rtPrompt(iter), rtOpts(iter, '-final'))
+    rtDone = true
+    verdict = await judge(iter, consol, expedition, redTeam, '-rescore')
+  }
   trail.push({ iter, score: verdict.overallScore, entityCount: consol.entityCount, stoppingReason: verdict.stoppingReason })
   log(`iter ${iter}: score ${verdict.overallScore}, ${consol.entityCount} entities, ${verdict.continueResearch ? 'continue' : 'terminate (' + verdict.stoppingReason + ')'}`)
   iter++
