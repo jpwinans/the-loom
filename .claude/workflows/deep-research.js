@@ -62,9 +62,24 @@ TOPIC: ${TOPIC}${SUBGRAPH_TAG ? `\nPROVENANCE: stamp every entity/relation you c
 ${extra || ''}
 Execute exactly per your agent definition. Emit ONLY your Structured Output Contract object as your final message.`
 
+// agent() resolves to null when a subagent dies on a terminal API error (e.g. "Connection closed
+// mid-response") after its internal retries. Schema validation does NOT cover that case — it
+// constrains the shape of a result that arrived, not whether one arrived at all. Dereferencing the
+// null loses the whole run, so retry with a fresh subagent and only then give up. Attempt 0 reuses
+// the exact (prompt, opts) so resumed runs still hit the result cache.
+const resilient = async (prompt, opts, tries = 3) => {
+  for (let a = 0; a < tries; a++) {
+    const p = a === 0 ? prompt : `${prompt}\n\nRETRY ${a}: a previous attempt died mid-response. Resume from the CURRENT graph state — re-query the graph first and do not re-create entities that already exist.`
+    const r = await agent(p, a === 0 ? opts : { ...opts, label: `${opts.label}-retry${a}` })
+    if (r) return r
+    log(`${opts.label}: attempt ${a + 1}/${tries} returned null (subagent died) — retrying`)
+  }
+  throw new Error(`${opts.label}: all ${tries} attempts died on terminal API errors. Halting.`)
+}
+
 // ===== Phase 0: Setup =====
 phase('Setup')
-const setup = await agent(`Initialize a deep-research session. To touch the Loom graph, ${LOOM}.
+const setup = await resilient(`Initialize a deep-research session. To touch the Loom graph, ${LOOM}.
 1. Create the session folder RELATIVE to your current working directory (where Claude Code was launched): research/sessions/{sessionId}/ where sessionId = "{YYYY-MM-DD}-{slug of TOPIC}-{NNN}". Run \`mkdir -p research/sessions/{sessionId}/{findings,quality,artifacts}\`, then resolve it to an absolute path with \`pwd\` and return sessionFolder = "$(pwd)/research/sessions/{sessionId}".
 2. Graph: ${GRAPH ? `use existing graph "${GRAPH}".` : `create a new graph named the sessionId (or "deep-{slug}") by running loom create-graph '{"name":"<sessionId>"}'; use that.`}
 3. Classify the research question TOPIC="${TOPIC}" into Type A (lookup, maxIterations 2, no red-team/checkpoint) / B (comparative, 3, no/no) / C (open investigation, 5, red-team yes, checkpoint yes) / D (deep theoretical, 7, yes, yes).
@@ -78,7 +93,7 @@ log(`deep-research "${TOPIC}" → graph ${GN}, Type ${cls.type} (maxIter ${cls.m
 
 // ===== Phase 1-2: Orient =====
 phase('Orient')
-const contract = await agent(`${P('Clarify the research intention and seed initial Loom entities (concepts + questions) in the session graph.')}`,
+const contract = await resilient(`${P('Clarify the research intention and seed initial Loom entities (concepts + questions) in the session graph.')}`,
   { label: `orient:${LABEL}`, agentType: 'research-orientation', phase: 'Orient', schema: CONTRACT })
 
 // ===== Phase 3: quality-gated research loop =====
@@ -87,17 +102,18 @@ let iter = 0, verdict = { continueResearch: true, nextIterationQueries: contract
 const trail = []
 while (verdict.continueResearch && iter < cls.maxIterations) {
   const queries = (verdict.nextIterationQueries || []).join('; ')
-  const findings = await agent(`${P(`ITERATION: ${iter}\nFocus queries for this iteration: ${queries || '(use the research contract)'}`)}`,
+  const findings = await resilient(`${P(`ITERATION: ${iter}\nFocus queries for this iteration: ${queries || '(use the research contract)'}`)}`,
     { label: `research:${LABEL}-${iter}`, agentType: 'research-agent', phase: 'Loop', schema: FINDINGS })
-  const synth = await agent(`${P(`ITERATION: ${iter}\nSynthesize patterns/insights/tensions over the new findings.`)}`,
+  const synth = await resilient(`${P(`ITERATION: ${iter}\nSynthesize patterns/insights/tensions over the new findings.`)}`,
     { label: `synth:${LABEL}-${iter}`, agentType: 'research-synthesis', phase: 'Loop', schema: SYNTH })
 
-  // Verification — pure JS over validated structured output (no ||null). Zero-verified-despite-attempts is fatal.
+  // Verification — pure JS over structured output that resilient() guarantees is non-null.
+  // Zero-verified-despite-attempts is fatal.
   const att = findings.verification.entitiesAttempted + synth.verification.entitiesAttempted
   const ver = findings.verification.entitiesVerified + synth.verification.entitiesVerified
   if (att > 0 && ver === 0) throw new Error(`Iter ${iter}: ${att} entities attempted, ZERO verified — Loom write path failing silently (check that the loom CLI is reachable, FalkorDB is up, and GRAPH_NAME "${GN}" is correct). Halting.`)
 
-  const consol = await agent(`${P(`ITERATION: ${iter}\nClean the graph: dedup, prune orphans, propagate credit.`)}`,
+  const consol = await resilient(`${P(`ITERATION: ${iter}\nClean the graph: dedup, prune orphans, propagate credit.`)}`,
     { label: `consol:${LABEL}-${iter}`, agentType: 'research-consolidation', phase: 'Loop', schema: CONSOL })
 
   // Independent conditional work runs concurrently (both only feed quality).
@@ -113,7 +129,7 @@ while (verdict.continueResearch && iter < cls.maxIterations) {
   const expedition = wantExp ? sideResults[k++] : null
   const redTeam = wantRT ? sideResults[k++] : null
 
-  verdict = await agent(`${P(`ITERATION: ${iter}\nMAX_ITERATIONS: ${cls.maxIterations}\nEvaluate Lakatos + flexibility; decide continue/terminate.\nThis iteration: consolidation entityCount=${consol.entityCount}; expedition=${expedition ? (expedition.emergentTheory.found ? 'theory found' : 'none') : 'n/a'}; redTeam=${redTeam ? `${redTeam.counterEvidenceIds.length} counter-evidence, ${redTeam.weakenedClaimIds.length} weakened` : 'n/a'}.`)}`,
+  verdict = await resilient(`${P(`ITERATION: ${iter}\nMAX_ITERATIONS: ${cls.maxIterations}\nEvaluate Lakatos + flexibility; decide continue/terminate.\nThis iteration: consolidation entityCount=${consol.entityCount}; expedition=${expedition ? (expedition.emergentTheory.found ? 'theory found' : 'none') : 'n/a'}; redTeam=${redTeam ? `${redTeam.counterEvidenceIds.length} counter-evidence, ${redTeam.weakenedClaimIds.length} weakened` : 'n/a'}.`)}`,
     { label: `quality:${LABEL}-${iter}`, agentType: 'research-quality', phase: 'Loop', schema: QUALITY })
   trail.push({ iter, score: verdict.overallScore, entityCount: consol.entityCount, stoppingReason: verdict.stoppingReason })
   log(`iter ${iter}: score ${verdict.overallScore}, ${consol.entityCount} entities, ${verdict.continueResearch ? 'continue' : 'terminate (' + verdict.stoppingReason + ')'}`)
@@ -122,9 +138,9 @@ while (verdict.continueResearch && iter < cls.maxIterations) {
 
 // ===== Phase 4-5: Finalize =====
 phase('Finalize')
-await agent(`${P('Create documentation artifacts (zettelkasten, research doc, journal reflection) from the graph entities.')}`,
+await resilient(`${P('Create documentation artifacts (zettelkasten, research doc, journal reflection) from the graph entities.')}`,
   { label: `docs:${LABEL}`, agentType: 'research-documentation', phase: 'Finalize', schema: DOCS })
-const final = await agent(`Finalize the deep-research session. To touch the Loom graph, ${LOOM}.
+const final = await resilient(`Finalize the deep-research session. To touch the Loom graph, ${LOOM}.
 SESSION_FOLDER: ${SF}\nGRAPH_NAME: ${GN}\nTOPIC: ${TOPIC}
 1. Query final graph-stats.
 2. Create a research_session entity in the graph capturing {topic, sessionId ${setup.sessionId}, iterations ${iter}, finalScore ${verdict.overallScore}} and link it to the session's key insight/pattern entities (sources/derived_from relations).
