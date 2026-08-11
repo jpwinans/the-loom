@@ -16,7 +16,9 @@ workflows, and agents resolve together and `uv run loom` hits this checkout.
 │   ├── deep-research/             # /deep-research TOPIC — single-question autonomous research
 │   ├── hyper-research/            # /hyper-research DOC — parallel multi-question meta-research
 │   ├── map-codebase/              # /map-codebase PATH — explained architecture map of a repo
-│   └── loom-expedition/           # /loom-expedition GRAPH — standalone emergent-theory expedition
+│   ├── loom-expedition/           # /loom-expedition GRAPH — standalone emergent-theory expedition
+│   └── create-loom-gauntlet/      # /create-loom-gauntlet TASK — builder-vs-critic orchestration
+│                                  #   prompt; brownfield (mapped repo) or greenfield (new product)
 ├── workflows/
 │   ├── deep-research.js           # deterministic orchestration: orient → quality-gated loop → finalize
 │   ├── hyper-research.js          # comprehend → extract questions → parallel deep-research → synthesize
